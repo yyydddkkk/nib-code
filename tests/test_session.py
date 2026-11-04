@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         for prompt in ("stats good", "stats bad", "stats_missing", "delegate_probe"):
             ask(prompt, overrides={"NIB_HOME": str(stats_home)})
         stats_finished_ms = time.time_ns() // 1_000_000
-        stats_paths = list((stats_home / "sessions").glob("*.jsonl"))
+        stats_paths = [p for p in (stats_home / "sessions").glob("*.jsonl") if not p.name.endswith(".calls.jsonl")]
         assert len(stats_paths) == 5
         step_records = [r for p in stats_paths for r in replay(p)[1] if r["from"] > 0]
         assert len(step_records) == 9
@@ -198,7 +198,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         (legacy_agents.parent / "config.toml").write_text("not valid TOML")
 
         ask("first")
-        paths = list((tmp / "nib/sessions").glob("*.jsonl"))
+        paths = [p for p in (tmp / "nib/sessions").glob("*.jsonl") if not p.name.endswith(".calls.jsonl")]
         assert len(paths) == 1
         log = paths[0]
         first, initial_records = replay(log)
@@ -250,7 +250,8 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         ask("one", workdir=other, window="4096")
         result = ask("two", "--continue", workdir=other, window="4096")
         assert b"compacted context:" in result.stderr
-        compact_log = next(p for p in (tmp / "nib/sessions").glob("*.jsonl") if p != log)
+        compact_log = next(p for p in (tmp / "nib/sessions").glob("*.jsonl")
+                           if p != log and not p.name.endswith(".calls.jsonl"))
         compacted, records = replay(compact_log)
         replacements = [r for r in records[1:] if r["messages"][0].get("content", "").startswith("Earlier session summary:")]
         assert len(replacements) == 1
@@ -349,7 +350,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             assert result["agent"] == "undefined" and "agent" not in result["keys"]
             assert child["usage"]["prompt_tokens"] == 6600
         child_logs = [p for p in (tmp / "nib/sessions").glob("*.jsonl")
-                      if replay(p)[1][0].get("parent_session_id") == parent_id]
+                      if not p.name.endswith(".calls.jsonl") and replay(p)[1][0].get("parent_session_id") == parent_id]
         assert len(child_logs) == 2
         before = len(read_requests(requests_path))
         many = events(ask("delegate_many", "--json"))[-1]["end"]
@@ -401,7 +402,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
                     if len(updates) == 1:
                         assert not (progress_cwd / "progress-alpha.txt").exists() or p["step"] <= 1
                         active_child_logs = [p for p in (tmp / "nib/sessions").glob("*.jsonl")
-                                             if (records := replay(p)[1])
+                                             if not p.name.endswith(".calls.jsonl") and (records := replay(p)[1])
                                              and records[0].get("parent_session_id") == seen[0]["start"]["session_id"]]
                         assert len(active_child_logs) <= 2
                         assert all(len(replay(p)[0]) < 8 for p in active_child_logs), "children already finished"
@@ -615,7 +616,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
                     probe.wait()
         print(f"Child startup to start event (10 runs, includes log sync; no TLS): median={sorted(startup)[5]:.2f} ms, range={min(startup):.2f}–{max(startup):.2f} ms")
         root_logs = [p for p in (tmp / "nib/sessions").glob("*.jsonl")
-                     if replay(p)[1][0].get("cwd") == str(cwd) and
+                     if not p.name.endswith(".calls.jsonl") and replay(p)[1][0].get("cwd") == str(cwd) and
                      replay(p)[1][0].get("parent_session_id") is None]
         latest_root = max(root_logs, key=lambda p: p.stat().st_mtime_ns)
         continued = events(ask("--json", "-c", "after delegation"))
@@ -631,7 +632,8 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             assert child_header["system_sha"] == hashlib.sha256(child_base.encode()).hexdigest()[:12]
         patches_home = tmp / "patches-home"
         ask("patch labels", overrides={"NIB_HOME": str(patches_home), "NIB_PATCHES_OFF": "all"})
-        patches_header = replay(next((patches_home / "sessions").glob("*.jsonl")))[1][0]
+        patches_header = replay(next(p for p in (patches_home / "sessions").glob("*.jsonl")
+                                     if not p.name.endswith(".calls.jsonl")))[1][0]
         patch_ids = re.findall(r'\.id = "([^"]+)"', (ROOT / "src/session.zig").read_text().split("fn patchLines", 1)[0])
         assert patches_header["patches_off"] == sorted(patch_ids), patches_header
         assert patches_header["system_sha"] != header["system_sha"]
@@ -699,6 +701,8 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         for request in read_requests(requests_path):
             valid_messages(request["messages"])
         for path in (tmp / "nib/sessions").glob("*.jsonl"):
+            if path.name.endswith(".calls.jsonl"):
+                continue
             valid_messages(replay(path)[0])
         print("Session E2E passed: resume/id/cwd, frozen AGENTS, failed Steps, truncated stream, crash repair, lock, automatic compaction and replay")
     finally:

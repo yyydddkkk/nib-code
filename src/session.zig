@@ -123,6 +123,7 @@ pub const Session = struct {
     compact_backoff: u64 = 0,
     tools: tools.Tools,
     log: session_log.Log = undefined,
+    recorder: sandbox.recording.Recorder = undefined,
     id: []const u8 = undefined,
     parent_session_id: ?[]const u8 = null,
     options: Options = undefined,
@@ -191,6 +192,8 @@ pub const Session = struct {
                 .patches_off = try disabledPatches(a, options.environ),
             });
         }
+        s.recorder = .{ .gpa = gpa, .io = io, .path = if (options.environ != null and std.mem.eql(u8, options.environ.?.get("NIB_RECORD") orelse "", "off")) null else try std.fmt.allocPrint(a, "{s}/{s}.calls.jsonl", .{ directory, s.id }) };
+        s.recorder.loadHashes();
         s.tools.session_id = s.id;
         return s;
     }
@@ -209,6 +212,7 @@ pub const Session = struct {
     pub fn deinit(s: *Session) void {
         s.inbox.batch.deinit(s.gpa);
         s.tools.discardChanges(s.gpa);
+        s.recorder.deinit();
         s.log.close(s.io);
         s.history.deinit(s.gpa);
         s.arena.deinit();
@@ -500,7 +504,12 @@ pub const Session = struct {
         var host = s.tools.host();
         host.timing = timing;
         if (timing) |t| t.started = .now(s.io, .awake);
+        var record = s.recorder.begin(s.log.steps + 1, if (timing) |t| t.run_index else 0);
+        host.record = if (timing != null) &record else null;
+        var end: sandbox.recording.End = .@"error";
+        defer if (timing != null) record.finish(end);
         const outcome = try sandbox.eval(s.gpa, s.io, code, .{}, host, cancel);
+        end = if (cancel != null and cancel.?.load(.acquire)) .cancelled else if (std.mem.eql(u8, outcome.text, "Error: run timed out")) .timeout else if (outcome.ok) .ok else .@"error";
         errdefer outcome.deinit(s.gpa);
         return .{ .outcome = outcome, .changes = try s.tools.takeChanges(s.gpa, s.arena.allocator()) };
     }

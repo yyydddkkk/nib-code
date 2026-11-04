@@ -325,7 +325,8 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert sum("async agent({" not in r["body"]["instructions"] for r in steps) == 1
         parent_id = delegated[0]["start"]["session_id"]
         child_logs = [p for p in (tmp / "nib/sessions").glob("*.jsonl")
-                      if json.loads(p.read_text().splitlines()[0]).get("parent_session_id") == parent_id]
+                      if not p.name.endswith(".calls.jsonl")
+                      and json.loads(p.read_text().splitlines()[0]).get("parent_session_id") == parent_id]
         assert len(child_logs) == 1
         child_id = child_logs[0].stem
         assert child_id != parent_id

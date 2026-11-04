@@ -32,7 +32,7 @@ class LlmLimits(unittest.TestCase):
         self.assertEqual(max(e["active"] for e in self.starts()), 2, self.observed())
         root_id = events[0]["start"]["session_id"]
         children = [records(path)[0] for path in (config.parent / "sessions").glob("*.jsonl")
-                    if records(path)[0].get("parent_session_id") == root_id]
+                    if not path.name.endswith(".calls.jsonl") and records(path)[0].get("parent_session_id") == root_id]
         self.assertEqual(len(children), 1)
         self.assertIn("2 concurrent/process, 3/Run, 17 KiB", children[0]["messages"][0]["content"])
         self.assertEqual(config.read_text(), "[limits]\nllm_concurrency = 0\n")

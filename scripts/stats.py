@@ -423,6 +423,8 @@ class Timing:
 
 
 def records(path):
+    if path.name.endswith('.calls.jsonl'):
+        return
     try:
         with path.open(encoding='utf-8', errors='replace') as stream:
             for line in stream:
@@ -741,8 +743,8 @@ def main():
     for path in inputs:
         path = path.expanduser()
         if path.is_dir():
-            paths.update(p.resolve() for p in path.glob('*.jsonl') if p.is_file())
-        elif path.is_file():
+            paths.update(p.resolve() for p in path.glob('*.jsonl') if not p.name.endswith('.calls.jsonl') and p.is_file())
+        elif not path.name.endswith('.calls.jsonl') and path.is_file():
             paths.add(path.resolve())
     report = summarize(sorted(paths), args.since, args.cwd.expanduser().resolve() if args.cwd else None, args.group_by)
     print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else text_report(report))

@@ -48,6 +48,7 @@ pub const Log = struct {
     file: std.Io.File,
     offset: u64,
     poisoned: bool = false,
+    steps: usize = 0,
     provider: provider.Id = .chat_completions,
     model: ?[]const u8 = null,
     parent_session_id: ?[]const u8 = null,
@@ -68,7 +69,7 @@ pub const Log = struct {
         var reader = file.reader(io, &.{});
         const data = try reader.interface.allocRemaining(a, .unlimited);
         const restored = try replay(gpa, a, data, history, tokens);
-        var log: Log = .{ .file = file, .offset = data.len, .parent_session_id = restored.parent_session_id, .provider = restored.provider, .model = restored.model };
+        var log: Log = .{ .file = file, .offset = data.len, .steps = restored.steps, .parent_session_id = restored.parent_session_id, .provider = restored.provider, .model = restored.model };
         if (restored.needs_repair) {
             try log.append(io, a, .{ .repair = true });
             try log.file.sync(io);
@@ -101,6 +102,7 @@ pub const Log = struct {
         if (record.from > history.items.len) return error.InvalidSessionLog;
         try history.ensureTotalCapacity(a, record.from + record.messages.len);
         try log.append(io, a, record);
+        if (record.turn_step != null) log.steps += 1;
         apply(history, record);
         tokens.* = record.context_tokens;
         errdefer log.poisoned = true;
@@ -119,12 +121,13 @@ fn apply(history: *std.ArrayList(provider.Message), record: Record) void {
     }
 }
 
-pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { needs_repair: bool, parent_session_id: ?[]const u8, provider: provider.Id, model: ?[]const u8 } {
+pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { steps: usize, needs_repair: bool, parent_session_id: ?[]const u8, provider: provider.Id, model: ?[]const u8 } {
     var parent_session_id: ?[]const u8 = null;
     var id: provider.Id = .chat_completions;
     var model: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, data, '\n');
     var torn = false;
+    var steps: usize = 0;
     while (lines.next()) |line| {
         if (lines.peek() == null) break;
         if (line.len == 0) continue;
@@ -143,6 +146,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
         }
         if (torn) return error.InvalidSessionLog;
         if (r.diagnostic != null) continue;
+        if (r.turn_step != null) steps += 1;
         if (r.from > history.items.len) return error.InvalidSessionLog;
         try history.ensureTotalCapacity(gpa, r.from + r.messages.len);
         apply(history, r);
@@ -150,7 +154,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
         tokens.* = r.context_tokens;
     }
     if (history.items.len == 0) return error.InvalidSessionLog;
-    return .{ .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .provider = id, .model = model };
+    return .{ .steps = steps, .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .provider = id, .model = model };
 }
 
 fn parseRecord(a: std.mem.Allocator, line: []const u8) !Record {
@@ -204,7 +208,7 @@ pub fn list(io: std.Io, a: std.mem.Allocator, directory: []const u8, cwd: []cons
     var found: std.ArrayList(Summary) = .empty;
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".jsonl") or std.mem.endsWith(u8, entry.name, ".calls.jsonl")) continue;
         const file = try dir.openFile(io, entry.name, .{});
         defer file.close(io);
         const stat = try file.stat(io);

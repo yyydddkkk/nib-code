@@ -4,7 +4,8 @@
 
 证据：
 - 先查日志再下结论。本会话日志是 {{log_path}}（JSONL，每行的 messages 是一个完整 Step；role 为 tool 的消息是 Run 的结果）。用 tools.grep 搜索失败信号，例如 `"exit_code":127`、`SyntaxError`、`timed out`、`Error:`、`refused by nib`、`interrupted`，需要时再 read 相关行。上下文被压缩过的话，日志是唯一可靠的来源。
-- 本会话派出的子 agent 的日志在同一目录，首行的 parent_session_id 是 {{session_id}}。
+- 本会话派出的子 agent 的日志在同一目录，只查文件名严格为 `<32位小写十六进制ID>.jsonl` 的主日志，首行的 parent_session_id 是 {{session_id}}。
+- `*.calls.jsonl` 是本地私有工具录制，不得读取、搜索或引用其中内容，也不得运行 `nib replay`；搜索日志时明确限定上述主日志文件，不能对整个目录做内容搜索。
 - 以上文件只读。
 
 按下面的结构回答，用户使用什么语言就用什么语言：

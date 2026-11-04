@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('stats', ROOT / 'scripts/stats.py')
@@ -43,6 +44,28 @@ def synthetic_log(path, turns, **metadata):
 
 
 class StatsTest(unittest.TestCase):
+    def test_calls_sidecar_is_never_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ('a' * 32 + '.jsonl')
+            calls = path.with_suffix('.calls.jsonl')
+            synthetic_log(path, [[None]])
+            synthetic_log(calls, [[None]], private_marker='PRIVATE_CALLS_CONTENT')
+            original_open = Path.open
+
+            def open_main_only(file, *args, **kwargs):
+                self.assertNotEqual(file, calls, 'stats must not open the private sidecar')
+                return original_open(file, *args, **kwargs)
+
+            with patch.object(Path, 'open', open_main_only):
+                self.assertEqual(list(stats.records(calls)), [])
+                report = stats.summarize([path, calls])
+            self.assertEqual(report['overall']['sessions'], 1)
+            self.assertNotIn('PRIVATE_CALLS_CONTENT', json.dumps(report))
+            for inputs in ([directory], [str(path), str(calls)]):
+                output = subprocess.check_output([sys.executable, str(ROOT / 'scripts/stats.py'), *inputs, '--json'])
+                self.assertEqual(json.loads(output)['overall']['sessions'], 1)
+                self.assertNotIn(b'PRIVATE_CALLS_CONTENT', output)
+
     def assertRoundTrips(self, actual, expected):
         self.assertEqual(len(actual["notes"]), 2)
         self.assertEqual({key: value for key, value in actual.items() if key != "notes"}, expected)

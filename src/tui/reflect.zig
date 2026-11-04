@@ -226,6 +226,17 @@ test "file skips an existing title and files new drafts through gh" {
     defer testing.allocator.free(relative);
     const root = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, relative, testing.allocator);
     defer testing.allocator.free(root);
+    const session_id = "0123456789abcdef0123456789abcdef";
+    const marker = "PRIVATE_CALLS_CONTENT_NOT_FOR_REFLECTION";
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = session_id ++ ".calls.jsonl", .data = marker });
+    const log_path = try std.fs.path.join(testing.allocator, &.{ root, session_id ++ ".jsonl" });
+    defer testing.allocator.free(log_path);
+    const request = try prompt(testing.allocator, session_id, log_path, "o/r", "");
+    defer testing.allocator.free(request);
+    try testing.expect(std.mem.indexOf(u8, request, marker) == null);
+    try testing.expect(std.mem.indexOf(u8, request, "只查文件名严格为 `<32位小写十六进制ID>.jsonl`") != null);
+    try testing.expect(std.mem.indexOf(u8, request, "不得运行 `nib replay`") != null);
+    try testing.expect(std.mem.indexOf(u8, request, "不能对整个目录做内容搜索") != null);
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "gh", .data =
         \\#!/bin/sh
         \\if [ "$2" = list ]; then echo '[{"number":7,"title":"Known Bug","url":"https://x/7"}]'; exit 0; fi
@@ -246,6 +257,10 @@ test "file skips an existing title and files new drafts through gh" {
     const body = try tmp.dir.readFileAlloc(testing.io, "body", testing.allocator, .limited(1024));
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("body\n\n---\nfooter\n", body);
+    try testing.expect(std.mem.indexOf(u8, body, marker) == null);
+    const args = try tmp.dir.readFileAlloc(testing.io, "args", testing.allocator, .limited(1024));
+    defer testing.allocator.free(args);
+    try testing.expect(std.mem.indexOf(u8, args, marker) == null);
 }
 
 test "sanitize replaces private paths and refuses credential-like drafts" {

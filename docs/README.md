@@ -53,6 +53,7 @@ nib 面向越来越强的模型：给模型事实和能力，不替它做判断�
   - [0013 tools.llm：轻量的单步 map 单元](adr/0013-llm-functions.md)
 - [ask-json.md](ask-json.md)：`ask --json` 的 NDJSON 事件格式、进度与用量
 - [session-log.md](session-log.md)：会话日志、恢复/取消、计时字段与统计口径
+- [replay.md](replay.md)：本地私有工具录制、离线 Run 重放与一致性报告
 - [reflect.md](reflect.md)：只读反思、回答保存与 issue 自动发布
 - [config.md](config.md)：NIB_HOME、配置文件、环境变量、覆盖优先级与 effort 持久化
 - [codex.md](codex.md)：使用本机 Codex 登录、配置与凭证边界

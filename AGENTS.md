@@ -4,7 +4,7 @@
 
 ## 常用命令
 
-- 构建：`zig build`；测试：`zig build test --summary all`；端到端（本地 mock，无真实 key）：`zig build` 后 `python3 tests/test_session.py`、`python3 tests/test_agent.py`、`python3 tests/test_codex.py`、`python3 tests/test_llm.py`、`python3 tests/test_stats.py`、`python3 tests/test_effort.py`、`python3 tests/test_interjections.py`、`python3 tests/test_limits.py`
+- 构建：`zig build`；测试：`zig build test --summary all`；端到端（本地 mock，无真实 key）：`zig build` 后 `python3 tests/test_session.py`、`python3 tests/test_agent.py`、`python3 tests/test_codex.py`、`python3 tests/test_llm.py`、`python3 tests/test_stats.py`、`python3 tests/test_effort.py`、`python3 tests/test_interjections.py`、`python3 tests/test_limits.py`、`python3 tests/test_replay.py`
 - 安装到 `~/.local/bin/nib`：`zig build -Doptimize=ReleaseFast --prefix ~/.local`；版本号在 `build.zig.zon`，`nib --version` 查看。
 - 运行：`./zig-out/bin/nib`（TUI）、`nib ask '<prompt>'`、`nib js '<code>'`；TUI 用 `/compact` 手动压缩上下文。
 - 恢复：`nib -c` / `nib --continue`；`nib --resume <32位小写十六进制ID>`。`ask` 同样支持，选项可放在 prompt 前后。

@@ -296,7 +296,7 @@ class LlmTests:
         self.assertEqual(probe["agent"], "undefined")
         root_id = events[0]["start"]["session_id"]
         children = [path for path in (Path(self.env["NIB_HOME"]) / "sessions").glob("*.jsonl")
-                    if records(path)[0].get("parent_session_id") == root_id]
+                    if not path.name.endswith(".calls.jsonl") and records(path)[0].get("parent_session_id") == root_id]
         self.assertEqual(len(children), 1)
         self.assert_tool_docs(children[0].stem, child=True)
         self.assert_result(probe["result"], "reply:" + INPUT)

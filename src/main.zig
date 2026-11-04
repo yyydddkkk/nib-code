@@ -34,6 +34,8 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         try stdout.print("nib {s}\n", .{@import("build_options").version});
         return stdout.flush();
     }
+    if (args.len > 1 and std.mem.eql(u8, args[1], "replay"))
+        return @import("session/replay.zig").run(init, args[2..], stdout);
     const js = args.len >= 3 and std.mem.eql(u8, args[1], "js");
 
     var options: Session.Options = .{
@@ -205,4 +207,5 @@ test {
     _ = @import("tui/view.zig");
     _ = @import("tui/selection.zig");
     _ = @import("session.zig");
+    _ = @import("session/replay.zig");
 }

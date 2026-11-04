@@ -126,7 +126,7 @@ class Terminal:
 
 
 def history(home):
-    paths = list((home / "sessions").glob("*.jsonl"))
+    paths = [path for path in (home / "sessions").glob("*.jsonl") if not path.name.endswith(".calls.jsonl")]
     if not paths:
         return []
     messages = []

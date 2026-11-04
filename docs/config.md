@@ -6,7 +6,7 @@
 ~/.nib/
   AGENTS.md       全局指令
   config.toml     非秘密运行配置，可不创建
-  sessions/       <32位小写十六进制ID>.jsonl 会话日志
+  sessions/       <32位小写十六进制ID>.jsonl 会话日志；同 ID 的 .calls.jsonl 是私有工具录制
   reflections.md  /reflect 正常结束后的回答与 issue 发布结果
 ```
 
@@ -89,6 +89,7 @@ DeepSeek 使用 Chat Completions：设置 `NIB_PROVIDER=chat_completions`，配 
 | `NIB_API_KEY` / `DEEPSEEK_API_KEY` | Chat Completions 的凭证，仅从环境读取 |
 | `NIB_PATCHES_OFF` | 关闭提示词中的模型补丁：`all` 或逗号分隔的 id，见 [compromises.md](compromises.md) |
 | `NIB_ISSUE_REPO` | `/reflect` 自动发布的目标仓库或 `off`，见 [reflect.md](reflect.md) |
+| `NIB_RECORD` | 默认录制工具调用到本地 `.calls.jsonl`，`off` 关闭；文件权限 `0600`，仅 `nib replay` 读取，见 [replay.md](replay.md) |
 
 ## 逐 Step effort 调度
 

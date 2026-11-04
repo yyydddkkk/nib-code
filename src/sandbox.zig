@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("qjs");
 const console = @import("sandbox/console.zig");
+pub const recording = @import("sandbox/record.zig");
 const run_timing = @import("sandbox/timing.zig");
 pub const RunTiming = run_timing.Run;
 
@@ -31,6 +32,8 @@ pub const Host = struct {
     admit: ?*const fn (ctx: *anyopaque, gpa: std.mem.Allocator, name: []const u8) anyerror!?[]u8 = null,
     /// Borrowed until eval returns; inspect entries or change started/run_index only between evals.
     timing: ?*RunTiming = null,
+    record: ?*recording.Run = null,
+    replay: ?*recording.Playback = null,
 };
 
 pub const LogEntry = console.Entry;
@@ -68,10 +71,13 @@ const State = struct {
     completed: std.Io.Condition = .init,
     ready: ?*Call = null,
     ready_tail: ?*Call = null,
+    created: usize = 0,
 
     const Call = struct {
         state: *State,
         index: usize,
+        creation_index: usize,
+        replay_seq: ?usize = null,
         name: []u8,
         args: []u8,
         settle: [2]c.JSValue,
@@ -135,10 +141,13 @@ const State = struct {
         var next: usize = 0;
         while (true) {
             if (st.host) |h| if (h.poll) |poll| try poll(h.ctx);
-            if (active == 0 and next == st.calls.items.len) {
+            if (active == 0 and next == st.calls.items.len and for (st.calls.items) |item| {
+                if (item != null) break false;
+            } else true) {
                 st.calls.clearRetainingCapacity();
                 next = 0;
             }
+            if (st.host) |h| if (h.replay) |p| if (p.divergence != null) return;
             if (isInterrupted(st) or c.JS_PromiseState(ctx, promise) == c.JS_PROMISE_REJECTED) {
                 st.stop();
                 return;
@@ -151,17 +160,36 @@ const State = struct {
             if (n > 0) continue;
             st.mutex.lockUncancelable(st.io);
             var ready = st.ready;
-            st.ready = null;
-            st.ready_tail = null;
+            if (ready) |call| {
+                st.ready = call.next;
+                call.next = null;
+                if (st.ready == null) st.ready_tail = null;
+            }
             st.mutex.unlock(st.io);
-            while (ready) |call| {
-                ready = call.next;
-                call.thread.?.join();
-                call.thread = null;
-                active -= 1;
+            if (st.host) |h| if (h.replay) |p| {
+                for (st.calls.items) |item| if (item) |call| {
+                    if (call.replay_seq == p.delivered) {
+                        ready = call;
+                        p.delivered += 1;
+                        break;
+                    }
+                };
+                if (ready == null) for (st.calls.items) |item| if (item) |call| {
+                    p.divergence = .{ .index = call.creation_index, .recorded = null, .actual = .{ .name = try p.a.dupe(u8, call.name), .args = try std.json.parseFromSliceLeaky(std.json.Value, p.a, call.args, .{ .allocate = .alloc_always }) } };
+                    return;
+                };
+            };
+            // Draining JS jobs after each settlement makes seq sufficient to replay continuations.
+            if (ready) |call| {
+                if (call.thread) |thread| {
+                    thread.join();
+                    call.thread = null;
+                    active -= 1;
+                }
                 st.beginJs();
                 defer st.endJs();
                 const result = call.result.?;
+                if (st.host.?.record) |record| record.capture(call.creation_index, call.name, call.args, result);
                 const value = switch (result) {
                     .ok => |json| blk: {
                         // QuickJS requires buf[len] == 0 even with an explicit length.
@@ -185,7 +213,8 @@ const State = struct {
             }
             if (c.JS_IsJobPending(rt)) continue;
             while (next < st.calls.items.len and active < 8) : (next += 1) {
-                const call = st.calls.items[next].?;
+                const call = st.calls.items[next] orelse continue;
+                if (st.host.?.replay != null) continue;
                 const timing = st.host.?.timing;
                 if (timing) |t| call.timing_index = t.reserve(call.name);
                 call.thread = std.Thread.spawn(.{}, Call.work, .{call}) catch |err| {
@@ -194,7 +223,15 @@ const State = struct {
                 };
                 active += 1;
             }
-            if (active == 0) return;
+            if (active == 0) {
+                if (st.host) |h| if (h.replay != null) {
+                    const pending = for (st.calls.items) |item| {
+                        if (item != null) break true;
+                    } else false;
+                    if (pending) continue;
+                };
+                return;
+            }
             st.mutex.lockUncancelable(st.io);
             if (st.ready == null) st.completed.waitTimeout(st.io, &st.mutex, .{ .duration = .{ .raw = .fromMilliseconds(20), .clock = .awake } }) catch {};
             st.mutex.unlock(st.io);
@@ -261,6 +298,27 @@ pub fn eval(
         if (c.JS_IsException(v)) return error.PreludeFailed;
     }
 
+    if (host) |h| if (h.replay) |p| {
+        const setup = try std.fmt.allocPrint(gpa,
+            \\(() => {{
+            \\ const NativeDate = Date, mark = globalThis.__replayUse;
+            \\ delete globalThis.__replayUse;
+            \\ globalThis.Date = new Proxy(NativeDate, {{
+            \\   apply() {{ mark(0); return new NativeDate({d}).toString(); }},
+            \\   construct(target, args, receiver) {{ if (!args.length) {{ mark(0); args = [{d}]; }} return Reflect.construct(target, args, receiver); }},
+            \\   get(target, key) {{ if (key === 'now') return () => {{ mark(0); return {d}; }}; return Reflect.get(target, key); }}
+            \\ }});
+            \\ let seed = 1;
+            \\ Math.random = () => {{ mark(1); seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; }};
+            \\}})();
+        , .{ p.start_ms_epoch, p.start_ms_epoch, p.start_ms_epoch });
+        defer gpa.free(setup);
+        const source = try gpa.dupeSentinel(u8, setup, 0);
+        defer gpa.free(source);
+        const value = c.JS_Eval(ctx, source.ptr, setup.len, "<replay>", c.JS_EVAL_TYPE_GLOBAL);
+        defer c.JS_FreeValue(ctx, value);
+        if (c.JS_IsException(value)) return error.PreludeFailed;
+    };
     const src = try gpa.dupeSentinel(u8, code, 0);
     defer gpa.free(src);
 
@@ -303,7 +361,7 @@ pub fn eval(
     if (isInterrupted(&st)) {
         ok = false;
         gpa.free(text);
-        text = try gpa.dupe(u8, if (st.cancel != null and st.cancel.?.load(.acquire)) "Error: run canceled" else "Error: run timed out");
+        text = try gpa.dupe(u8, if (host != null and host.?.replay != null and host.?.replay.?.divergence != null) "Error: replay diverged" else if (st.cancel != null and st.cancel.?.load(.acquire)) "Error: run canceled" else "Error: run timed out");
     }
     const captured = try st.logs.snapshot(gpa);
     return .{
@@ -321,6 +379,9 @@ pub fn eval(
 fn install(gpa: std.mem.Allocator, ctx: *c.JSContext, host: ?Host) !void {
     const global = c.JS_GetGlobalObject(ctx);
     defer c.JS_FreeValue(ctx, global);
+    if (host) |h| if (h.replay != null) {
+        _ = c.JS_SetPropertyStr(ctx, global, "__replayUse", c.JS_NewCFunction2(ctx, nativeReplayUse, "__replayUse", 1, c.JS_CFUNC_generic, 0));
+    };
     _ = c.JS_SetPropertyStr(ctx, global, "__log", c.JS_NewCFunction2(ctx, nativeLog, "__log", 1, c.JS_CFUNC_generic, 0));
     _ = c.JS_SetPropertyStr(ctx, global, "__host", c.JS_NewCFunction2(ctx, nativeHost, "__host", 2, c.JS_CFUNC_generic, 0));
     const names = try std.json.Stringify.valueAlloc(gpa, if (host) |h| h.names else &.{}, .{});
@@ -333,6 +394,7 @@ fn state(ctx: ?*c.JSContext) *State {
 }
 
 fn isInterrupted(st: *State) bool {
+    if (st.host) |h| if (h.replay) |p| if (p.divergence != null) return true;
     if (st.cancel) |flag| if (flag.load(.acquire)) return true;
     const elapsed = if (st.js_started) |started| started.durationTo(.now(st.io, .awake)).raw.toNanoseconds() else 0;
     return elapsed >= st.js_remaining_ns;
@@ -351,6 +413,14 @@ fn nativeLog(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue)
     st.logs.append(st.gpa, p[0..len]) catch {
         st.oom = true;
     };
+    return js_undefined;
+}
+
+fn nativeReplayUse(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const p = state(ctx).host.?.replay.?;
+    var kind: i32 = 0;
+    if (argc > 0) _ = c.JS_ToInt32(ctx, &kind, argv[0]);
+    if (kind == 0) p.uses_time = true else p.uses_random = true;
     return js_undefined;
 }
 
@@ -373,24 +443,25 @@ fn enqueue(st: *State, ctx: *c.JSContext, argc: c_int, argv: [*c]c.JSValue) !c.J
         c.JS_FreeValue(ctx, promise);
         for (settle) |v| c.JS_FreeValue(ctx, v);
     }
-    if (st.host.?.admit) |admit| {
-        if (try admit(st.host.?.ctx, st.gpa, name)) |message| {
-            defer st.gpa.free(message);
-            const reason = c.JS_NewError(ctx);
-            _ = c.JS_SetPropertyStr(ctx, reason, "message", c.JS_NewStringLen(ctx, message.ptr, message.len));
-            defer c.JS_FreeValue(ctx, reason);
-            var values = [_]c.JSValue{reason};
-            const result = c.JS_Call(ctx, settle[1], js_undefined, 1, &values);
-            c.JS_FreeValue(ctx, result);
-            for (settle) |v| c.JS_FreeValue(ctx, v);
-            st.gpa.free(name);
-            st.gpa.free(args);
-            st.gpa.destroy(call);
-            return promise;
-        }
+    call.* = .{ .state = st, .index = st.calls.items.len, .creation_index = st.created, .name = name, .args = args, .settle = settle };
+    if (st.host.?.replay) |p| {
+        const replayed = try p.dispatch(st.gpa, st.created, name, args);
+        call.result = replayed.result;
+        call.replay_seq = replayed.seq;
+    } else if (st.host.?.admit) |admit| {
+        if (try admit(st.host.?.ctx, st.gpa, name)) |message| call.result = .{ .err = message };
     }
-    call.* = .{ .state = st, .index = st.calls.items.len, .name = name, .args = args, .settle = settle };
+    errdefer if (call.result) |result| switch (result) {
+        inline else => |bytes| st.gpa.free(bytes),
+    };
     try st.calls.append(st.gpa, call);
+    st.created += 1;
+    if (call.result != null and st.host.?.replay == null) {
+        st.mutex.lockUncancelable(st.io);
+        defer st.mutex.unlock(st.io);
+        if (st.ready_tail) |tail| tail.next = call else st.ready = call;
+        st.ready_tail = call;
+    }
     return promise;
 }
 
@@ -623,4 +694,106 @@ test "undispatched tools do not produce native timings" {
     defer result.deinit(testing.allocator);
     try testing.expect(!result.ok);
     try testing.expectEqual(@as(usize, 0), timing.count);
+}
+
+test "recorded completion order replays races, sequential indices and rejection" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/s.calls.jsonl", .{tmp.sub_path});
+    var recorder: recording.Recorder = .{ .gpa = testing.allocator, .io = testing.io, .path = path };
+    defer recorder.deinit();
+    var record = recorder.begin(1, 0);
+    const Race = struct {
+        timing: TimingHost = .{},
+        fn call(ctx: *anyopaque, gpa: std.mem.Allocator, name: []const u8, args: []const u8) ToolResult {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, name, "bash")) return .{ .err = gpa.dupe(u8, "nope") catch unreachable };
+            return TimingHost.call(&self.timing, gpa, name, args);
+        }
+    };
+    var race: Race = .{};
+    const code = "const a = tools.read({v: 1}), b = tools.fetch({v: 2}); console.log(await Promise.race([a.then(() => 'read'), b.then(() => 'fetch')])); await Promise.all([a, b]); await tools.bash().catch(e => e.message)";
+    const original = try run(code, .{}, .{ .ctx = &race, .names = &.{ "read", "fetch", "bash" }, .call = Race.call, .record = &record });
+    defer original.deinit(testing.allocator);
+    try testing.expectEqualStrings("fetch\n", original.logs);
+    try testing.expectEqualStrings("\"bash: nope\"", original.text);
+    var rows = std.mem.tokenizeScalar(u8, record.bytes.items, '\n');
+    var calls: std.ArrayList(recording.RecordedCall) = .empty;
+    while (rows.next()) |line| {
+        const entry = try std.json.parseFromSliceLeaky(recording.Entry, a, line, .{ .allocate = .alloc_always });
+        try calls.append(a, .{ .index = entry.index.?, .seq = entry.seq.?, .name = entry.name.?, .args = entry.args.?, .ok = entry.ok.?, .text = if (entry.ok.?) (if (entry.result.? == .string) entry.result.?.string else "{\"exit_code\":7}") else entry.@"error".? });
+    }
+    record.finish(.ok);
+    try testing.expectEqual(@as(usize, 3), calls.items.len);
+    try testing.expectEqual(@as(usize, 1), calls.items[0].index);
+    try testing.expectEqual(@as(usize, 0), calls.items[1].index);
+    try testing.expectEqual(@as(usize, 2), calls.items[2].index);
+    for (calls.items, 0..) |call, seq| try testing.expectEqual(seq, call.seq);
+    var replay: recording.Playback = .{ .a = a, .calls = calls.items, .start_ms_epoch = record.start_ms_epoch };
+    const host: Host = .{ .ctx = &replay, .names = &.{ "read", "fetch", "bash" }, .call = recording.Playback.unreachableCall, .replay = &replay };
+    const result = try run(code, .{}, host);
+    defer result.deinit(testing.allocator);
+    replay.finish();
+    try testing.expect(replay.divergence == null);
+    try testing.expectEqualStrings(original.logs, result.logs);
+    try testing.expectEqualStrings(original.text, result.text);
+
+    replay = .{ .a = a, .calls = calls.items, .start_ms_epoch = 0, .script_mode = true };
+    const changed = try run("await tools.bash().catch(e => console.log(e.message)); await tools.read({v: 1}); await tools.fetch({v: 9}).catch(e => e.message)", .{}, host);
+    defer changed.deinit(testing.allocator);
+    try testing.expect(changed.ok);
+    try testing.expectEqualStrings("bash: nope\n", changed.logs);
+    try testing.expectEqualStrings("\"fetch: not recorded: fetch\"", changed.text);
+
+    replay = .{ .a = a, .calls = calls.items, .start_ms_epoch = 0 };
+    const divergent = try run("tools.read({v: 99}); for (;;) {}", .{ .timeout_ms = 50 }, host);
+    defer divergent.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), replay.divergence.?.index);
+    try testing.expectEqual(@as(i64, 99), replay.divergence.?.actual.?.args.object.get("v").?.integer);
+}
+
+test "replay time and random are fixed and usage flags reflect execution" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var replay: recording.Playback = .{ .a = arena.allocator(), .calls = &.{}, .start_ms_epoch = 123456789 };
+    const host: Host = .{ .ctx = &replay, .names = &.{}, .call = recording.Playback.unreachableCall, .replay = &replay };
+    const code = "[Date.now(), +new Date(), Math.random(), Math.random()]";
+    const first = try run(code, .{}, host);
+    defer first.deinit(testing.allocator);
+    try testing.expect(first.ok);
+    try testing.expect(replay.uses_time and replay.uses_random);
+    try testing.expect(std.mem.startsWith(u8, first.text, "[123456789,123456789,"));
+    const second = try run(code, .{}, host);
+    defer second.deinit(testing.allocator);
+    try testing.expectEqualStrings(first.text, second.text);
+    replay.uses_time = false;
+    replay.uses_random = false;
+    const unused = try run("false && Date.now(); +new Date(0)", .{}, host);
+    defer unused.deinit(testing.allocator);
+    try testing.expect(unused.ok);
+    try testing.expect(!replay.uses_time and !replay.uses_random);
+}
+
+test "admission rejection uses the recording settlement hook" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/s.calls.jsonl", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    var recorder: recording.Recorder = .{ .gpa = testing.allocator, .io = testing.io, .path = path };
+    defer recorder.deinit();
+    var record = recorder.begin(1, 0);
+    const Admission = struct {
+        fn reject(_: *anyopaque, gpa: std.mem.Allocator, _: []const u8) !?[]u8 {
+            return try gpa.dupe(u8, "limit");
+        }
+    };
+    var dummy: u8 = 0;
+    const result = try run("await tools.llm().catch(e => e.message)", .{}, .{ .ctx = &dummy, .names = &.{"llm"}, .call = recording.Playback.unreachableCall, .admit = Admission.reject, .record = &record });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqualStrings("\"llm: limit\"", result.text);
+    try testing.expect(std.mem.indexOf(u8, record.bytes.items, "\"error\":\"limit\"") != null);
+    record.finish(.ok);
 }
