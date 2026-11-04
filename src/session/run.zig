@@ -28,6 +28,11 @@ pub fn run(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool)
 }
 
 fn runTimed(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool), timing: ?*sandbox.RunTiming) !Ran {
+    s.tools.race_branches_started.store(0, .monotonic);
+    defer {
+        const branches = s.tools.race_branches_started.swap(0, .monotonic);
+        if (timing) |t| t.race_branches += branches;
+    }
     defer s.usage.add(s.tools.takeUsage());
     defer s.tools.progress.drain(s.io) catch {};
     if (!s.tools.background.anyPending(s.io)) s.tools.progress.clear(s.gpa);
@@ -164,4 +169,55 @@ test "execute emits per-Run actual tool summaries including empty and overflow" 
     }
     try t.expectEqual(@as(usize, 3), observed.starts);
     try t.expectEqual(@as(usize, 3), observed.ends);
+}
+
+test "runTimed resets and transfers dispatched race branches on success and failure" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    const cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock" };
+    var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root });
+    defer session.deinit();
+    const Dispatch = struct {
+        tools: *@import("../tools.zig").Tools,
+        branches: u64 = 3,
+        sent: bool = false,
+
+        fn emit(ctx: *anyopaque, _: @import("events.zig").Progress) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.sent) return;
+            try std.testing.expectEqual(@as(u64, 0), self.tools.race_branches_started.load(.monotonic));
+            _ = self.tools.race_branches_started.fetchAdd(self.branches, .monotonic);
+            self.sent = true;
+        }
+    };
+    session.tools.background.inbox = &session.inbox;
+    session.tools.background.log = &session.log;
+    var dispatch: Dispatch = .{ .tools = &session.tools };
+    session.tools.progress.sink = .{ .ctx = &dispatch, .emit = Dispatch.emit };
+    var timing: sandbox.RunTiming = .init(t.io, .now(t.io, .awake));
+    for ([_]bool{ false, true }) |fail| {
+        dispatch.sent = false;
+        session.tools.race_branches_started.store(99, .monotonic);
+        const code = if (fail) "await tools.stop(await tools.bash({command: 'true', background: true})); throw new Error('failed Run');" else "await tools.stop(await tools.bash({command: 'true', background: true}));";
+        const ran = try runTimed(&session, code, null, &timing);
+        defer ran.outcome.deinit(t.allocator);
+        try t.expectEqual(!fail, ran.outcome.ok);
+        try t.expect(dispatch.sent);
+        try t.expectEqual(@as(u64, if (fail) 6 else 3), timing.race_branches);
+        try t.expectEqual(@as(u64, 0), session.tools.race_branches_started.load(.monotonic));
+    }
+    const empty = try runTimed(&session, "0", null, &timing);
+    defer empty.outcome.deinit(t.allocator);
+    try t.expectEqual(@as(u64, 6), timing.race_branches);
+    dispatch.sent = false;
+    const untimed = try runTimed(&session, "await tools.stop(await tools.bash({command: 'true', background: true}));", null, null);
+    defer untimed.outcome.deinit(t.allocator);
+    try t.expect(dispatch.sent);
+    try t.expectEqual(@as(u64, 0), session.tools.race_branches_started.load(.monotonic));
 }

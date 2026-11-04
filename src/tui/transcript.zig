@@ -1207,3 +1207,20 @@ test "two coalesced background invocations in one drain register before ID only 
     try testing.expectEqualStrings("  └─ a1 second · failed · step 0", t.entries.items[0].agent_tree.rows.items[0].text);
     try testing.expect(!t.entries.items[0].agents.items[0].background);
 }
+
+test "race progress remains won and stopped after its Run settles" {
+    const gpa = testing.allocator;
+    var t: Transcript = .{};
+    defer t.deinit(gpa);
+    try t.startRun(gpa, "await tools.race({branches: []})");
+    try t.progress(gpa, .{ .id = "a1", .run = 1, .invocation = 1, .prompt = "winner", .race = true, .fork = true, .state = .won });
+    try t.progress(gpa, .{ .id = "a2", .run = 1, .invocation = 2, .prompt = "loser", .race = true, .fork = true, .state = .stopped });
+    const e = &t.entries.items[0];
+    try testing.expect(std.mem.indexOf(u8, e.label.items, "race ×2") != null);
+    try testing.expect(std.mem.indexOf(u8, e.label.items, "1 won, 1 stopped") != null);
+    try t.endRun(gpa, true, "ok", 10, .{});
+    try testing.expectEqual(.won, e.agents.items[0].state);
+    try testing.expectEqual(.stopped, e.agents.items[1].state);
+    try testing.expect(std.mem.indexOf(u8, e.agent_tree.rows.items[0].text, "a1 race winner · won") != null);
+    try testing.expect(std.mem.indexOf(u8, e.agent_tree.rows.items[1].text, "a2 race loser · stopped") != null);
+}

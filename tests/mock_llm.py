@@ -80,7 +80,11 @@ class H(http.server.BaseHTTPRequestHandler):
             time.sleep(.1)
         compacted = any(m.get('content','').startswith('Earlier session summary:') for m in msgs)
         def prompt_tokens(default):
-            return sum(len(m.get('content') or '') for m in msgs)//3 if compacted else int(os.environ.get('MOCK_PROMPT_TOKENS',default))
+            if compacted:
+                return sum(len(m.get('content') or '') for m in msgs)//3
+            if lastuser in ('one', 'two', 'three', 'json compact'):
+                return 6500
+            return int(os.environ.get('MOCK_PROMPT_TOKENS', default))
         if summary:
             ev({'choices':[{'delta':{'content':'Earlier work: ran bash successfully. Continue the user task.'}}], 'usage':{'prompt_tokens':100,'completion_tokens':15}})
         elif last['role']=='user' and lastuser == 'child probe':

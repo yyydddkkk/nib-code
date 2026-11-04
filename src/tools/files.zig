@@ -6,13 +6,59 @@ const fail = tools.fail;
 const atomic_file = @import("atomic_file.zig");
 const file_state = @import("file_state.zig");
 
+pub fn normalizedPath(t: *Tools, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const mapped = if (t.race_paths) |race| try race.mapPath(gpa, path) else null;
+    defer if (mapped) |p| gpa.free(p);
+    return tools.normalizedPath(t.io, gpa, mapped orelse path);
+}
+
+pub fn importForkVersions(t: *Tools, gpa: std.mem.Allocator, versions: []const file_state.Observation) !void {
+    const race = t.race_paths orelse return t.file_state.importVersions(t.io, gpa, versions);
+    for (versions) |entry| {
+        const mapped = try race.mapPath(gpa, entry.path) orelse {
+            try t.file_state.importVersions(t.io, gpa, &.{entry});
+            continue;
+        };
+        defer gpa.free(mapped);
+        const path = try tools.normalizedPath(t.io, gpa, mapped);
+        defer gpa.free(path);
+        const parent = std.Io.Dir.cwd().openFile(t.io, entry.path, .{}) catch return error.StaleRaceFileObservation;
+        defer parent.close(t.io);
+        const branch = std.Io.Dir.cwd().openFile(t.io, path, .{}) catch return error.StaleRaceFileObservation;
+        defer branch.close(t.io);
+        const before = try parent.stat(t.io);
+        const baseline = try branch.stat(t.io);
+        if (!matchesVersion(entry.version, before) or baseline.size != before.size) return error.StaleRaceFileObservation;
+        var parent_reader = parent.reader(t.io, &.{});
+        var branch_reader = branch.reader(t.io, &.{});
+        var parent_bytes: [8192]u8 = undefined;
+        var branch_bytes: [8192]u8 = undefined;
+        while (true) {
+            if (t.cancel.load(.acquire)) return error.Canceled;
+            const n = try parent_reader.interface.readSliceShort(&parent_bytes);
+            const m = try branch_reader.interface.readSliceShort(&branch_bytes);
+            if (!std.mem.eql(u8, parent_bytes[0..n], branch_bytes[0..m])) return error.StaleRaceFileObservation;
+            if (n == 0) break;
+        }
+        const parent_after = std.Io.Dir.cwd().statFile(t.io, entry.path, .{}) catch return error.StaleRaceFileObservation;
+        const branch_after = std.Io.Dir.cwd().statFile(t.io, path, .{}) catch return error.StaleRaceFileObservation;
+        if (!matchesVersion(entry.version, parent_after) or !matchesVersion(.{ .inode = baseline.inode, .size = baseline.size, .mtime = baseline.mtime.nanoseconds }, branch_after))
+            return error.StaleRaceFileObservation;
+        try t.file_state.remember(t.io, gpa, path, baseline);
+    }
+}
+
+fn matchesVersion(version: file_state.State.Version, stat: std.Io.File.Stat) bool {
+    return version.inode == stat.inode and version.size == stat.size and version.mtime == stat.mtime.nanoseconds;
+}
+
 pub fn read(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
     const A = struct { path: []const u8, offset: usize = 1, limit: usize = 2000 };
     const a = std.json.parseFromSlice(A, gpa, args, .{ .ignore_unknown_fields = true }) catch
         return fail(gpa, "expected {{ path: string, offset?: number, limit?: number }}", .{});
     defer a.deinit();
 
-    const path = try tools.normalizedPath(t.io, gpa, a.value.path);
+    const path = try normalizedPath(t, gpa, a.value.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     const lock = try file_state.lock(t, gpa, path);
@@ -49,7 +95,7 @@ pub fn edit(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         return fail(gpa, "expected {{ path: string, old_text: string, new_text: string, all?: boolean }}", .{});
     defer a.deinit();
     const v = a.value;
-    const path = try tools.normalizedPath(t.io, gpa, v.path);
+    const path = try normalizedPath(t, gpa, v.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     const lock = try file_state.lock(t, gpa, path);
@@ -82,7 +128,7 @@ pub fn write(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
         return fail(gpa, "expected {{ path: string, content: string }}", .{});
     defer a.deinit();
     const v = a.value;
-    const path = try tools.normalizedPath(t.io, gpa, v.path);
+    const path = try normalizedPath(t, gpa, v.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     const lock = try file_state.lock(t, gpa, path);
@@ -499,4 +545,84 @@ test "file observations are independent per session and follow aliases" {
     defer freeResult(rejected);
     try testing.expect(rejected == .err);
     try f.content("other session");
+}
+
+test "race file tools map parent paths and rebase inherited write observations" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "parent");
+    try tmp.dir.createDirPath(testing.io, "branch");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "parent/f", .data = "parent baseline" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "branch/f", .data = "parent baseline" });
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const parent_root = try std.fs.path.join(testing.allocator, &.{ root, "parent" });
+    defer testing.allocator.free(parent_root);
+    const branch_root = try std.fs.path.join(testing.allocator, &.{ root, "branch" });
+    defer testing.allocator.free(branch_root);
+    const parent_path = try std.fs.path.join(testing.allocator, &.{ parent_root, "f" });
+    defer testing.allocator.free(parent_path);
+    const parent_stat = try tmp.dir.statFile(testing.io, "parent/f", .{});
+    const branch_stat = try tmp.dir.statFile(testing.io, "branch/f", .{});
+    try testing.expect(parent_stat.inode != branch_stat.inode);
+    var parent: file_state.State = .{};
+    defer parent.deinit(testing.allocator);
+    try parent.remember(testing.io, testing.allocator, parent_path, parent_stat);
+    const inherited = try parent.exportVersions(testing.io, testing.allocator);
+    defer file_state.freeVersions(testing.allocator, inherited);
+    var t: Tools = .{ .io = testing.io, .home = root, .race_paths = .{ .parent_root = parent_root, .worktree_root = branch_root } };
+    defer t.file_state.deinit(testing.allocator);
+    try importForkVersions(&t, testing.allocator, inherited);
+    const args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .path = parent_path, .content = "branch write" }, .{});
+    defer testing.allocator.free(args);
+    const written = Tools.call(&t, testing.allocator, "write", args);
+    defer freeResult(written);
+    try testing.expectEqualStrings("{\"bytes\":12}", written.ok);
+    const edit_args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .path = parent_path, .old_text = "write", .new_text = "edit" }, .{});
+    defer testing.allocator.free(edit_args);
+    const edited = Tools.call(&t, testing.allocator, "edit", edit_args);
+    defer freeResult(edited);
+    try testing.expectEqualStrings("{\"replaced\":1}", edited.ok);
+    const read_args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .path = parent_path }, .{});
+    defer testing.allocator.free(read_args);
+    const read_back = Tools.call(&t, testing.allocator, "read", read_args);
+    defer freeResult(read_back);
+    try testing.expectEqualStrings("{\"text\":\"branch edit\",\"next_offset\":null}", read_back.ok);
+    const original = try tmp.dir.readFileAlloc(testing.io, "parent/f", testing.allocator, .limited(100));
+    defer testing.allocator.free(original);
+    try testing.expectEqualStrings("parent baseline", original);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "branch/f", .data = "external branch change" });
+    const stale_write = Tools.call(&t, testing.allocator, "write", args);
+    defer freeResult(stale_write);
+    try testing.expect(std.mem.indexOf(u8, stale_write.err, "read it again") != null);
+    const fresh_read = Tools.call(&t, testing.allocator, "read", read_args);
+    defer freeResult(fresh_read);
+    const fresh_write = Tools.call(&t, testing.allocator, "write", args);
+    defer freeResult(fresh_write);
+    try testing.expectEqualStrings("{\"bytes\":12}", fresh_write.ok);
+}
+
+test "race file observations reject stale parent reads and mismatched snapshots" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "parent");
+    try tmp.dir.createDirPath(testing.io, "branch");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "parent/f", .data = "read" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "branch/f", .data = "diff" });
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const parent_root = try std.fs.path.join(testing.allocator, &.{ root, "parent" });
+    defer testing.allocator.free(parent_root);
+    const branch_root = try std.fs.path.join(testing.allocator, &.{ root, "branch" });
+    defer testing.allocator.free(branch_root);
+    const path = try std.fs.path.join(testing.allocator, &.{ parent_root, "f" });
+    defer testing.allocator.free(path);
+    const stat = try tmp.dir.statFile(testing.io, "parent/f", .{});
+    const observations = [_]file_state.Observation{.{ .path = path, .version = .{ .inode = stat.inode, .size = stat.size, .mtime = stat.mtime.nanoseconds } }};
+    var t: Tools = .{ .io = testing.io, .home = root, .race_paths = .{ .parent_root = parent_root, .worktree_root = branch_root } };
+    defer t.file_state.deinit(testing.allocator);
+    try testing.expectError(error.StaleRaceFileObservation, importForkVersions(&t, testing.allocator, &observations));
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "branch/f", .data = "read" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "parent/f", .data = "changed since read" });
+    try testing.expectError(error.StaleRaceFileObservation, importForkVersions(&t, testing.allocator, &observations));
 }

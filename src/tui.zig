@@ -617,7 +617,7 @@ test "turn_end forwards by value and defers bills until terminal content" {
     defer app.transcript.deinit(t.allocator);
     app.pending_bill = null;
     inline for (.{ .completed, .canceled, .failed }) |status_value| {
-        const summary: TurnSummary = .{ .status = status_value, .steps = 2, .timing = .{ .wall_ms = 1000 } };
+        const summary: TurnSummary = .{ .status = status_value, .steps = 2, .timing = .{ .wall_ms = 1000, .race_branches = 5 } };
         try app.transcript.add(t.allocator, .assistant, "answer");
         const before = app.transcript.entries.items.len;
         try Turn.emit(&turn, .{ .turn_end = summary });
@@ -630,6 +630,7 @@ test "turn_end forwards by value and defers bills until terminal content" {
         try app.appendBill();
         const entries = app.transcript.entries.items;
         try t.expectEqual(EntryKind.bill, entries[entries.len - 1].kind);
+        try t.expect(std.mem.endsWith(u8, entries[entries.len - 1].text.items, " · race ×5 branches"));
         try t.expectEqualStrings(if (status_value == .completed) "answer" else @tagName(status_value), entries[entries.len - 2].text.items);
         try t.expect(app.pending_bill == null);
         const count = entries.len;

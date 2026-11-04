@@ -46,6 +46,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         .home = try config.home(init.arena.allocator(), init.environ_map),
         .user_home = init.environ_map.get("HOME") orelse "",
     };
+    if (options.depth == 0) @import("tools/race/workspace.zig").cleanupResidual(gpa, init.io, options.home) catch {};
     var effort: ?[]const u8 = null;
     var agent_input = false;
     var ask = false;

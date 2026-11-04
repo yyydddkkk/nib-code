@@ -116,6 +116,18 @@ const all = [_]Tool{
         \\  async agent({ prompt, resume, fork = false, timeout_ms = 1800000, model, effort, background = false }) {}, // → { ok, id, text, usage, changes, error? } or { id }
         ,
     },
+    .{
+        .name = "race",
+        .root_only = true,
+        .run = @import("tools/race.zig").race,
+        .doc =
+        \\  // Root only; requires user-enabled /race. Each fork branch runs in its own git worktree from one snapshot and cannot delegate.
+        \\  // First successful branch passing optional verify wins; others are stopped and joined. Applies winner changes to the parent; no winner or apply conflict leaves it unchanged.
+        \\  // branches: [{prompt}], 2..configured race_branches (default 3, range 2–8). All branches' usage is charged, including failed/stopped branches.
+        \\  // verify: optional shell command run in each successful branch worktree.
+        \\  async race({ branches, verify, timeout_ms = 1800000 }) {}, // → { ok, winner, text, changes, stopped, failures }
+        ,
+    },
 };
 
 const Api = struct { names: []const []const u8, docs: []const u8 };
@@ -153,9 +165,13 @@ pub const Tools = struct {
     environ: ?*const std.process.Environ.Map = null,
     cfg: ?provider.Config = null,
     depth: u32 = 0,
+    race_enabled: bool = false,
+    race_fact_pending: bool = false,
+    race_branches_started: std.atomic.Value(u64) = .init(0),
     session_id: ?[]const u8 = null,
     forked: bool = false,
     fork_snapshot: ?@import("tools/agent/input.zig").Fork = null,
+    race_paths: ?@import("tools/agent/input.zig").Fork.Race = null,
     agents_mutex: std.Io.Mutex = .init,
     agents_changed: std.Io.Condition = .init,
     agents_active: usize = 0,
@@ -260,8 +276,8 @@ pub const Tools = struct {
 
     pub fn call(ctx: *anyopaque, gpa: std.mem.Allocator, name: []const u8, args: []const u8) sandbox.ToolResult {
         const t: *Tools = @ptrCast(@alignCast(ctx));
-        if (t.forked and std.mem.eql(u8, name, "agent"))
-            return fail(gpa, "agent is unavailable inside a forked sub-agent", .{}) catch .{ .err = &.{} };
+        if (t.forked and (std.mem.eql(u8, name, "agent") or std.mem.eql(u8, name, "race")))
+            return fail(gpa, "{s} is unavailable inside a forked sub-agent", .{name}) catch .{ .err = &.{} };
         const r = for (all) |tool| {
             if (!enabled(tool, t.depth)) continue;
             if (std.mem.eql(u8, name, tool.name)) break if (tool.run) |run_tool| run_tool(t, gpa, args) else error.SandboxOnlyTool;
@@ -557,4 +573,30 @@ test "fork and resume are conflicting parameters even when fork is false" {
         try testing.expect(result == .err);
         try testing.expectEqualStrings("fork and resume cannot be passed together", result.err);
     }
+}
+
+test "race API is fixed across root fork and authorization states" {
+    var root: Tools = .{ .io = testing.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "mock" } };
+    try testing.expect(!root.race_enabled);
+    const disabled = try root.documentation(testing.allocator);
+    defer testing.allocator.free(disabled);
+    try testing.expect(std.mem.indexOf(u8, disabled, "async race({ branches, verify, timeout_ms = 1800000 })") != null);
+    root.race_enabled = true;
+    const enabled_docs = try root.documentation(testing.allocator);
+    defer testing.allocator.free(enabled_docs);
+    try testing.expectEqualStrings(disabled, enabled_docs);
+    var fork = root;
+    fork.depth = 1;
+    fork.forked = true;
+    fork.race_enabled = false;
+    const fork_docs = try fork.documentation(testing.allocator);
+    defer testing.allocator.free(fork_docs);
+    try testing.expectEqualStrings(disabled, fork_docs);
+    const rejected = Tools.call(&fork, testing.allocator, "race", "{}");
+    defer freeResult(rejected);
+    try testing.expect(rejected == .err);
+    try testing.expectEqualStrings("race is unavailable inside a forked sub-agent", rejected.err);
+    var child = fork;
+    child.forked = false;
+    try testing.expect(std.mem.indexOf(u8, child.api().docs, "async race(") == null);
 }

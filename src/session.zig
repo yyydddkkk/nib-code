@@ -106,6 +106,7 @@ pub const Session = struct {
             s.tools.forked = s.log.forked_from != null;
             s.parent_session_id = s.log.parent_session_id;
             if (s.parent_session_id != null) s.tools.depth = @max(s.tools.depth, 1);
+            s.tools.race_fact_pending = s.tools.depth == 0 and prompt.raceNeedsAnnouncement(s.history.items);
         } else {
             var random: [16]u8 = undefined;
             io.random(&random);
@@ -119,8 +120,12 @@ pub const Session = struct {
                 s.tools.forked = true;
                 s.tools.depth = @max(s.tools.depth, 1);
                 s.parent_session_id = options.parent_session_id orelse try a.dupe(u8, fork.session);
-                try s.tools.file_state.importVersions(io, gpa, fork.file_versions);
-                const messages = try session_history.inherit(a, fork);
+                if (fork.race) |race| s.tools.race_paths = .{
+                    .parent_root = try a.dupe(u8, race.parent_root),
+                    .worktree_root = try a.dupe(u8, race.worktree_root),
+                };
+                try @import("tools/files.zig").importForkVersions(&s.tools, gpa, fork.file_versions);
+                const messages = try inheritFork(a, fork);
                 try s.log.commit(io, gpa, &s.history, &s.context_tokens, .{
                     .messages = messages,
                     .context_tokens = compaction.estimateTokens(messages),
@@ -179,7 +184,9 @@ pub const Session = struct {
         var options = s.options;
         options.resume_id = id;
         options.continue_latest = false;
-        const next = try Session.init(s.gpa, s.io, s.client, s.cfg, options);
+        var next = try Session.init(s.gpa, s.io, s.client, s.cfg, options);
+        next.tools.race_enabled = s.tools.race_enabled;
+        next.tools.race_fact_pending = true;
         s.deinit();
         s.* = next;
     }
@@ -240,7 +247,9 @@ pub const Session = struct {
         defer pending.deinit(s.gpa);
         var partial: Partial = .{};
         defer partial.deinit(s.gpa);
-        try pending.append(s.gpa, .{ .role = "user", .content = try prompt.turnBudgetText(s.arena.allocator(), s.history.items[0].content orelse "", s.cfg.limits.max_steps, user_text) });
+        const budget_text = try prompt.turnBudgetText(s.arena.allocator(), s.history.items[0].content orelse "", s.cfg.limits.max_steps, user_text);
+        const turn_text = if (s.tools.depth == 0) try prompt.raceText(s.arena.allocator(), &s.tools.race_fact_pending, s.tools.race_enabled, s.cfg.limits.race_branches, budget_text) else budget_text;
+        try pending.append(s.gpa, .{ .role = "user", .content = turn_text });
         s.usage = .{};
         s.steps = 0;
         try sink.emit(sink.ctx, .{ .usage = s.usage });
@@ -376,6 +385,7 @@ pub const Session = struct {
             const reply = try s.complete(decision.cfg, request.items, sink, cancel, detail, partial, &model_timing, &attempts, &first_data_ms);
             const model_ms: u64 = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0));
             var run_timing: sandbox.RunTiming = .init(s.io, started);
+            defer s.summary.?.timing.race_branches += run_timing.race_branches;
             var run_ms: u64 = 0;
             partial.clear();
             s.usage.add(reply.usage);
@@ -654,6 +664,27 @@ test "allocation failures while restoring agent mappings release the session log
     try t.checkAllAllocationFailures(t.allocator, Check.run, .{ root, path, &client });
 }
 
+fn inheritFork(a: std.mem.Allocator, fork: Fork) ![]const provider.Message {
+    const messages = @constCast(try session_history.inherit(a, fork));
+    const race = fork.race orelse return messages;
+    var original: usize = 0;
+    var copied: usize = 0;
+    while (original < fork.history.len) {
+        const message = fork.history[original];
+        original += 1;
+        copied += 1;
+        for (message.tool_calls orelse &.{}) |_| {
+            if (original < fork.history.len and std.mem.eql(u8, fork.history[original].role, "tool")) {
+                original += 1;
+            } else {
+                messages[copied].content = try std.fmt.allocPrint(a, "[forked as race branch {s} from session {s}; this tool call continues independently in the parent session; its result is not available in this child. Branch worktree root: {s}. read/edit/write/grep/glob map absolute paths beneath parent repository root {s} onto this branch root by normalized path components; other paths are unchanged. bash commands containing the parent repository root are rejected; use relative paths in the branch cwd. Inherited file observations are validated against the snapshot and rebased onto branch file versions.]", .{ fork.id, fork.session, race.worktree_root, race.parent_root });
+            }
+            copied += 1;
+        }
+    }
+    return messages;
+}
+
 test "fork initialization copies history and resume retains independent identity and parent cache" {
     const t = std.testing;
     var tmp = t.tmpDir(.{});
@@ -721,4 +752,73 @@ test "fork initialization copies history and resume retains independent identity
     try session.reopen(null);
     try t.expect(!session.tools.forked);
     try t.expectEqualStrings(session.id, session.cache_key);
+}
+
+test "race authorization survives session switches but not process initialization" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    const cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock", .limits = .{ .race_branches = 8 } };
+    const options: Session.Options = .{ .home = root, .user_home = root };
+    var session = try Session.init(t.allocator, t.io, &client, cfg, options);
+    defer session.deinit();
+    const first_id = try a.dupe(u8, session.id);
+    const system = try a.dupe(u8, session.history.items[0].content.?);
+    try t.expect(!session.tools.race_enabled);
+    try t.expect(!session.tools.race_fact_pending);
+    session.tools.race_enabled = true;
+    try session.reopen(null);
+    try t.expect(session.tools.race_enabled);
+    try t.expect(session.tools.race_fact_pending);
+    _ = try prompt.raceText(a, &session.tools.race_fact_pending, session.tools.race_enabled, 8, "parent: next");
+    try t.expect(!session.tools.race_fact_pending);
+    try t.expectEqual(@as(usize, 8), session.tools.cfg.?.limits.race_branches);
+    try session.reopen(first_id);
+    try t.expect(session.tools.race_enabled);
+    try t.expect(session.tools.race_fact_pending);
+    try t.expectEqualStrings(system, session.history.items[0].content.?);
+    session.tools.race_enabled = false;
+    try session.reopen(null);
+    try t.expect(!session.tools.race_enabled);
+    try t.expect(session.tools.race_fact_pending);
+    var restarted = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .resume_id = first_id });
+    defer restarted.deinit();
+    try t.expect(!restarted.tools.race_enabled);
+    try t.expect(!restarted.tools.race_fact_pending);
+    try restarted.commit(restarted.history.items.len, &.{.{ .role = "user", .content = "[race enabled: up to 8 branches]\n\nparent: old" }}, 0, null);
+    try restarted.reopen(null);
+    var stale = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .resume_id = first_id });
+    defer stale.deinit();
+    try t.expect(!stale.tools.race_enabled);
+    try t.expect(stale.tools.race_fact_pending);
+}
+
+test "race fork explains branch paths only in synthetic tool results" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const original = [_]provider.Message{
+        .{ .role = "system", .content = "exact system /parent/file" },
+        .{ .role = "user", .content = "exact history /parent/file" },
+        .{ .role = "assistant", .reasoning = .{ .provider = .codex, .data = "opaque bytes" }, .tool_calls = &.{
+            .{ .id = "real", .function = .{ .name = "run", .arguments = "exact arguments /parent/file" } },
+            .{ .id = "synthetic", .function = .{ .name = "run", .arguments = "exact arguments" } },
+        } },
+        .{ .role = "tool", .tool_call_id = "real", .content = "real result /parent/file" },
+        .{ .role = "user", .content = "later original message" },
+    };
+    const fork: Fork = .{ .session = "parent-session", .message_count = original.len, .history = &original, .cache_key = "cache", .id = "a3", .provider = .codex, .model = "mock", .race = .{ .parent_root = "/parent", .worktree_root = "/branch/a3" } };
+    const messages = try inheritFork(arena.allocator(), fork);
+    try t.expectEqual(@as(usize, 6), messages.len);
+    try t.expectEqualDeep(@as([]const provider.Message, original[0..4]), messages[0..4]);
+    try t.expectEqualDeep(original[4], messages[5]);
+    try t.expectEqualStrings("synthetic", messages[4].tool_call_id.?);
+    for ([_][]const u8{ "race branch a3", "/branch/a3", "/parent", "normalized path components", "use relative paths", "rebased" }) |fact|
+        try t.expect(std.mem.indexOf(u8, messages[4].content.?, fact) != null);
 }

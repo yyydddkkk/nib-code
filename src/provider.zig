@@ -18,6 +18,7 @@ pub const Limits = struct {
     llm_calls_per_run: usize = 100,
     llm_input_kib: usize = 256,
     agent_concurrency: usize = 4,
+    race_branches: usize = 3,
     max_steps: ?usize = null,
     stream_idle_timeout_s: usize = 300,
 };
@@ -190,4 +191,23 @@ test "explicit effort overrides thinking and stores stable names" {
     try t.expectEqualStrings("max", cfg.effectiveEffort());
     try cfg.setEffort("off");
     try t.expectEqualStrings("off", cfg.effectiveEffort());
+}
+
+test "effective config serializes race branch limits for child inheritance" {
+    const t = std.testing;
+    for ([_]usize{ 2, 3, 8 }) |branches| {
+        const cfg: Config = .{ .base_url = "", .api_key = "", .model = "mock", .limits = .{ .race_branches = branches } };
+        const encoded = try std.json.Stringify.valueAlloc(t.allocator, cfg, .{});
+        defer t.allocator.free(encoded);
+        const parsed = try std.json.parseFromSlice(Config, t.allocator, encoded, .{});
+        defer parsed.deinit();
+        try t.expectEqualDeep(cfg, parsed.value);
+    }
+    for ([_][]const u8{ "", ",\"limits\":{}" }) |limits| {
+        const encoded = try std.fmt.allocPrint(t.allocator, "{{\"base_url\":\"\",\"api_key\":\"\",\"model\":\"mock\"{s}}}", .{limits});
+        defer t.allocator.free(encoded);
+        const parsed = try std.json.parseFromSlice(Config, t.allocator, encoded, .{});
+        defer parsed.deinit();
+        try t.expectEqual(@as(usize, 3), parsed.value.limits.race_branches);
+    }
 }

@@ -32,6 +32,11 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     defer a.deinit();
     if (a.value.validationError()) |message| return fail(gpa, "{s}", .{message});
 
+    if (t.race_paths) |race| {
+        if (std.mem.indexOf(u8, a.value.command, race.parent_root) != null)
+            return fail(gpa, "race branch bash cannot contain parent repository root {s}; use relative paths in the branch worktree {s}", .{ race.parent_root, race.worktree_root });
+    }
+
     switch (policy.checkCredentials(a.value.command, t.codexHome())) {
         .allow => {},
         .deny => |why| return fail(gpa, "refused by nib: {s}", .{why}),
@@ -65,6 +70,10 @@ pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, ca
 }
 
 fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress) !sandbox.ToolResult {
+    if (t.race_paths) |race| {
+        if (std.mem.indexOf(u8, command, race.parent_root) != null)
+            return fail(gpa, "race branch bash cannot contain parent repository root {s}; use relative paths in the branch worktree {s}", .{ race.parent_root, race.worktree_root });
+    }
     var tracker: Tracker = .{ .t = t, .gpa = gpa, .command = command, .value = progress, .started = .now(t.io, .awake) };
     var state: @FieldType(@import("../session/events.zig").Progress, "state") = .failed;
     defer tracker.finish(state);
@@ -345,4 +354,25 @@ test "bash detached timeout defaults and overrides" {
     const result = try executeBackground(&t, testing.allocator, "{\"command\":\"sleep 5\",\"background\":true,\"detached\":true,\"timeout_ms\":25}", &cancel, .{ .id = progress, .kind = .bash, .background = true, .prompt = "" });
     defer freeResult(result);
     try testing.expectEqualStrings("timed out after 25 ms", result.err);
+}
+
+test "race bash rejects parent root text before foreground or background execution" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var t: Tools = .{ .io = testing.io, .home = root, .race_paths = .{ .parent_root = root, .worktree_root = "/branch" } };
+    for ([_]bool{ false, true }) |background| {
+        const command = try std.fmt.allocPrint(testing.allocator, "touch {s}/must-not-exist", .{root});
+        defer testing.allocator.free(command);
+        const args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .command = command, .background = background }, .{});
+        defer testing.allocator.free(args);
+        const result = Tools.call(&t, testing.allocator, "bash", args);
+        defer freeResult(result);
+        try testing.expect(std.mem.indexOf(u8, result.err, "use relative paths") != null);
+        try testing.expectError(error.FileNotFound, tmp.dir.statFile(testing.io, "must-not-exist", .{}));
+    }
+    const allowed = Tools.call(&t, testing.allocator, "bash", "{\"command\":\"printf branch\"}");
+    defer freeResult(allowed);
+    try testing.expectEqualStrings("{\"exit_code\":0,\"output\":\"branch\"}", allowed.ok);
 }

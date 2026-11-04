@@ -148,7 +148,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
     const Section = enum { chat_completions, codex, limits };
     var section: ?Section = null;
     var seen_sections: [3]bool = @splat(false);
-    var seen: [4][6]bool = @splat(@splat(false));
+    var seen: [4][7]bool = @splat(@splat(false));
     var offset: usize = 0;
     while (offset < text.len) : (p.line += 1) {
         const end = if (std.mem.indexOfScalarPos(u8, text, offset, '\n')) |n| n + 1 else text.len;
@@ -183,7 +183,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
         const index: usize = if (section == null)
             if (std.mem.eql(u8, key, "provider")) 0 else if (std.mem.eql(u8, key, "effort")) 1 else return p.bad("unknown top-level key '{s}'", .{key})
         else if (section == .limits) blk: {
-            const names = .{ "llm_concurrency", "llm_calls_per_run", "llm_input_kib", "agent_concurrency", "max_steps", "stream_idle_timeout_s" };
+            const names = .{ "llm_concurrency", "llm_calls_per_run", "llm_input_kib", "agent_concurrency", "max_steps", "stream_idle_timeout_s", "race_branches" };
             inline for (names, 0..) |name, i| {
                 if (std.mem.eql(u8, key, name)) break :blk i;
             }
@@ -198,8 +198,9 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
         const parsed = try p.value(value, &consumed);
         if (section == .limits) {
             if (parsed != .integer) return p.bad("{s} must be an integer", .{key});
-            const maxima = [_]usize{ 64, 10000, 65536, 64, 100000, 3600 };
-            if (parsed.integer < 1 or parsed.integer > maxima[index]) return p.bad("{s} must be between 1 and {d}", .{ key, maxima[index] });
+            const minima = [_]usize{ 1, 1, 1, 1, 1, 1, 2 };
+            const maxima = [_]usize{ 64, 10000, 65536, 64, 100000, 3600, 8 };
+            if (parsed.integer < minima[index] or parsed.integer > maxima[index]) return p.bad("{s} must be between {d} and {d}", .{ key, minima[index], maxima[index] });
             const n: usize = @intCast(parsed.integer);
             switch (index) {
                 0 => file.limits.llm_concurrency = n,
@@ -208,6 +209,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
                 3 => file.limits.agent_concurrency = n,
                 4 => file.limits.max_steps = n,
                 5 => file.limits.stream_idle_timeout_s = n,
+                6 => file.limits.race_branches = n,
                 else => unreachable,
             }
         } else if (section != null and index == 2) {
@@ -607,14 +609,15 @@ test "limits defaults, bounds and diagnostics" {
     defer env.deinit();
     var detail: ?[]u8 = null;
     const defaults = (try resolve(a, &env, "", "config.toml", &detail)).limits;
-    try t.expectEqualDeep(provider.Limits{ .llm_concurrency = 4, .llm_calls_per_run = 100, .llm_input_kib = 256, .agent_concurrency = 4, .max_steps = null, .stream_idle_timeout_s = 300 }, defaults);
+    try t.expectEqualDeep(provider.Limits{ .llm_concurrency = 4, .llm_calls_per_run = 100, .llm_input_kib = 256, .agent_concurrency = 4, .race_branches = 3, .max_steps = null, .stream_idle_timeout_s = 300 }, defaults);
     try t.expectEqualDeep(defaults, (try resolve(a, &env, "[limits]\n", "config.toml", &detail)).limits);
     try t.expectEqual(@as(?usize, null), (try resolve(a, &env, "[limits]\nllm_concurrency = 8\n", "config.toml", &detail)).limits.max_steps);
     try t.expectEqual(@as(?usize, 50), (try resolve(a, &env, "[limits]\nmax_steps = 50\n", "config.toml", &detail)).limits.max_steps);
-    const names = [_][]const u8{ "llm_concurrency", "llm_calls_per_run", "llm_input_kib", "agent_concurrency", "max_steps", "stream_idle_timeout_s" };
-    const maxima = [_]usize{ 64, 10000, 65536, 64, 100000, 3600 };
-    for (names, maxima) |name, max| {
-        for ([_]usize{ 1, max }) |n| {
+    const names = [_][]const u8{ "llm_concurrency", "llm_calls_per_run", "llm_input_kib", "agent_concurrency", "max_steps", "stream_idle_timeout_s", "race_branches" };
+    const minima = [_]usize{ 1, 1, 1, 1, 1, 1, 2 };
+    const maxima = [_]usize{ 64, 10000, 65536, 64, 100000, 3600, 8 };
+    for (names, minima, maxima) |name, min, max| {
+        for ([_]usize{ min, max }) |n| {
             const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {d}\n", .{ name, n });
             const limits = (try resolve(a, &env, text, "config.toml", &detail)).limits;
             inline for (names) |field| {
@@ -627,9 +630,13 @@ test "limits defaults, bounds and diagnostics" {
             try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
             try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:2:"));
         }
-        const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {d}\n", .{ name, max + 1 });
-        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
-        try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:2:"));
+        for ([_]usize{ min - 1, max + 1 }) |n| {
+            const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {d}\n", .{ name, n });
+            try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+            try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:2:"));
+            const range = try std.fmt.allocPrint(a, "between {d} and {d}", .{ min, max });
+            try t.expect(std.mem.indexOf(u8, detail.?, range) != null);
+        }
     }
     for ([_][]const u8{ "[limits]\nunknown = 1", "[limits]\nmax_steps = 1\nmax_steps = 2", "[limits]\n[limits]" }) |text| {
         try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));

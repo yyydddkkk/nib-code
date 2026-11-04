@@ -824,6 +824,43 @@ class Timing:
                                      sorted(self.bash.items(), key=lambda p: (-sum(p[1]), p[0]))[:10]]))
 
 
+class RaceStats:
+    def __init__(self):
+        self.count = self.applied = self.branches = 0
+        self.winner_ms = []
+        self.usage = dict.fromkeys(TOKEN_KEYS, 0)
+
+    def add(self, event):
+        if event.get('state') == 'started':
+            return
+        self.count += 1
+        self.applied += event.get('applied') is True
+        branches = [branch for branch in event.get('branches', []) if isinstance(branch, dict)]
+        self.branches += len(branches)
+        for branch in branches:
+            usage = branch.get('usage')
+            if not isinstance(usage, dict):
+                usage = {}
+            for key in TOKEN_KEYS:
+                value = usage.get(key)
+                if number(value):
+                    self.usage[key] += value
+        if event.get('winner') is not None:
+            if number(event.get('win_ms')):
+                self.winner_ms.append(event['win_ms'])
+            else:
+                winner = next((b for b in branches if b.get('id') == event['winner']), {})
+                if number(winner.get('elapsed_ms')):
+                    self.winner_ms.append(winner['elapsed_ms'])
+
+    def report(self):
+        usage = dict(self.usage)
+        usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
+        return dict(count=self.count, applied=self.applied, branches=self.branches,
+                    winner_ms=distribution(self.winner_ms), usage=usage,
+                    notes=['仅取根会话 race 生命周期记录；用量含胜出、失败与停止的全部分支，不与整体 usage 相加。胜出耗时包含验证，不含应用；无胜者不补零。'])
+
+
 def records(path):
     try:
         with path.open(encoding='utf-8', errors='replace') as stream:
@@ -833,6 +870,10 @@ def records(path):
                 except (ValueError, RecursionError):
                     continue
                 if not isinstance(record, dict) or record.get('repair'):
+                    continue
+                race = record.get('race')
+                if isinstance(race, dict) and isinstance(race.get('branches'), list):
+                    yield record
                     continue
                 diagnostic = record.get('diagnostic')
                 if isinstance(diagnostic, dict) and isinstance(diagnostic.get('message'), str):
@@ -883,6 +924,7 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None):
     timing = Timing()
     tool_data = ToolData()
     agents = AgentStats()
+    races = RaceStats()
     child_costs = ChildCosts()
     errors = {name: {'count': 0, 'examples': []} for name in ERRORS}
     slowest, turn_steps, turn_times = [], [], []
@@ -944,6 +986,12 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None):
             has_at = number(record.get('at'))
             diagnostic = isinstance(record.get('diagnostic'), dict)
             lifecycle = isinstance(record.get('background') or record.get('background_agent'), dict)
+            if isinstance(record.get('race'), dict):
+                if include and not header.get('parent_session_id'):
+                    races.add(record['race'])
+                    session_selected = True
+                    time_filter['selected_records_with_at' if has_at else 'selected_records_using_mtime'] += 1
+                continue
             if not diagnostic and not lifecycle:
                 messages = record['messages']
                 replacement = record['from'] < length
@@ -1136,7 +1184,7 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None):
             'bash_top10': [{'command': k, 'count': v} for k, v in sorted(bash_counts.items(), key=lambda p: (-p[1], p[0]))[:10]],
             'errors': errors, 'slowest_steps': slowest, 'timing': timing.report(),
             'tool_data': tool_data.report(), 'child_costs': child_costs.report(),
-            'agents': agents.report(), 'bash_calls': agents.report('bash'),
+            'agents': agents.report(), 'bash_calls': agents.report('bash'), 'race': races.report(),
             'round_trips': dict(steps_per_turn=distribution(turn_steps),
                                write_to_validation=pair_summary(write_validation_pairs, adjacent_pairs),
                                mechanical_followups=mechanical,
@@ -1183,6 +1231,9 @@ def text_report(report):
         lines.extend([f"{name} 调用：前台 {calls['foreground_calls']} / 后台 {calls['background_calls']}",
                       f"{'' if key == 'agents' else 'Bash '}后台期间主模型 Step: samples={overlap['samples']} median={fmt(overlap['median'])} p90={fmt(overlap['p90'])}"])
     lines.extend('  ' + note for note in report['agents']['notes'])
+    race = report['race']
+    latency = race['winner_ms']
+    lines.append(f"Race: {race['count']} 次 / {race['branches']} 分支 / 应用成功 {race['applied']}；胜出耗时 samples={latency['samples']} median={fmt(latency['median'], ' ms')} p90={fmt(latency['p90'], ' ms')}；全部分支 token={race['usage']['total_tokens']}（prompt {race['usage']['prompt_tokens']} / completion {race['usage']['completion_tokens']}）")
     costs = report['child_costs']
     lines.append('子会话已记录成本（每子会话；非费用）：')
     cost_groups = []

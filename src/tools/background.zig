@@ -82,7 +82,7 @@ pub const Background = struct {
             const gpa = job.gpa;
             const t = job.t;
             const result = switch (job.kind) {
-                .agent => agent.execute(t, gpa, job.args, &job.cancel, job.id, job.run, true, job.fork_input),
+                .agent => agent.execute(t, gpa, job.args, &job.cancel, job.id, job.run, true, job.fork_input, null),
                 .bash => @import("bash.zig").executeBackground(t, gpa, job.args, &job.cancel, .{ .id = job.id, .run = job.run, .background = true, .kind = .bash, .prompt = "" }),
             } catch |err| try @import("../tools.zig").fail(gpa, "{s}", .{@errorName(err)});
             defer switch (result) {

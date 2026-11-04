@@ -14,8 +14,9 @@ pub const Progress = struct {
     background: bool = false,
     detached: bool = false,
     fork: bool = false,
+    race: bool = false,
     prompt: []const u8,
-    state: enum { queued, working, done, failed, canceled, timed_out } = .working,
+    state: enum { queued, working, done, failed, canceled, timed_out, won, stopped } = .working,
     step: u32 = 0,
     tools: []const []const u8 = &.{},
     files: []const []const u8 = &.{},
@@ -29,7 +30,7 @@ pub const Progress = struct {
         const files = try cloneStrings(gpa, p.files);
         errdefer freeStrings(gpa, files);
         const id = try gpa.dupe(u8, p.id);
-        return .{ .kind = p.kind, .elapsed_ms = p.elapsed_ms, .run = p.run, .invocation = p.invocation, .background = p.background, .detached = p.detached, .fork = p.fork, .id = id, .prompt = prompt, .state = p.state, .step = p.step, .tools = used, .files = files, .usage = p.usage };
+        return .{ .kind = p.kind, .elapsed_ms = p.elapsed_ms, .run = p.run, .invocation = p.invocation, .background = p.background, .detached = p.detached, .fork = p.fork, .race = p.race, .id = id, .prompt = prompt, .state = p.state, .step = p.step, .tools = used, .files = files, .usage = p.usage };
     }
 
     pub fn deinit(p: *Progress, gpa: std.mem.Allocator) void {
@@ -68,6 +69,7 @@ pub const Timing = struct {
     output_bytes: u64 = 0,
     llm_calls: u64 = 0,
     agent_calls: u64 = 0,
+    race_branches: u64 = 0,
 };
 
 pub const TurnSummary = struct {
@@ -157,4 +159,13 @@ test "run_end JSON includes actual tool summary including empty counts" {
     const legacy = try std.json.Stringify.valueAlloc(t.allocator, JsonEvent{ .event = .{ .run_end = .{ .ok = true, .output = "" } } }, .{ .emit_null_optional_fields = false });
     defer t.allocator.free(legacy);
     try t.expectEqualStrings("{\"run_end\":{\"ok\":true,\"output\":\"\",\"changes\":[]}}", legacy);
+}
+
+test "turn end JSON carries dispatched race branch totals" {
+    const t = std.testing;
+    const encoded = try std.json.Stringify.valueAlloc(t.allocator, JsonEvent{ .event = .{ .turn_end = .{ .timing = .{ .race_branches = 7 } } } }, .{});
+    defer t.allocator.free(encoded);
+    const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, encoded, .{});
+    defer parsed.deinit();
+    try t.expectEqual(@as(i64, 7), parsed.value.object.get("turn_end").?.object.get("timing").?.object.get("race_branches").?.integer);
 }

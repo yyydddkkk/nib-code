@@ -3,6 +3,29 @@ const provider = @import("../../provider.zig");
 const file_state = @import("../file_state.zig");
 
 pub const Fork = struct {
+    pub const Race = struct {
+        parent_root: []const u8,
+        worktree_root: []const u8,
+
+        pub fn mapPath(race: Race, gpa: std.mem.Allocator, path: []const u8) !?[]u8 {
+            if (!std.fs.path.isAbsolute(path)) return null;
+            if (!std.fs.path.isAbsolute(race.parent_root) or !std.fs.path.isAbsolute(race.worktree_root))
+                return error.InvalidRaceRoots;
+            const parent = try std.fs.path.resolve(gpa, &.{race.parent_root});
+            defer gpa.free(parent);
+            const normalized = try std.fs.path.resolve(gpa, &.{path});
+            defer gpa.free(normalized);
+            if (!std.mem.startsWith(u8, normalized, parent)) return null;
+            var suffix = normalized[parent.len..];
+            if (suffix.len > 0 and parent[parent.len - 1] != std.fs.path.sep) {
+                if (suffix[0] != std.fs.path.sep) return null;
+                suffix = suffix[1..];
+            }
+            return try std.fs.path.resolve(gpa, &.{ race.worktree_root, suffix });
+        }
+    };
+
+    race: ?Race = null,
     session: []const u8,
     message_count: usize,
     history: []const provider.Message,
@@ -58,6 +81,7 @@ test "agent stdin defaults omitted fork file versions to empty" {
     const parsed = try std.json.parseFromSlice(Input, t.allocator, data, .{});
     defer parsed.deinit();
     try t.expectEqual(@as(usize, 0), parsed.value.fork.?.file_versions.len);
+    try t.expectEqual(@as(?Fork.Race, null), parsed.value.fork.?.race);
 }
 
 test "agent stdin round trip preserves fork history reasoning and file versions" {
@@ -66,6 +90,7 @@ test "agent stdin round trip preserves fork history reasoning and file versions"
         .prompt = "child prompt",
         .config = .{ .base_url = "", .api_key = "mock", .model = "mock", .provider = .codex },
         .fork = .{
+            .race = .{ .parent_root = "/repo", .worktree_root = "/branches/a5" },
             .session = "parent-session",
             .message_count = 2,
             .history = &.{
@@ -84,4 +109,26 @@ test "agent stdin round trip preserves fork history reasoning and file versions"
     const parsed = try std.json.parseFromSlice(Input, t.allocator, data, .{});
     defer parsed.deinit();
     try t.expectEqualDeep(input, parsed.value);
+}
+
+test "race path mapping uses normalized component boundaries" {
+    const t = std.testing;
+    const race: Fork.Race = .{ .parent_root = "/repo/./", .worktree_root = "/branches/a1" };
+    const cases = [_]struct { path: []const u8, expected: ?[]const u8 }{
+        .{ .path = "/repo", .expected = "/branches/a1" },
+        .{ .path = "/repo/", .expected = "/branches/a1" },
+        .{ .path = "/repo/sub/../file", .expected = "/branches/a1/file" },
+        .{ .path = "/repo2/file", .expected = null },
+        .{ .path = "/repo/../elsewhere/file", .expected = null },
+        .{ .path = "/outside/../repo/file", .expected = "/branches/a1/file" },
+        .{ .path = "file", .expected = null },
+        .{ .path = "../repo/file", .expected = null },
+    };
+    for (cases) |case| {
+        const mapped = try race.mapPath(t.allocator, case.path);
+        defer if (mapped) |path| t.allocator.free(path);
+        if (case.expected) |expected| {
+            try t.expectEqualStrings(expected, mapped.?);
+        } else try t.expect(mapped == null);
+    }
 }

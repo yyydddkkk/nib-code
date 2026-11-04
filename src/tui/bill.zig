@@ -29,6 +29,7 @@ pub const Text = struct {
         }) catch unreachable;
         if (summary.timing.llm_calls > 0) w.print(" · llm ×{d}", .{summary.timing.llm_calls}) catch unreachable;
         if (summary.timing.agent_calls > 0) w.print(" · agent ×{d}", .{summary.timing.agent_calls}) catch unreachable;
+        if (summary.timing.race_branches > 0) w.print(" · race ×{d} branches", .{summary.timing.race_branches}) catch unreachable;
         return fit(w.buffered(), width);
     }
 };
@@ -168,4 +169,18 @@ test "bill fits delegation counts before tokens and bytes" {
         const width: u16 = @intCast(try std.unicode.utf8CountCodepoints(prefix));
         try std.testing.expectEqualStrings(prefix, text.format(example, width));
     }
+}
+
+test "bill shows dispatched race branches and drops them as a complete field" {
+    const t = std.testing;
+    var text: Text = .{};
+    var summary: TurnSummary = .{};
+    const base = "0 steps · 0s · think 0s · tools 0s · 0 tok (0% cached)";
+    try t.expectEqualStrings(base, text.format(summary, 200));
+    summary.timing.race_branches = 6;
+    try t.expectEqualStrings(base ++ " · race ×6 branches", text.format(summary, 200));
+    try t.expectEqualStrings(base, text.format(summary, @intCast(try std.unicode.utf8CountCodepoints(base ++ " · race ×6 branches") - 1)));
+    summary.timing.agent_calls = 1;
+    summary.timing.llm_calls = 2;
+    try t.expectEqualStrings(base ++ " · llm ×2 · agent ×1 · race ×6 branches", text.format(summary, 200));
 }

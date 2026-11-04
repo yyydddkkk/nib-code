@@ -153,7 +153,7 @@ fn check(io: std.Io, cancel: *const std.atomic.Value(bool), deadline: ?std.Io.Cl
     if (deadline) |end| if (std.Io.Clock.Timestamp.now(io, .awake).compare(.gte, end)) return error.TimedOut;
 }
 
-fn inheritedEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {
+pub fn inheritedEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {
     const environ: std.process.Environ = .{ .block = .{ .slice = std.mem.span(std.c.environ) } };
     return environ.createMap(gpa);
 }

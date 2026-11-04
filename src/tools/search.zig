@@ -12,8 +12,10 @@ pub fn grep(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     defer a.deinit();
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
+    var options = a.value;
+    if (t.race_paths) |race| options.path = (try race.mapPath(arena.allocator(), options.path)) orelse options.path;
     var message: [128]u8 = undefined;
-    var s = grep_engine.search(t.io, gpa, a.value, .{ .deny = try t.credentialPaths(arena.allocator()), .cancel = &t.cancel }, &message) catch |err| return switch (err) {
+    var s = grep_engine.search(t.io, gpa, options, .{ .deny = try t.credentialPaths(arena.allocator()), .cancel = &t.cancel }, &message) catch |err| return switch (err) {
         error.InvalidPattern => blk: {
             const pattern = a.value.pattern;
             var end = @min(pattern.len, 200);
@@ -36,7 +38,8 @@ pub fn glob(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const pattern = if (std.mem.startsWith(u8, a.value.pattern, "./")) a.value.pattern[2..] else a.value.pattern;
-    const found = walk.files(t.io, arena.allocator(), a.value.path, .{
+    const path = if (t.race_paths) |race| (try race.mapPath(arena.allocator(), a.value.path)) orelse a.value.path else a.value.path;
+    const found = walk.files(t.io, arena.allocator(), path, .{
         .deny = try t.credentialPaths(arena.allocator()),
         .cancel = &t.cancel,
         .filter = pattern,
@@ -170,4 +173,28 @@ test "grep invalid pattern preview is JSON quoted and bounded to 200 UTF-8 bytes
     const quoted = try tools.callTool("grep", "{\"pattern\":\"\\\"\\n(\"}");
     defer freeResult(quoted);
     try testing.expect(std.mem.startsWith(u8, quoted.err, "invalid pattern \"\\\"\\n(\":"));
+}
+
+test "race grep and glob search branch paths instead of parent paths" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "parent");
+    try tmp.dir.createDirPath(testing.io, "branch");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "parent/parent-only.txt", .data = "parent-only" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "branch/branch-only.txt", .data = "branch-only" });
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const parent_root = try std.fs.path.join(testing.allocator, &.{ root, "parent" });
+    defer testing.allocator.free(parent_root);
+    const branch_root = try std.fs.path.join(testing.allocator, &.{ root, "branch" });
+    defer testing.allocator.free(branch_root);
+    var t: Tools = .{ .io = testing.io, .home = root, .race_paths = .{ .parent_root = parent_root, .worktree_root = branch_root } };
+    for ([_][]const u8{ "grep", "glob" }) |name| {
+        const args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .path = parent_root, .pattern = if (std.mem.eql(u8, name, "grep")) "only" else "*.txt" }, .{});
+        defer testing.allocator.free(args);
+        const result = Tools.call(&t, testing.allocator, name, args);
+        defer freeResult(result);
+        try testing.expect(std.mem.indexOf(u8, result.ok, "branch-only") != null);
+        try testing.expect(std.mem.indexOf(u8, result.ok, "parent-only") == null);
+    }
 }

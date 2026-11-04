@@ -31,6 +31,25 @@ pub const Tracker = struct {
         entry.created = entry.created or before == null;
     }
 
+    pub fn recordSummary(t: *Tracker, gpa: std.mem.Allocator, change: diff.Change) !void {
+        const entry = for (t.entries.items) |*entry| {
+            if (std.mem.eql(u8, entry.path, change.path)) break entry;
+        } else entry: {
+            const path = try gpa.dupe(u8, change.path);
+            errdefer gpa.free(path);
+            try t.entries.append(gpa, .{ .path = path });
+            break :entry &t.entries.items[t.entries.items.len - 1];
+        };
+        var preview: diff.Preview = .{};
+        defer preview.deinit(gpa);
+        try preview.text.appendSlice(gpa, change.diff);
+        preview.shown = std.mem.count(u8, change.diff, "\n");
+        try entry.preview.append(gpa, preview);
+        entry.added += change.added;
+        entry.removed += change.removed;
+        entry.created = entry.created or change.created;
+    }
+
     pub fn take(t: *Tracker, gpa: std.mem.Allocator, a: std.mem.Allocator, cwd: []const u8) ![]const diff.Change {
         defer t.discard(gpa);
         const out = try a.alloc(diff.Change, t.entries.items.len);
@@ -124,4 +143,18 @@ test "diff preview combines already-truncated operations" {
     try testing.expectEqual(@as(usize, 250), changes[0].removed);
     try testing.expect(changes[0].created);
     try testing.expect(std.mem.endsWith(u8, changes[0].diff, "… 300 more lines\n"));
+}
+
+test "external summaries preserve binary and mode-only applied changes" {
+    var tracker: Tracker = .{};
+    defer tracker.discard(testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try tracker.recordSummary(testing.allocator, .{ .path = "/repo/binary", .added = 0, .removed = 0, .diff = "[binary file changed]\n" });
+    try tracker.recordSummary(testing.allocator, .{ .path = "/repo/mode", .added = 0, .removed = 0, .diff = "" });
+    const changes = try tracker.take(testing.allocator, arena.allocator(), "/repo");
+    try testing.expectEqual(@as(usize, 2), changes.len);
+    try testing.expectEqualStrings("binary", changes[0].path);
+    try testing.expectEqualStrings("[binary file changed]\n", changes[0].diff);
+    try testing.expectEqualStrings("mode", changes[1].path);
 }

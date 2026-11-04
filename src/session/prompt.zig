@@ -1,6 +1,7 @@
 const std = @import("std");
 const tools = @import("../tools.zig");
 const sandbox = @import("../sandbox.zig");
+const provider = @import("../provider.zig");
 
 pub const tools_json =
     \\[{"type":"function","function":{"name":"run",
@@ -106,6 +107,26 @@ pub fn turnBudgetText(a: std.mem.Allocator, system: []const u8, max_steps: ?usiz
         return std.fmt.allocPrint(a, "[Current Turn budget: no Step limit; configuration changed since the system prompt was recorded]\n\n{s}", .{user_text});
     }
     return a.dupe(u8, user_text);
+}
+
+pub fn raceNeedsAnnouncement(history: []const provider.Message) bool {
+    var i = history.len;
+    while (i > 0) {
+        i -= 1;
+        const message = history[i];
+        if (!std.mem.eql(u8, message.role, "user")) continue;
+        const text = message.content orelse continue;
+        if (std.mem.startsWith(u8, text, "[race enabled: up to ")) return true;
+        if (std.mem.startsWith(u8, text, "[race disabled]")) return false;
+    }
+    return false;
+}
+
+pub fn raceText(a: std.mem.Allocator, pending: *bool, enabled: bool, branches: usize, user_text: []const u8) ![]const u8 {
+    if (!pending.*) return user_text;
+    const text = if (enabled) try std.fmt.allocPrint(a, "[race enabled: up to {d} branches]\n\n{s}", .{ branches, user_text }) else try std.fmt.allocPrint(a, "[race disabled]\n\n{s}", .{user_text});
+    pending.* = false;
+    return text;
 }
 
 pub fn stepLimitPrompt(a: std.mem.Allocator, base: []const u8, max_steps: ?usize) ![]const u8 {
@@ -265,4 +286,44 @@ test "resumed Turns expose budget changes without rewriting the original system"
     const disabled = try turnBudgetText(a, system, null, "prompt");
     try t.expect(std.mem.indexOf(u8, disabled, "no Step limit") != null);
     try t.expect(std.mem.endsWith(u8, disabled, "\n\nprompt"));
+}
+
+test "race authorization facts precede input without changing the system" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var pending = false;
+    try t.expectEqualStrings("parent: prompt", try raceText(a, &pending, false, 3, "parent: prompt"));
+    pending = true;
+    try t.expectEqualStrings("[race disabled]\n\nprompt", try raceText(a, &pending, false, 3, "prompt"));
+    try t.expect(!pending);
+    try t.expectEqualStrings("parent: next", try raceText(a, &pending, false, 3, "parent: next"));
+    for ([_]usize{ 2, 3, 8 }) |branches| {
+        const expected = try std.fmt.allocPrint(a, "[race enabled: up to {d} branches]\n\nprompt", .{branches});
+        pending = true;
+        try t.expectEqualStrings(expected, try raceText(a, &pending, true, branches, "prompt"));
+        try t.expect(!pending);
+        try t.expectEqualStrings("parent: next", try raceText(a, &pending, true, branches, "parent: next"));
+    }
+    const budget = try turnBudgetText(a, "base", 5, "prompt");
+    pending = true;
+    const combined = try raceText(a, &pending, true, 3, budget);
+    try t.expect(std.mem.startsWith(u8, combined, "[race enabled: up to 3 branches]\n\n[Current Turn budget"));
+    try t.expect(std.mem.endsWith(u8, combined, "\n\nprompt"));
+}
+
+test "race history only needs a default-off correction after an enabled fact" {
+    const t = std.testing;
+    const history = [_]provider.Message{
+        .{ .role = "system", .content = "fixed docs" },
+        .{ .role = "user", .content = "parent: original" },
+        .{ .role = "user", .content = "[race enabled: up to 3 branches]\n\nparent: enabled" },
+        .{ .role = "user", .content = "parent: next" },
+        .{ .role = "user", .content = "[race disabled]\n\nparent: disabled" },
+        .{ .role = "assistant", .content = "[race enabled: up to 8 branches]" },
+    };
+    try t.expect(!raceNeedsAnnouncement(history[0..2]));
+    try t.expect(raceNeedsAnnouncement(history[0..4]));
+    try t.expect(!raceNeedsAnnouncement(&history));
 }

@@ -1,4 +1,4 @@
-# tools.llm 与 tools.agent：调用与实现
+# tools.llm、tools.agent 与 tools.race：调用与实现
 
 少量文件直接 read 最便宜，不调用模型。大量数据的单步判断、分类、抽取适合 llm，通常几秒；批量简单判断优先低成本模型和低 effort，强模型留给少量难题。agent 用于独立多步工作：几十行以上改动的提交前只读审查、先约定接口并划分负责文件的并行实现、需要大量读代码的调查；默认新建子会话从零读代码，fork 继承当前父上下文，接续保留子会话已有历史，不代替 read 或 llm。延迟与成本只是量级提示，依任务、模型和 effort 变化，不是保证。
 
@@ -100,3 +100,15 @@ bash 与子会话复用标准库子进程等待和进程组执行器。所有 ba
 新会话构建 system 时，`src/tools.zig` 根据有效 provider 配置生成 llm 的模型列表：Codex 模型取自 `src/provider/codex.zig` 的目录；Chat Completions 至少提供 `src/provider/openai.zig` 的默认模型，另加入当前配置模型并去重。effort 说明只列常用的 low/medium/high，省略 model/effort 仍继承当前配置；完整档位与映射见 [config.md](config.md) 和 [codex.md](codex.md)。选择只在当前 provider 内进行，不隐式切换 provider。
 
 工具说明中的模型名按 JSON 字符串编码，不直接插入原始配置文本。根会话与默认新建子会话使用同一生成路径，但默认子会话隐藏 agent；fork 复用父 system/schema，不重新生成，agent 的不可递归边界由运行时执行。恢复会话仍沿用日志原始 system，不改写历史。架构理由见 [ADR 0010](adr/0010-subagents.md)、[ADR 0013](adr/0013-llm-functions.md) 与 [ADR 0015](adr/0015-agent-fork.md)。
+
+## tools.race
+
+`await tools.race({ branches: [{ prompt }, ...], verify, timeout_ms: 1800000 })` 仅根会话可用。用户先在 TUI 输入 `/race` 授权，再由模型决定是否调用；默认关闭，开关不写配置。再次 `/race` 关闭。下一条用户消息之前会插入 `[race enabled: up to N branches]` 或 `[race disabled]` 的事实，工具说明和 system 不随开关变化。关闭、非 git 目录等执行条件不满足时返回 `ok:false` 的事实，不伪装成模型任务失败。
+
+`branches` 必须 2 到有效 `[limits].race_branches` 个（默认 3，配置范围 2–8）；每项仅提供 prompt，不覆盖 model/effort，按 fork 默认规则继承父请求有效值。race 分支按本次分支上限同时派发，不等待普通 `agent_concurrency` 槽；运行中的 race 分支仍计入活动 agent 数，普通 agent 等待它们释放容量。每项分配独立 `aN`，继承父 history/system，在 NIB_HOME 下的独立临时 git worktree 执行。使用 race 需要本地 Git（支持 `merge-tree --write-tree`）和 Python 3.9+。当前对无 HEAD、symlink、submodule、sparse checkout、冲突 index 和非 UTF-8 路径的仓库返回明确拒绝事实，避免不完整或转换过的起点。应用时禁用仓库自定义的外部 merge driver；需要这类 driver 才能解决的合并保存 patch，不在父目录执行它。互相独立的 worktree 不是恶意代码安全边界。同一 race 的起点相同，包含父工作区未提交内容和非 ignored 的未跟踪文件；父 index 与 HEAD 不变。仓库子目录 cwd 维持其相对位置。race 分支不能再调用 race 或 agent；其临时 worktree 在结束后删除，不能接续已删除工作区中的任务。
+
+verify 可省略；提供时是 shell 命令，在分支子会话成功结束后、同一分支 cwd 执行，exit 0 才通过。省略时只检查子会话 ok。第一个通过者胜出，立即取消并 join 其他分支，沿用进程组清理，随后应用胜者相对起点的 binary patch（包括新建、删除）。返回 `{ ok, winner, text, changes, stopped, failures }`：winner 是任务 id 或 null，text 是胜者文本，stopped 是被停止的任务 id，failures 记录各失败分支与原因。所有分支失败时不修改父工作区。超时、验证失败、git 或应用失败均作为数据；仅参数错误、用户取消 reject。
+
+应用先隔离三方合并，再检查父工作区并发变化；冲突保存 patch 文件并返回路径，不留下部分应用，父 index 不受影响。成功应用计入父 Run 的 changes，包括分支通过 bash 产生的改动。验证不是正确性保证；所有分支（包括失败与停止者）的已报告用量均计入账单。树中以 `aN race` 标识并显示 won/stopped/failed；日志 race 记录用于 stats 的 `race` 次数、胜出耗时与累计用量报告，不把该汇总再加到整体 usage。
+
+继承的历史里仍可能有父项目绝对路径。结构化 read/edit/write/grep/glob 将父仓库根目录下绝对路径映射到当前 worktree；bash cwd 位于 worktree，命令出现父项目绝对根路径则拒绝并提示使用相对路径。合成 fork tool result 告知这些事实。此兼容层不是安全沙箱，不限制仓库外访问或恶意 shell；设计与局限见 [ADR 0016](adr/0016-race.md)、[妥协登记](compromises.md)。

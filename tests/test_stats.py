@@ -56,6 +56,39 @@ def mechanical_metric(count, samples, *, ms=None, sample_ms=None, timed_count=No
 
 
 class StatsTest(unittest.TestCase):
+    def test_race_corrupt_branch_fields_do_not_crash_reporting(self):
+        races = stats.RaceStats()
+        races.add(dict(state='finished', winner='a1', branches=[None, 'bad',
+                       dict(id='a1', elapsed_ms='unknown', usage='bad')]))
+        report = races.report()
+        self.assertEqual(report['count'], 1)
+        self.assertEqual(report['branches'], 1)
+        self.assertEqual(report['usage']['total_tokens'], 0)
+        self.assertEqual(report['winner_ms']['samples'], 0)
+
+    def test_race_usage_latency_and_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'race.jsonl'
+            synthetic_log(path, [[None]])
+            event = dict(winner='a1', applied=True, branches=[
+                dict(id='a1', elapsed_ms=25, usage=dict(prompt_tokens=100, completion_tokens=10, prompt_cache_hit_tokens=60)),
+                dict(id='a2', elapsed_ms=30, usage=dict(prompt_tokens=200, completion_tokens=20, prompt_cache_hit_tokens=80))])
+            with path.open('a') as stream:
+                stream.write(json.dumps(dict(race=dict(state='started', branches=[dict(id='a1'), dict(id='a2')]), at=1000)) + '\n')
+                stream.write(json.dumps(dict(race=event, at=1000)) + '\n')
+                stream.write(json.dumps(dict(race=dict(winner=None, applied=False, branches=[]), at=1000)) + '\n')
+            report = stats.summarize([path])
+            race = report['race']
+            self.assertEqual((race['count'], race['applied'], race['branches']), (2, 1, 2))
+            self.assertEqual(race['winner_ms'], dict(samples=1, median=25, p90=25))
+            self.assertEqual(race['usage']['total_tokens'], 330)
+            self.assertEqual(race['usage']['prompt_cache_hit_tokens'], 140)
+            self.assertEqual(report['usage']['total_tokens'], 12)
+            self.assertIn('Race: 2', stats.text_report(report))
+            filtered = stats.summarize([path], since=date(2020, 1, 1))
+            self.assertEqual(filtered['race']['count'], 0)
+
+
     def test_child_costs_parent_system_groups_and_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

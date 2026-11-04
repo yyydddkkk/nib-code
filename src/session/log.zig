@@ -24,6 +24,26 @@ pub const AgentSession = struct {
     fork: bool = false,
 };
 
+pub const RaceBranch = struct {
+    id: []const u8,
+    state: @FieldType(@import("events.zig").Progress, "state") = .queued,
+    elapsed_ms: i64 = 0,
+    usage: provider.Usage = .{},
+    @"error": ?[]const u8 = null,
+};
+
+pub const Race = struct {
+    state: enum { started, finished },
+    branches: []const RaceBranch,
+    winner: ?[]const u8 = null,
+    applied: ?bool = null,
+    elapsed_ms: i64 = 0,
+    win_ms: ?i64 = null,
+    usage: provider.Usage = .{},
+    patch: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
 pub const ForkedFrom = struct {
     session: []const u8,
     message_count: usize,
@@ -32,6 +52,7 @@ pub const ForkedFrom = struct {
 pub const Record = struct {
     at: ?i64 = null,
     diagnostic: ?Diagnostic = null,
+    race: ?Race = null,
     agent_session: ?AgentSession = null,
     background: ?@import("events.zig").Background = null,
     usage: ?provider.Usage = null,
@@ -129,6 +150,14 @@ pub const Log = struct {
         log.mutex.lockUncancelable(io);
         defer log.mutex.unlock(io);
         try log.append(io, a, .{ .background = event, .turn_step = step });
+        errdefer log.poisoned = true;
+        try log.file.sync(io);
+    }
+
+    pub fn race(log: *Log, io: std.Io, a: std.mem.Allocator, event: Race, step: u32) !void {
+        log.mutex.lockUncancelable(io);
+        defer log.mutex.unlock(io);
+        try log.append(io, a, .{ .race = event, .turn_step = step });
         errdefer log.poisoned = true;
         try log.file.sync(io);
     }
@@ -252,6 +281,10 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
         if (r.task_ids) |ids| {
             next_agent_id = @max(next_agent_id, std.math.add(u64, ids.agent, 1) catch return error.InvalidSessionLog);
             next_bash_id = @max(next_bash_id, std.math.add(u64, ids.bash, 1) catch return error.InvalidSessionLog);
+        }
+        if (r.race) |event| {
+            for (event.branches) |branch| try restoreId(branch.id, &next_agent_id, &next_bash_id);
+            continue;
         }
         if (r.agent_session) |mapping| {
             try restoreId(mapping.id, &next_agent_id, &next_bash_id);
@@ -763,6 +796,24 @@ test "task ID high water survives omitted calls and later compacted snapshots" {
     const restored = try replay(a, a, data, &history, &tokens);
     try t.expectEqual(@as(u64, 8), restored.next_agent_id);
     try t.expectEqual(@as(u64, 13), restored.next_bash_id);
+}
+
+test "race lifecycle preserves history and reserves branch ids without resumable mappings" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base: Record = .{ .messages = &.{ .{ .role = "system", .content = "base" }, .{ .role = "user", .content = "task" } }, .context_tokens = 42 };
+    const start: Record = .{ .race = .{ .state = .started, .branches = &.{ .{ .id = "a5" }, .{ .id = "a6" } } } };
+    const end: Record = .{ .race = .{ .state = .finished, .branches = &.{ .{ .id = "a5" }, .{ .id = "a6" } }, .winner = "a5", .applied = true } };
+    const data = try std.fmt.allocPrint(a, "{f}\n{f}\n{f}\n", .{ std.json.fmt(base, .{}), std.json.fmt(start, .{}), std.json.fmt(end, .{}) });
+    var history: std.ArrayList(provider.Message) = .empty;
+    var tokens: u64 = 0;
+    const restored = try replay(a, a, data, &history, &tokens);
+    try t.expectEqualDeep(base.messages, history.items);
+    try t.expectEqual(@as(u64, 42), tokens);
+    try t.expectEqual(@as(u64, 7), restored.next_agent_id);
+    try t.expectEqual(@as(usize, 0), restored.agent_sessions.len);
 }
 
 test "agent session mappings survive snapshots and compaction without changing history" {

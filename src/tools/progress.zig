@@ -69,6 +69,17 @@ pub const Queue = struct {
         return error.UnknownProgressId;
     }
 
+    pub fn snapshot(q: *Queue, gpa: std.mem.Allocator, io: std.Io, id: []const u8) !?Progress {
+        q.mutex.lockUncancelable(io);
+        defer q.mutex.unlock(io);
+        var i = q.slots.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, q.slots.items[i].value.id, id)) return try q.slots.items[i].value.clone(gpa);
+        }
+        return null;
+    }
+
     pub fn currentInvocation(q: *Queue, io: std.Io, id: []const u8) usize {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);

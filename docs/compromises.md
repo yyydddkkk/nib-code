@@ -27,6 +27,12 @@
 | 流式响应空闲超时通过替换 HTTP 连接底层 reader 的 Io vtable 实现 | `src/provider/idle.zig` | `std.http.Client` 没有读取超时；替换 `connection.stream_reader.io` 依赖标准库内部结构，升级 Zig 时可能失效 | 标准库 HTTP 客户端支持读取超时或截止时间 |
 | bash 命令部分超过 256 个 shell 词即拒绝 | `src/tools/policy.zig` | 检查器用固定缓冲区存放命令部分的词；heredoc 正文已不计入 | 检查器不再需要固定缓冲区 |
 
+## race fork 的路径兼容
+
+| 名称 | 位置 | 原因 | 删除条件 |
+|---|---|---|---|
+| 父根绝对路径映射与 bash 文本拒绝 | race fork 输入、files/search/bash | fork 保留父 system/history 原始字节，历史中的绝对路径仍指向父项目；结构化文件工具按路径边界映射到分支 worktree，bash 含父根绝对路径则拒绝并提示相对路径。这不是恶意 shell 隔离，别名、动态拼接和仓库外路径不在保证内 | 可在挂载命名空间中把 worktree 挂到原路径，且验证 cwd、子进程、日志和缓存语义后，删除文本检查与路径映射 |
+
 ## 写死的策略
 
 这些是用户的预算和偏好，现在写成了常量，应进入 `config.toml`。

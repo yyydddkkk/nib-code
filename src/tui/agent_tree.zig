@@ -39,7 +39,7 @@ const Row = struct {
     fn init(gpa: std.mem.Allocator, p: Progress, last: bool) !Row {
         var text: std.ArrayList(u8) = .empty;
         errdefer text.deinit(gpa);
-        try text.print(gpa, "  {s} {s}{s} {s}", .{ if (last) "└─" else "├─", p.id, if (p.fork) " fork" else "", if (p.kind == .bash) "bash " else "" });
+        try text.print(gpa, "  {s} {s}{s} {s}", .{ if (last) "└─" else "├─", p.id, if (p.race) " race" else if (p.fork) " fork" else "", if (p.kind == .bash) "bash " else "" });
         const prompt_start = text.items.len;
         var end: usize = 0;
         var chars: usize = 0;
@@ -299,4 +299,17 @@ test "fork label follows task id" {
     defer tree.deinit(testing.allocator);
     try tree.update(testing.allocator, &.{.{ .id = "a3", .fork = true, .prompt = "child" }});
     try testing.expectEqualStrings("  └─ a3 fork child · working · step 0", tree.rows.items[0].text);
+}
+
+test "race tree preserves won stopped and failed branch identities" {
+    var tree: Tree = .{};
+    defer tree.deinit(testing.allocator);
+    try tree.update(testing.allocator, &.{
+        .{ .id = "a1", .prompt = "first", .fork = true, .race = true, .state = .won },
+        .{ .id = "a2", .prompt = "second", .fork = true, .race = true, .state = .stopped },
+        .{ .id = "a3", .prompt = "third", .fork = true, .race = true, .state = .failed },
+    });
+    try testing.expectEqualStrings("  ├─ a1 race first · won · step 0", tree.rows.items[0].text);
+    try testing.expectEqualStrings("  ├─ a2 race second · stopped · step 0", tree.rows.items[1].text);
+    try testing.expectEqualStrings("  └─ a3 race third · failed · step 0", tree.rows.items[2].text);
 }

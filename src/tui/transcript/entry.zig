@@ -91,7 +91,7 @@ pub const Entry = struct {
                             try agent_tree.appendElapsed(gpa, &e.label, p.elapsed_ms);
                             try e.label.print(gpa, " · {s}", .{if (p.background) "background" else @tagName(p.state)});
                         } else {
-                            try e.label.print(gpa, "agent · {s} · step {d}", .{ if (p.background) "background" else "running", p.step });
+                            try e.label.print(gpa, "{s} · {s} · step {d}", .{ if (p.race) "race" else "agent", if (p.background) "background" else if (p.race) @tagName(p.state) else "running", p.step });
                             try appendAction(gpa, &e.label, p);
                             try appendTokens(gpa, &e.label, p.usage.prompt_tokens + p.usage.completion_tokens);
                         }
@@ -101,19 +101,27 @@ pub const Entry = struct {
                         var done: usize = 0;
                         var failed: usize = 0;
                         var bash_count: usize = 0;
+                        var race_count: usize = 0;
+                        var won: usize = 0;
+                        var stopped: usize = 0;
                         var tokens: u64 = 0;
                         for (agents) |p| {
                             if (p.kind == .bash) bash_count += 1;
+                            if (p.race) race_count += 1;
                             switch (p.state) {
                                 .working => working += 1,
                                 .queued => queued += 1,
                                 .done => done += 1,
+                                .won => won += 1,
+                                .stopped => stopped += 1,
                                 else => failed += 1,
                             }
                             tokens += p.usage.prompt_tokens + p.usage.completion_tokens;
                         }
-                        try e.label.print(gpa, "{s} ×{d} · {s} · {d} working, {d} done", .{ if (bash_count == agents.len) "bash" else if (bash_count == 0) "agent" else "task", agents.len, if (e.run == .running) "running" else "background", working, done });
+                        try e.label.print(gpa, "{s} ×{d} · {s} · {d} working, {d} done", .{ if (race_count == agents.len) "race" else if (bash_count == agents.len) "bash" else if (bash_count == 0) "agent" else "task", agents.len, if (e.run == .running) "running" else "background", working, done });
                         if (queued > 0) try e.label.print(gpa, ", {d} queued", .{queued});
+                        if (won > 0) try e.label.print(gpa, ", {d} won", .{won});
+                        if (stopped > 0) try e.label.print(gpa, ", {d} stopped", .{stopped});
                         if (failed > 0) try e.label.print(gpa, ", {d} failed", .{failed});
                         if (bash_count < agents.len) try appendTokens(gpa, &e.label, tokens);
                     }

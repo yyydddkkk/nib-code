@@ -6,7 +6,7 @@ const config = @import("../config.zig");
 const ChangeText = @import("transcript.zig").ChangeText;
 const provider = @import("../provider.zig");
 
-pub const Command = enum { help, new, @"resume", compact, effort, copy, reflect, js };
+pub const Command = enum { help, new, @"resume", compact, effort, race, copy, reflect, js };
 
 pub const Choices = enum { none, efforts, sessions };
 
@@ -26,6 +26,7 @@ pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .@"resume" = .{ .args = "<id>", .help = "switch to an earlier session in this directory", .choices = .sessions, .needs_arg = true },
     .compact = .{ .help = "summarize earlier history now" },
     .effort = .{ .args = "[level]", .help = "show or set reasoning effort", .choices = .efforts },
+    .race = .{ .help = "toggle race authorization for this process (not saved)" },
     .copy = .{ .help = "copy the last answer to the clipboard", .while_busy = true },
     .reflect = .{ .args = "[focus]", .help = "review this session for harness problems; saved to reflections.md" },
     .js = .{ .args = "<code>", .help = "run JavaScript in the sandbox", .needs_arg = true },
@@ -179,6 +180,16 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             app.context = session.context_tokens;
             try app.report(.info, "{s} session {s}", .{ if (c == .new) "new" else "resumed", session.id[0..8] });
         },
+        .race => {
+            if (arg.len != 0) return app.transcript.add(gpa, .err, "usage: /race (toggle; not saved)");
+            session.tools.race_enabled = !session.tools.race_enabled;
+            session.tools.race_fact_pending = true;
+            if (session.tools.race_enabled) {
+                try app.report(.info, "race enabled: up to {d} branches (not saved)", .{session.cfg.limits.race_branches});
+            } else {
+                try app.transcript.add(gpa, .info, "race disabled (not saved)");
+            }
+        },
         .copy => {
             const answer = app.transcript.lastAnswer() orelse return app.transcript.add(gpa, .err, "no answer to copy yet");
             try app.vx.copyToSystemClipboard(app.w, answer, gpa);
@@ -281,4 +292,28 @@ test "accepting a command waits for required arguments only" {
     const help = try helpText(testing.allocator);
     defer testing.allocator.free(help);
     try testing.expect(std.mem.indexOf(u8, help, "/resume <id>") != null);
+}
+
+test "race command toggles only process authorization and rejects arguments" {
+    var session: @import("../session.zig").Session = undefined;
+    session.cfg = .{ .base_url = "", .api_key = "", .model = "mock", .limits = .{ .race_branches = 8 } };
+    session.tools = .{ .io = testing.io, .home = "/unused" };
+    var app: App = undefined;
+    app.gpa = testing.allocator;
+    app.session = &session;
+    app.transcript = .{};
+    defer app.transcript.deinit(testing.allocator);
+    try testing.expect(!specs.get(.race).while_busy);
+    try testing.expectEqual(Command.race, parse("/race").?.known.command);
+    try execute(&app, .race, "", "/race");
+    try testing.expect(session.tools.race_enabled);
+    try testing.expect(session.tools.race_fact_pending);
+    session.tools.race_fact_pending = false;
+    try execute(&app, .race, "on", "/race on");
+    try testing.expect(session.tools.race_enabled);
+    try testing.expect(!session.tools.race_fact_pending);
+    try execute(&app, .race, "", "/race");
+    try testing.expect(!session.tools.race_enabled);
+    try testing.expect(session.tools.race_fact_pending);
+    try testing.expectEqual(@as(usize, 8), session.cfg.limits.race_branches);
 }

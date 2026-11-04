@@ -109,7 +109,7 @@ def assert_timing(records, *, final_only=False):
 
 def assert_turn_timing(terminal, records, *, completed_steps=None):
     timing = terminal["timing"]
-    assert set(timing) == {"wall_ms", "model_ms", "run_ms", "tool_bytes", "output_bytes", "llm_calls", "agent_calls"}, timing
+    assert set(timing) == {"wall_ms", "model_ms", "run_ms", "tool_bytes", "output_bytes", "llm_calls", "agent_calls", "race_branches"}, timing
     assert all(type(value) is int and value >= 0 for value in timing.values()), timing
     steps = [record for record in records if "model_ms" in record]
     count = terminal["steps"] if completed_steps is None else completed_steps
@@ -263,16 +263,16 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         other = tmp / "other"
         other.mkdir()
         ask("no session", "-c", workdir=other, ok=False)
-        ask("one", workdir=other, window="4352")
-        result = ask("two", "--continue", workdir=other, window="4352")
+        ask("one", workdir=other, window="8192")
+        result = ask("two", "--continue", workdir=other, window="8192")
         assert b"compacted context:" in result.stderr
         compact_log = next(p for p in (tmp / "nib/sessions").glob("[0-9a-f]" * 32 + ".jsonl") if p != log)
         compacted, records = replay(compact_log)
         replacements = [r for r in records[1:] if r["messages"][0].get("content", "").startswith("Earlier session summary:")]
         assert len(replacements) == 1
-        assert replacements[0]["context_tokens"] <= 2176
+        assert replacements[0]["context_tokens"] <= 4096
         assert compacted[1]["content"].startswith("Earlier session summary:")
-        ask("three", "-c", workdir=other, window="4352")
+        ask("three", "-c", workdir=other, window="8192")
         assert read_requests(requests_path)[-2]["messages"] == compacted + [{"role": "user", "content": "three"}]
         def events(result):
             assert result.stderr == b"", result.stderr
@@ -336,7 +336,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         assert missing["message"] == "MissingPrompt" and "timing" not in missing
         json_cwd = tmp / "json"
         json_cwd.mkdir()
-        compact_json = events(ask("json compact", "--json", workdir=json_cwd, window="4352"))
+        compact_json = events(ask("json compact", "--json", workdir=json_cwd, window="8192"))
         assert any("notice" in e for e in compact_json)
         assert [e["step"]["n"] for e in compact_json if "step" in e] == list(
             range(1, compact_json[-1]["end"]["steps"] + 1)), compact_json

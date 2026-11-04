@@ -36,6 +36,7 @@ llm_concurrency = 4
 llm_calls_per_run = 100
 llm_input_kib = 256
 agent_concurrency = 4
+race_branches = 3
 # max_steps = 50  # 可选；省略时不设 Step 上限
 stream_idle_timeout_s = 300
 ```
@@ -55,7 +56,8 @@ DeepSeek 使用 Chat Completions：设置 `NIB_PROVIDER=chat_completions`，配 
 | `llm_concurrency` | `tools.llm` 每进程同时进行的请求数，超出排队 | 4 | 1–64 |
 | `llm_calls_per_run` | 每个 Run 的 `tools.llm` 调用上限，超出 reject | 100 | 1–10000 |
 | `llm_input_kib` | 单次 prompt + 序列化 input 的 UTF-8 字节上限（KiB），超出 reject，不截断 | 256 | 1–65536 |
-| `agent_concurrency` | 每进程同时运行的子 agent 数，超出排队 | 4 | 1–64 |
+| `agent_concurrency` | 每进程普通 `tools.agent` 的并发槽，超出排队；race 分支按独立的 `race_branches` 上限派发 | 4 | 1–64 |
+| `race_branches` | 单次 `tools.race` 的分支数上限（仅根会话，需用户先用 `/race` 授权） | 3 | 2–8 |
 | `max_steps` | 每个 Turn 的 Step 上限，耗尽时返回 `TooManySteps`；省略时不设上限（内部为 `null`） | 无上限 | 1–100000 |
 | `stream_idle_timeout_s` | 流式模型响应连续无字节到达的超时秒数（含首次数据前等待；心跳、元数据也重置计时），超时按连接中断沿用重试策略 | 300 | 1–3600 |
 
@@ -66,6 +68,12 @@ DeepSeek 使用 Chat Completions：设置 `NIB_PROVIDER=chat_completions`，配 
 显式设置 `max_steps` 时，新会话的 system prompt 会写明每个 Turn 的上限；剩余不多于 3 个 Step 时，每个 Run 输出末尾追加剩余步数（不计入 16 KiB 输出预算）。耗尽后不再请求模型；正在运行的后台 agent/bash 会先完成，结果按现有格式写进历史和日志，下一 Turn 可见。Turn 仍以 `TooManySteps` / `stopped after N steps` 结束；若等待了任务，提示会列出任务类型与 ID。等待期间 Esc 仍会立即取消 Turn 并停止后台任务。未设置时不添加这些提示，也不限制 Step 数。恢复会话保留原始 system；若当前配置与其中记录的上限不同，会在每个 Turn 的用户输入前附加当前预算事实，避免沿用过期上限。
 
 配置文件不存秘密，也不接受 API key、token、密码或凭证字段。Chat Completions 的 key 使用 `NIB_API_KEY` / `DEEPSEEK_API_KEY`；Codex 使用现有登录文件。不要把秘密放进 URL。
+
+## /race 进程内授权
+
+TUI `/race` 在空闲时切换授权，默认关闭，不接受参数，也不写入 `config.toml`。同一进程中的 `/new` 和 `/resume` 保留开关；退出后重新启动（包括恢复日志）仍默认关闭。`race_branches` 只控制分支数上限，不会自动开启 race；它随有效配置传给子会话。
+
+开关不改变 system 或工具说明。开关切换后，仅在下一条根会话用户输入前附加 `[race enabled: up to N branches]` 或 `[race disabled]` 事实，`N` 使用当前有效配置，发送后清除待通知标志；默认关闭且未切换时不附加事实。进程内切换会话后会重新通知；启动恢复的历史中若最近一次授权事实为开启，也会通知当前默认关闭状态。用户授权后仍由模型决定是否调用 `tools.race` 及各分支 prompt。工具签名固定为 `tools.race({ branches: [{prompt}], verify?, timeout_ms = 1800000 })`，返回 `{ok, winner, text, changes, stopped, failures}`；各分支从隔离的仓库快照 fork，可选 `verify` 在成功分支工作树中执行。第一个成功且验证通过者胜出，其他分支停止并 join，再把胜者改动应用回父工作区。工具说明在根会话及 fork 中始终保留，与授权开关无关；fork 不可再次调用 race 或 agent。实现边界见 [ADR 0016](adr/0016-race.md)。
 
 ## 覆盖优先级
 

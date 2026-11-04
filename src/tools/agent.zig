@@ -60,10 +60,10 @@ pub fn agent(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
     }
     sandbox.tool_identity = .{ .id = id };
     transferred = true;
-    return execute(t, gpa, args, &t.cancel, id, t.run_id, false, fork_input);
+    return execute(t, gpa, args, &t.cancel, id, t.run_id, false, fork_input, null);
 }
 
-pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), id: []const u8, run_id: usize, background: bool, fork_input: ?[]const u8) !sandbox.ToolResult {
+pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), id: []const u8, run_id: usize, background: bool, fork_input: ?[]const u8, cwd: ?[]const u8) !sandbox.ToolResult {
     defer if (!background) t.agent_sessions.release(t.io, id);
     const session = t.agent_sessions.session(t.io, id);
     const a = try std.json.parseFromSlice(Args, gpa, args, .{ .ignore_unknown_fields = true });
@@ -74,7 +74,7 @@ pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *con
     var tracker: Tracker = .{
         .t = t,
         .arena = .init(gpa),
-        .value = .{ .id = id, .run = run_id, .invocation = t.progress.currentInvocation(t.io, id), .background = background, .fork = t.agent_sessions.isFork(t.io, id), .prompt = a.value.prompt },
+        .value = .{ .id = id, .run = run_id, .invocation = t.progress.currentInvocation(t.io, id), .background = background, .fork = fork_input != null or t.agent_sessions.isFork(t.io, id), .race = cwd != null, .prompt = a.value.prompt },
         .output = .{ .id = id, .requested_session = session },
     };
     defer tracker.arena.deinit();
@@ -89,7 +89,7 @@ pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *con
         return error.Canceled;
     }
     t.agents_mutex.lockUncancelable(t.io);
-    while (t.agents_active >= cfg.limits.agent_concurrency and !cancel.load(.acquire))
+    while (cwd == null and t.agents_active >= cfg.limits.agent_concurrency and !cancel.load(.acquire))
         t.agents_changed.waitTimeout(t.io, &t.agents_mutex, .{ .duration = .{ .raw = .fromMilliseconds(20), .clock = .awake } }) catch {};
     const canceled = cancel.load(.acquire);
     if (!canceled) t.agents_active += 1;
@@ -117,7 +117,7 @@ pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *con
     defer if (fork_input == null) gpa.free(input);
     const started = std.Io.Clock.awake.now(t.io);
     const result = process.run(gpa, t.io, .{
-        .spawn = .{ .argv = if (session) |child| &.{ executable, "ask", "--json", "--agent-input", "--resume", child, "-" } else &.{ executable, "ask", "--json", "--agent-input", "-" }, .environ_map = &env, .stdout = .pipe, .stderr = .ignore },
+        .spawn = .{ .argv = if (session) |child| &.{ executable, "ask", "--json", "--agent-input", "--resume", child, "-" } else &.{ executable, "ask", "--json", "--agent-input", "-" }, .environ_map = &env, .cwd = if (cwd) |path| .{ .path = path } else .inherit, .stdout = .pipe, .stderr = .ignore },
         .input = input,
         .cancel = cancel,
         .timeout_ms = a.value.timeout_ms,
@@ -149,7 +149,7 @@ pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *con
     } else if (!result.term.success())
         output.failure orelse "AgentFailed (process crashed or exited nonzero)"
     else if (output.failure) |failure| failure else if (!output.ended) "MissingAgentResult" else null;
-    if (reason == null) state = .done;
+    if (reason == null) state = if (cwd != null) .working else .done;
     return output.result(gpa, elapsed_ms, reason, if (state == .timed_out) a.value.timeout_ms else null);
 }
 
@@ -269,6 +269,7 @@ const Tracker = struct {
     }
 
     fn bindSession(tr: *Tracker, session: []const u8) !void {
+        if (tr.value.race) return;
         const t = tr.t;
         const gpa = tr.arena.child_allocator;
         if (t.agent_sessions.session(t.io, tr.value.id)) |known| {
@@ -333,6 +334,7 @@ const Tracker = struct {
             const u = try std.json.parseFromValue(provider.Usage, gpa, snapshot, .{ .ignore_unknown_fields = true });
             defer u.deinit();
             tr.value.usage = u.value;
+            tr.output.usage = u.value;
             // Each Run repeats the Step's usage; compaction usage has no following Run.
             if (tr.post_run_usage) {
                 tr.post_run_usage = false;
@@ -460,13 +462,13 @@ test "execute publishes the reserved invocation on foreground and background can
     try t.agent_sessions.add(testing.allocator, t.io, id, "child-session", true);
     const first = t.progress.currentInvocation(t.io, id);
     t.cancel.store(true, .release);
-    try testing.expectError(error.Canceled, execute(&t, testing.allocator, "{\"prompt\":\"first\"}", &t.cancel, id, 1, false, null));
+    try testing.expectError(error.Canceled, execute(&t, testing.allocator, "{\"prompt\":\"first\"}", &t.cancel, id, 1, false, null, null));
     try t.progress.restart(testing.allocator, t.io, .{ .id = id, .run = 1, .prompt = "second", .background = true, .state = .queued });
     _ = try t.agent_sessions.reserve(t.io, id);
     defer t.agent_sessions.release(t.io, id);
     const second = t.progress.currentInvocation(t.io, id);
     try testing.expect(second > first);
-    try testing.expectError(error.Canceled, execute(&t, testing.allocator, "{\"prompt\":\"second\",\"resume\":\"a1\",\"background\":true}", &t.cancel, id, 1, true, null));
+    try testing.expectError(error.Canceled, execute(&t, testing.allocator, "{\"prompt\":\"second\",\"resume\":\"a1\",\"background\":true}", &t.cancel, id, 1, true, null, null));
     try testing.expectEqual(@as(usize, 2), t.progress.slots.items.len);
     for (t.progress.slots.items, [_]usize{ first, second }, [_]bool{ false, true }) |slot, invocation, background| {
         try testing.expectEqualStrings("a1", slot.value.id);
@@ -474,4 +476,23 @@ test "execute publishes the reserved invocation on foreground and background can
         try testing.expectEqual(background, slot.value.background);
         try testing.expectEqual(.canceled, slot.value.state);
     }
+}
+
+test "race tracker never persists resumable sessions and accounts partial usage" {
+    const testing = std.testing;
+    var t: Tools = .{ .io = testing.io, .home = "/unused" };
+    defer t.progress.deinit(testing.allocator);
+    defer t.agent_sessions.deinit(testing.allocator);
+    const id = try t.progress.addAgent(testing.allocator, testing.io, "race", 1, false, true);
+    var tr: Tracker = .{ .t = &t, .arena = .init(testing.allocator), .value = .{ .id = id, .prompt = "race", .race = true, .fork = true } };
+    defer tr.arena.deinit();
+    try tr.bindSession("race-child-session");
+    try testing.expect(t.agent_sessions.session(testing.io, id) == null);
+    try testing.expectError(error.AgentNotFound, t.agent_sessions.reserve(testing.io, id));
+    try tr.observe("{\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":7}}");
+    try testing.expectEqual(@as(u64, 123), tr.output.usage.prompt_tokens);
+    var p = (try t.progress.snapshot(testing.allocator, testing.io, id)).?;
+    defer p.deinit(testing.allocator);
+    try testing.expect(p.race);
+    try testing.expectEqual(@as(u64, 7), p.usage.completion_tokens);
 }

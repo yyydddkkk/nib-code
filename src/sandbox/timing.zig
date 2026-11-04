@@ -21,6 +21,7 @@ pub const Run = struct {
     omitted: u64 = 0,
     llm_calls: u64 = 0,
     agent_calls: u64 = 0,
+    race_branches: u64 = 0,
     tool_bytes: u64 = 0,
     output_bytes: u64 = 0,
 
@@ -82,7 +83,7 @@ pub const Run = struct {
 };
 
 fn stableName(name: []const u8) []const u8 {
-    inline for (.{ "read", "write", "edit", "grep", "glob", "bash", "stop", "fetch", "agent", "llm", "sleep" }) |known| {
+    inline for (.{ "read", "write", "edit", "grep", "glob", "bash", "stop", "fetch", "agent", "race", "llm", "sleep" }) |known| {
         if (std.mem.eql(u8, name, known)) return known;
     }
     return "unknown";
@@ -138,4 +139,11 @@ test "delegation counts include overflow and exclude failed dispatch" {
     try t.expectEqual(@as(u64, 205), r.agent_calls);
     try t.expectEqual(@as(u64, 1), r.llm_calls);
     try t.expectEqual(@as(u64, 6), r.omitted);
+}
+
+test "race dispatch keeps its tool name and is not an ordinary agent call" {
+    var run: Run = .init(std.testing.io, .now(std.testing.io, .awake));
+    const index = run.reserve("race").?;
+    try std.testing.expectEqualStrings("race", run.entries[index].name);
+    try std.testing.expectEqual(@as(u64, 0), run.agent_calls);
 }

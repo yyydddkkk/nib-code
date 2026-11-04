@@ -60,7 +60,7 @@ TUI 在每个 Turn 的内容后追加一行淡色账单，例如：
 12 steps · 3m10s · think 1m40 · tools 1m20 · 3.2M→18k B · 45k tok (91% cached) · llm ×8 · agent ×1
 ```
 
-宽度不足时从右向左移除整个字段，不换行；llm/agent 次数为 0 时不显示。失败或取消时开头为 `failed` 或 `canceled`，Step 数、think/tools 和调用次数只计已提交的完整 Step。总耗时是整个 Turn 的单调墙钟时间，不是 Step 耗时之和；think/tools 分别复用 Step 的 `model_ms`/`run_ms`。token 数使用完成 Step 后的本轮累计 usage（prompt + completion，包含截至该点已报告的压缩和委派用量），缓存率为 prompt_cache_hit_tokens / prompt_tokens。取消或失败的未完成 Step 不纳入账单，但墙钟仍包含其等待时间。
+宽度不足时从右向左移除整个字段，不换行；llm/agent 次数为 0 时不显示。存在实际派发的 race 分支时末尾追加 `race ×N branches`，零分支时省略；该计数包括失败、停止或未完成 Step 中已派发的分支。失败或取消时开头为 `failed` 或 `canceled`，Step 数、think/tools 和调用次数只计已提交的完整 Step。总耗时是整个 Turn 的单调墙钟时间，不是 Step 耗时之和；think/tools 分别复用 Step 的 `model_ms`/`run_ms`。token 数使用完成 Step 后的本轮累计 usage（prompt + completion，包含截至该点已报告的压缩和委派用量），缓存率为 prompt_cache_hit_tokens / prompt_tokens。取消或失败的未完成 Step 不纳入账单，但墙钟仍包含其等待时间。
 
 `TurnSummary.timing` 的 `tool_bytes`、`output_bytes` 为本轮已提交完整 Step 的同名字段之和，0 也保留键；失败和取消仍沿用上述完整 Step 口径。`output_bytes` 包含上述新插入的后台消息，旧日志中该字段可能仅包含 Run 输出。TUI 在 tools 后显示 `3.2M→18k B`（tool_bytes → output_bytes），`B` 表示字节，`k`/`M` 为十进制缩写；两项字节数都为 0 时省略此字段，只有后台消息输出时仍显示。
 
@@ -85,6 +85,10 @@ assistant 消息的可选 `step_effort: {effort, source}` 保存界面元数据�
 “子会话已记录成本”（JSON `child_costs`）以每个带 `parent_session_id` 的入选子日志为一个样本，含前台与后台。`steps`、`model_ms`、`prompt_tokens`、`uncached_prompt_tokens` 分别统计每子会话完整 Step 数、累计模型时间（毫秒）、累计输入 token（含缓存）、累计未缓存输入 token 的中位数、p90 和样本数。未缓存量逐 Step 用 `prompt_tokens - prompt_cache_hit_tokens` 计算后累加，要求两字段均为非负整数且 cache 不大于 prompt；缺字段不补零，也不由两个分位数相减。`full_range_sessions` 要求非零完整 Step 且所有完整 Step 都入选；`--since` 截断的日志列入 `partial_range_sessions`，无完整 Step 的日志列入 `no_step_sessions`，两者不进入分布。计时与 token 各自要求该子会话所有完整 Step 对应字段有效，缺失或无效不补零，因此各指标 samples 可不同。只累计子日志自身 Step 字段，不叠加父会话 usage 或工具结果 usage；缓存输入已包含在 prompt 中。失败、取消或仍运行的子日志也可能入选，这些是已提交成本的下界，不代表成功任务或完整端到端耗时，更不是费用估算。
 
 `child_costs.by_parent_system` 通过 `parent_session_id` 查找本次输入日志中的父 header，按其 `system_sha` 分组。比较工具说明修改前后时传入含父、子日志的目录，查看此字段；只传子日志或父标签缺失/无效时归 `unknown`，不猜测或回退到子 `system_sha`。子会话隐藏 agent 工具，自身哈希不一定随 agent 说明改变。父 header 的查找不受记录日期或 cwd 筛选影响，仅用于标签关联；成本仍只来自入选子日志。现有 `--group-by system` 仍按各日志自己的哈希分组，和这里的父哈希分组不同。恢复会话保留原 header 和 system，仍归原实验组。
+
+`tools.race` 在根日志追加独立的 `race` 生命周期记录，`state` 为 `started` / `finished`。`branches` 含每个任务的 `id`、终态、`elapsed_ms`、`usage` 与失败原因；完成记录含 `winner`、`win_ms`（首个通过验证的时刻，相对 race 开始）、`applied`、总耗时、累计 usage，以及失败时的 patch 路径。恢复忽略这些记录对 history 的影响，但按分支 id 推进 a 编号；临时工作树任务不保存可接续映射。Turn timing 的 `race_branches` 记录实际派发的分支数，账单显示 race 分支数，所有已报告用量沿用 agent 的归集路径。
+
+stats 的 JSON `race` 仅聚合根会话入选的 finished 记录：`count`、`applied`、`branches`，`winner_ms` 的 samples/median/p90，以及所有分支累计 `usage`。开始记录不重复计数；无胜者不计耗时样本。该用量用来观察额度换时间，不再加到整体 usage；中断前未报告的用量无法补全。
 
 “工具数据度量”（JSON `tool_data`）独立累计 Step 顶层 `tool_bytes`、`output_bytes` 的有效样本数和总字节，不与 Run/calls 相加，也不从其他层回填。`output_tool_ratio` 按 `run_results[]` 中两字段有效且 `tool_bytes>0` 的 Run，统计各自 `output_bytes/tool_bytes` 的中位数、p90（nearest-rank）和样本数，不是总量之比，比例可大于 1。工具占比按有效 `calls[].result_bytes` 的总和为分母，按 name 汇总字节和调用数；明细被省略时覆盖有限，不代表全部工具数据。旧日志缺失字段跳过，不补零；明细总字节为零时占比为 n/a。
 

@@ -4,7 +4,7 @@
 
 ## 常用命令
 
-- 构建：`zig build`；测试：`zig build test --summary all`；端到端（本地 mock，无真实 key）：`zig build` 后 `python3 tests/test_session.py`、`python3 tests/test_agent.py`、`python3 tests/test_agent_reuse.py`、`python3 tests/test_agent_fork.py`、`python3 tests/test_background_agent.py`、`python3 tests/test_background_bash.py`、`python3 tests/test_codex.py`、`python3 tests/test_llm.py`、`python3 tests/test_stats.py`、`python3 tests/test_effort.py`、`python3 tests/test_interjections.py`、`python3 tests/test_limits.py`、`python3 tests/test_replay.py`、`python3 tests/test_stream_idle.py`、`python3 tests/test_files.py`
+- 构建：`zig build`；测试：`zig build test --summary all`；端到端（本地 mock，无真实 key）：`zig build` 后 `python3 tests/test_session.py`、`python3 tests/test_agent.py`、`python3 tests/test_agent_reuse.py`、`python3 tests/test_agent_fork.py`、`python3 tests/test_race.py`、`python3 tests/test_background_agent.py`、`python3 tests/test_background_bash.py`、`python3 tests/test_codex.py`、`python3 tests/test_llm.py`、`python3 tests/test_stats.py`、`python3 tests/test_effort.py`、`python3 tests/test_interjections.py`、`python3 tests/test_limits.py`、`python3 tests/test_replay.py`、`python3 tests/test_stream_idle.py`、`python3 tests/test_files.py`
 - 安装到 `~/.local/bin/nib`：`zig build -Doptimize=ReleaseFast --prefix ~/.local`；版本号在 `build.zig.zon`，`nib --version` 查看。
 - 运行：`./zig-out/bin/nib`（TUI）、`nib ask '<prompt>'`、`nib js '<code>'`；TUI 用 `/compact` 手动压缩上下文。
 - 恢复：`nib -c` / `nib --continue`；`nib --resume <32位小写十六进制ID>`。`ask` 同样支持，选项可放在 prompt 前后。
@@ -18,6 +18,8 @@
 - 会话日志、恢复/取消语义、计时字段与统计口径：[docs/session-log.md](docs/session-log.md)。
 - `tools.llm({ prompt, input, schema, model, effort }) → { text, data, usage }`；`tools.agent({ prompt, resume?: string, fork?: boolean, timeout_ms, model, effort, background }) → { ok, id, text, usage, changes, error? }`（resume 使用当前父会话的 agent 任务 id，如 `a1`；接续沿用 `a1`，不分配新 id，前台结果、后台启动和完成、progress/tree 均使用该 id；同一 agent 一次只允许一个在途调用，busy、不存在或非本会话 agent 均返回 `ok:false`；不暴露内部子会话 ID；子会话失败为数据，仅参数错误/用户取消 reject；usage/changes 仅本次，changes 仅 edit/write）；agent 和 bash 传 `background: true` 时，成功登记后立即返回 `{ id }`，结果在之后的 Step 作为消息插入，agent 结果含同一 id：[接口、限额、用量与取消](docs/tool-delegation.md)。
 
+- `tools.race({ branches: [{ prompt }, ...], verify?: string, timeout_ms?: number }) → { ok, winner, text, changes, stopped, failures }`：仅根会话；TUI `/race` 授权后可用，默认关闭。每分支 fork 到独立临时 git worktree；首个成功并通过可选 verify 的分支胜出，停止其余分支，三方合并回父工作区。所有分支用量计入，冲突保存 patch、不改父文件。
+
 ## 代码地图
 
 目录按 [CONTEXT.md](CONTEXT.md) 的概念划分。`x.zig` 是该部分的入口和对外接口，`x/` 放它的内部实现；新代码放进所属概念的目录，不再往 `src/` 顶层平铺。
@@ -28,7 +30,7 @@
 - `src/session.zig`：Session 引擎（Turn/Step 主循环、模型请求、取消）；`session/` 下：`prompt.zig`（system 模板、提示补丁、实验标签、Step 预算文字、run 工具 schema）、`compact.zig`（上下文压缩与 token 估算）、`run.zig`（执行一次 Run 并转发事件）、日志、指令拼接、事件、Run 输出格式化。
 - `src/provider.zig`：Provider 接口与配置；`provider/` 下是各线路协议和 SSE 解析，`provider/timing.zig` 只负责 run 参数到达进度采样；首个接收活动时间由 Session 复用 Sink.onData 记录。
 - `src/sandbox.zig`：对外类型、JS prelude 与 `eval`；`sandbox/scheduler.zig` 是 Run 的调度器（工具线程、`tools.sleep(ms)` 原生计时器、结算出口；语义见 [docs/run-output.md](docs/run-output.md)），`sandbox/native.zig` 是注册给 QuickJS 的原生函数与 JS 值转换；`sandbox/console.zig` 捕获有界 console 首尾，`sandbox/timing.zig` 在原生工具调度/完成路径记录 Run 内工具调用耗时与结果字节数；`sandbox/record.zig` 在同一个结算出口录制工具参数和结果，`sandbox/replay.zig` + `sandbox/virtual.zig` 用录制结果代替真实工具执行。
-- `src/tools.zig`：工具表（给模型看的 JS 说明集中在这里）、`Tools` 共享状态与调度。`tools/` 下每个工具族一个入口文件，函数名即工具名：`files.zig`（read/edit/write）、`search.zig`（grep/glob）、`web.zig`（fetch）、`bash.zig`、`agent.zig`、`llm.zig`（进程内单步纯模型调用，限额也集中在这里）、`background.zig`（后台 agent/bash 任务，由 Session 持有，跨 Run 存活）；其余是它们的辅助模块。加工具：在 `tools/` 写入口函数，再在表里加一行。
+- `src/tools.zig`：工具表（给模型看的 JS 说明集中在这里）、`Tools` 共享状态与调度。`tools/` 下每个工具族一个入口文件，函数名即工具名：`files.zig`（read/edit/write）、`search.zig`（grep/glob）、`web.zig`（fetch）、`bash.zig`、`agent.zig`、`race.zig`（竞速调度；`race/workspace.zig` + 嵌入的 `workspace.py` 负责 Git 快照、隔离应用和清理）、`llm.zig`（进程内单步纯模型调用，限额也集中在这里）、`background.zig`（后台 agent/bash 任务，由 Session 持有，跨 Run 存活）；其余是它们的辅助模块。加工具：在 `tools/` 写入口函数，再在表里加一行。
 - `src/tui.zig`：TUI 事件循环（按键、Session 事件、渲染）；`tui/` 下：`turn.zig`（在后台线程运行 Turn 或 `/compact`，把 Session 事件转成 UI 事件）、`transcript.zig`（对话模型；`transcript/` 下是条目绘制、标题与预览文字、diff 文本）、`agent_tree.zig`（Run 下方的子 agent/后台任务状态树）、`viewport.zig`（滚动锚定）、`view.zig`（一帧的布局绘制）、`status.zig`（活动行与下边框元数据）、`menu.zig`（`/` 候选菜单）、`commands.zig`（指令表、解析与执行）、`reflect.zig` + `reflect.md`（/reflect 的提示词、reflections.md 追加与 issue 自动发布）、`editor.zig`（输入框、原子粘贴块与进程内草稿历史）、`long_text.zig`（长文本阈值与计数）、`markdown.zig`、`selection.zig`（鼠标选区、高亮与剪贴板复制）。
 - `tests/`：端到端测试和 mock 服务器；`scripts/`：辅助脚本。
 
