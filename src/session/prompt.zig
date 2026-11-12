@@ -13,7 +13,8 @@ pub const tools_json =
 
 /// Prompt lines that compensate for current models. Each id is registered in
 /// docs/compromises.md; NIB_PATCHES_OFF=<id,...|all> drops them so their effect can be measured.
-pub const Patch = struct { id: []const u8, text: []const u8, applies_to: Profile.Set = Profile.all };
+/// Patches with `default_on = false` are added only by NIB_PATCHES_ON=<id,...>; OFF wins over ON.
+pub const Patch = struct { id: []const u8, text: []const u8, applies_to: Profile.Set = Profile.all, default_on: bool = true };
 
 pub const patches = [_]Patch{
     .{
@@ -27,6 +28,19 @@ pub const patches = [_]Patch{
         .id = "expected-continuation",
         .text = "A Run can continue while results match expectations and return at the first unexpected result. Command output redirected to a file can be read within the same Run, returning only the needed portion.",
     },
+    .{
+        .id = "run-build-test",
+        .text = "The same Run can then build and test, returning only what you need (such as failures).",
+    },
+    .{
+        .id = "single-validation",
+        .text = "Before full builds/tests, finish implementation, known regression tests, expected results/fixtures and formatting; aim for one full validation. On failure, fix the failures and revalidate. Keep all necessary checks.",
+    },
+    .{
+        .id = "existing-tests-only",
+        .text = "Run the project's existing tests or checks when they exist. Unless the user asks, do not write new test scripts or install toolchains only to verify your work.",
+        .default_on = false,
+    },
 };
 
 pub fn patchLines(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map, profile: Profile) ![]const u8 {
@@ -34,30 +48,34 @@ pub fn patchLines(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map
 }
 
 fn renderPatches(a: std.mem.Allocator, list: []const Patch, environ: ?*const std.process.Environ.Map, profile: Profile) ![]const u8 {
-    const off = if (environ) |e| e.get("NIB_PATCHES_OFF") orelse "" else "";
+    const off = envValue(environ, "NIB_PATCHES_OFF");
+    const on = envValue(environ, "NIB_PATCHES_ON");
     var out: std.ArrayList(u8) = .empty;
     for (list) |patch| {
         if (!patch.applies_to.contains(profile) or patchDisabled(off, patch.id)) continue;
+        if (!patch.default_on and !patchListed(on, patch.id)) continue;
         try out.print(a, "- {s}\n", .{patch.text});
     }
     return out.toOwnedSlice(a);
 }
 
-fn patchDisabled(off: []const u8, id: []const u8) bool {
-    var ids = std.mem.splitScalar(u8, off, ',');
+fn envValue(environ: ?*const std.process.Environ.Map, name: []const u8) []const u8 {
+    return if (environ) |e| e.get(name) orelse "" else "";
+}
+
+fn patchListed(list: []const u8, id: []const u8) bool {
+    var ids = std.mem.splitScalar(u8, list, ',');
     while (ids.next()) |raw| {
-        const item = std.mem.trim(u8, raw, " ");
-        if (std.mem.eql(u8, item, "all") or std.mem.eql(u8, item, id)) return true;
+        if (std.mem.eql(u8, std.mem.trim(u8, raw, " "), id)) return true;
     }
     return false;
 }
 
-pub fn disabledPatches(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map) !?[]const []const u8 {
-    const off = if (environ) |e| e.get("NIB_PATCHES_OFF") orelse "" else "";
-    var ids: std.ArrayList([]const u8) = .empty;
-    for (patches) |patch| {
-        if (patchDisabled(off, patch.id)) try ids.append(a, patch.id);
-    }
+fn patchDisabled(off: []const u8, id: []const u8) bool {
+    return patchListed(off, "all") or patchListed(off, id);
+}
+
+fn sortedIds(a: std.mem.Allocator, ids: *std.ArrayList([]const u8)) !?[]const []const u8 {
     if (ids.items.len == 0) return null;
     std.mem.sort([]const u8, ids.items, {}, struct {
         fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -65,6 +83,25 @@ pub fn disabledPatches(a: std.mem.Allocator, environ: ?*const std.process.Enviro
         }
     }.lessThan);
     return try ids.toOwnedSlice(a);
+}
+
+pub fn disabledPatches(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map) !?[]const []const u8 {
+    const off = envValue(environ, "NIB_PATCHES_OFF");
+    var ids: std.ArrayList([]const u8) = .empty;
+    for (patches) |patch| {
+        if (patch.default_on and patchDisabled(off, patch.id)) try ids.append(a, patch.id);
+    }
+    return sortedIds(a, &ids);
+}
+
+pub fn enabledOptInPatches(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map) !?[]const []const u8 {
+    const off = envValue(environ, "NIB_PATCHES_OFF");
+    const on = envValue(environ, "NIB_PATCHES_ON");
+    var ids: std.ArrayList([]const u8) = .empty;
+    for (patches) |patch| {
+        if (!patch.default_on and patchListed(on, patch.id) and !patchDisabled(off, patch.id)) try ids.append(a, patch.id);
+    }
+    return sortedIds(a, &ids);
 }
 
 pub fn systemSha(base: []const u8) [12]u8 {
@@ -82,12 +119,11 @@ pub const system_template =
     \\{s}```
     \\
     \\Writing scripts:
-    \\- Top-level `await` works. Each Step is a full model round trip, usually 10 s or more; one Run can read several files, make all independent edits, then build and test, returning only what you need (such as failures).
+    \\- Top-level `await` works. Each Step is a full model round trip, usually 10 s or more; one Run can read several files and make all independent edits, returning only what you need.
 ++ std.fmt.comptimePrint("\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to {d} at a time; commands chained inside one bash call (&&, ;) run one after another.\n", .{sandbox.tool_concurrency}) ++
     \\- Long Runs auto-background while awaiting tools; scripts and captured output stay intact. Background Run/bash/agent results arrive automatically as messages. Continue useful work meanwhile; never check or wait for them with ps, cat/tail logs, sleep, empty Runs or timeout reruns. Do not read their redirected logs before completion. If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.
     \\- Default to doing the task yourself. Unless the user requests delegation, delegate only independent read-only investigations that can run in parallel with useful parent work and whose results can be discarded. Keep serial edits, builds, tests and reviews in the main loop. Waiting on a foreground agent is serial; background delegation does not help if you must wait for it to proceed.
     \\- The last expression and console.log output share {s} per Run, truncated by console call and final result with markers; tool results inside JS remain complete. Locate with grep, then read needed line ranges. Large multi-file output can exceed this display budget: batch reads or print only needed snippets.
-    \\- Before full builds/tests, finish implementation, known regression tests, expected results/fixtures and formatting; aim for one full validation. On failure, fix the failures and revalidate. Keep all necessary checks.
     \\- A run script's syntax or runtime error means the script needs correction. Fix it and continue the task; do not end the Turn just because a script failed.
     \\{s}
     \\When the task is done, answer the user directly without calling the tool.
@@ -132,7 +168,7 @@ test "system prompt documents every tool in JavaScript" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "backticks, ${ or backslashes") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "last expression and console.log output share 16 KiB per Run") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "tool results inside JS remain complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "failures).\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "returning only what you need.\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
     for ([_][]const u8{ "Background Run/bash/agent results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
         try std.testing.expect(std.mem.indexOf(u8, prompt, text) != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Session waits locally, delivers the result and continues the Turn") != null);
@@ -185,14 +221,14 @@ test "prompt patches can be disabled individually or all at once" {
     defer env.deinit();
     const all_on = try patchLines(gpa, &env, .default);
     defer gpa.free(all_on);
-    for (patches) |patch| try std.testing.expect(std.mem.indexOf(u8, all_on, patch.text) != null);
+    for (patches) |patch| try std.testing.expectEqual(patch.default_on, std.mem.indexOf(u8, all_on, patch.text) != null);
     for (patches) |disabled| {
         try env.put("NIB_PATCHES_OFF", disabled.id);
         const one_off = try patchLines(gpa, &env, .default);
         defer gpa.free(one_off);
         for (patches) |patch| {
             try std.testing.expectEqual(
-                !std.mem.eql(u8, disabled.id, patch.id),
+                patch.default_on and !std.mem.eql(u8, disabled.id, patch.id),
                 std.mem.indexOf(u8, one_off, patch.text) != null,
             );
         }
@@ -201,6 +237,50 @@ test "prompt patches can be disabled individually or all at once" {
     const none = try patchLines(gpa, &env, .default);
     defer gpa.free(none);
     try std.testing.expectEqualStrings("", none);
+}
+
+test "default prompt keeps the validation guidance wording" {
+    const t = std.testing;
+    var host: tools.Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "m" } };
+    const system = try renderSystem(t.allocator, "/work", &host, null);
+    defer t.allocator.free(system);
+    for ([_][]const u8{
+        "one Run can read several files and make all independent edits, returning only what you need.",
+        "The same Run can then build and test, returning only what you need (such as failures).",
+        "aim for one full validation. On failure, fix the failures and revalidate. Keep all necessary checks.",
+    }) |text| try t.expect(std.mem.indexOf(u8, system, text) != null);
+    try t.expect(std.mem.indexOf(u8, system, "do not write new test scripts") == null);
+}
+
+test "opt-in patches need NIB_PATCHES_ON and lose to NIB_PATCHES_OFF" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env: std.process.Environ.Map = .init(a);
+    const text = patches[patches.len - 1].text;
+    try t.expectEqualStrings("existing-tests-only", patches[patches.len - 1].id);
+    try t.expectEqual(null, try enabledOptInPatches(a, &env));
+
+    try env.put("NIB_PATCHES_ON", "unknown, existing-tests-only");
+    const on = try patchLines(a, &env, .deepseek);
+    try t.expect(std.mem.indexOf(u8, on, text) != null);
+    try t.expect(std.mem.indexOf(u8, on, "aim for one full validation") != null);
+    try t.expectEqualStrings("existing-tests-only", (try enabledOptInPatches(a, &env)).?[0]);
+
+    try env.put("NIB_PATCHES_OFF", "run-build-test,single-validation");
+    const swapped = try patchLines(a, &env, .default);
+    try t.expect(std.mem.indexOf(u8, swapped, text) != null);
+    try t.expect(std.mem.indexOf(u8, swapped, "aim for one full validation") == null);
+    try t.expect(std.mem.indexOf(u8, swapped, "build and test") == null);
+    try t.expectEqual(@as(usize, 2), (try disabledPatches(a, &env)).?.len);
+
+    try env.put("NIB_PATCHES_OFF", "existing-tests-only");
+    const beaten = try patchLines(a, &env, .default);
+    try t.expect(std.mem.indexOf(u8, beaten, text) == null);
+    try t.expectEqual(null, try enabledOptInPatches(a, &env));
+    try env.put("NIB_PATCHES_OFF", "all");
+    try t.expectEqual(null, try enabledOptInPatches(a, &env));
 }
 
 test "patches apply only to their profiles" {
@@ -250,8 +330,11 @@ test "experiment labels hash exact base text and normalize actual disabled patch
     try t.expectEqualStrings("no-shell-search", normalized[2]);
     try env.put("NIB_PATCHES_OFF", "all");
     const all = (try disabledPatches(a, &env)).?;
-    try t.expectEqual(patches.len, all.len);
+    var default_count: usize = 0;
+    for (patches) |patch| default_count += @intFromBool(patch.default_on);
+    try t.expectEqual(default_count, all.len);
     for (patches) |patch| {
+        if (!patch.default_on) continue;
         var found = false;
         for (all) |id| found = found or std.mem.eql(u8, id, patch.id);
         try t.expect(found);

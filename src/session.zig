@@ -212,6 +212,7 @@ pub const Session = struct {
             .skills = found.summary,
             .mcp_servers = s.cfg.mcp_servers,
             .patches_off = try prompt.disabledPatches(a, s.options.environ),
+            .patches_on = try prompt.enabledOptInPatches(a, s.options.environ),
             .profile = @tagName(Profile.forModel(s.cfg.model)),
         });
     }

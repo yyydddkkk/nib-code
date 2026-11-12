@@ -74,6 +74,7 @@ pub const Record = struct {
     nib_version: ?[]const u8 = null,
     system_sha: ?[]const u8 = null,
     patches_off: ?[]const []const u8 = null,
+    patches_on: ?[]const []const u8 = null,
     profile: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     provider: ?provider.Id = null,

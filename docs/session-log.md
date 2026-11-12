@@ -26,7 +26,8 @@ First-line headers optionally tag new roots/children; old logs still resume. Rec
 | --- | --- |
 | `nib_version` | `build.zig.zon` version plus injected short git hash, e.g. `0.1.0+abc1234`; version alone if hash unavailable |
 | `system_sha` | First 12 lowercase SHA-256 hex characters of rendered `system_template`, including cwd/tools/patches/explicit Step caps, excluding global/project `AGENTS.md`; cwd/tool availability/patches can change it, not just wording |
-| `patches_off` | Actually disabled registered `NIB_PATCHES_OFF` ids, deduplicated/sorted; ignore unknowns, expand all; omit when none |
+| `patches_off` | Actually disabled default-on registered `NIB_PATCHES_OFF` ids, deduplicated/sorted; ignore unknowns, expand all; omit when none |
+| `patches_on` | Opt-in patches actually enabled by `NIB_PATCHES_ON` (not also named in `NIB_PATCHES_OFF`), deduplicated/sorted; omit when none |
 
 ## Commits and interruptions
 
@@ -102,7 +103,7 @@ child_costs.by_parent_system joins `parent_session_id` to input parent header sy
 
 `tool_data` independently sums valid Step tool_bytes/output_bytes samples/totals, never adding Run/calls or backfilling. `output_tool_ratio` distributes per-Run output/tool for valid fields/tool>0, median/nearest-rank p90/samples, not total ratio; may exceed 1. Tool shares use valid calls[].result_bytes total, grouped name/count; omitted details limit coverage. Skip old missing values without zeros; zero detail bytes means n/a.
 
-`--group-by version|system|patches|profile` uses header nib_version/system_sha/patches_off/profile (the model-family [Profile](../CONTEXT.md) resolved when the Session started), retaining overall/core reports per group via group_by/groups JSON. Missing old tags unknown; newer version/hash headers omitting patches mean none; lists group as sorted sets. transport uses actual complete-Step transports below.
+`--group-by version|system|patches|profile` uses header nib_version/system_sha/patches_off(+patches_on, shown as `<off> on=[...]`)/profile (the model-family [Profile](../CONTEXT.md) resolved when the Session started), retaining overall/core reports per group via group_by/groups JSON. Missing old tags unknown; newer version/hash headers omitting patches mean none; lists group as sorted sets. transport uses actual complete-Step transports below.
 
 Optional complete-Step `turn_step` is 1-based within Turn; interjections do not start Turns, new resumed Turns reset 1. Old logs estimate user-message boundaries excluding backgrounds and may overcount interjections as Turns.
 

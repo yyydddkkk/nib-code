@@ -1145,6 +1145,10 @@ class StatsTest(unittest.TestCase):
                                    ({'patches_off': ''}, 'none'), ({'patches_off': [3]}, 'unknown'),
                                    ({'patches_off': {}}, 'unknown'), ({'patches_off': 'one'}, 'one')]:
             self.assertEqual(stats.header_group(metadata, 'patches'), expected)
+        self.assertEqual(stats.header_group({'system_sha': 's', 'patches_on': ['x']}, 'patches'), 'none on=["x"]')
+        self.assertEqual(stats.header_group({'patches_off': ['b', 'a'], 'patches_on': ['y', 'x']}, 'patches'),
+                         '["a", "b"] on=["x", "y"]')
+        self.assertEqual(stats.header_group({'patches_on': ['x']}, 'patches'), 'unknown')
         with self.assertRaises(ValueError):
             stats.summarize([], group_by='invalid')
         cli = ['python3', str(ROOT / 'scripts/stats.py'), '--group-by', 'invalid']

@@ -496,6 +496,14 @@ def header_group(header, group_by):
     value = header.get(field)
     if group_by != 'patches':
         return value if isinstance(value, str) and value.strip() else 'unknown'
+    label = patches_off_label(header, field, value)
+    on = header.get('patches_on')
+    if isinstance(on, list) and on and all(isinstance(v, str) and v for v in on) and label != 'unknown':
+        return f"{label} on={json.dumps(sorted(set(on)), ensure_ascii=False)}"
+    return label
+
+
+def patches_off_label(header, field, value):
     if field not in header:
         return 'none' if any(isinstance(header.get(k), str) and header[k].strip()
                              for k in ('nib_version', 'system_sha')) else 'unknown'

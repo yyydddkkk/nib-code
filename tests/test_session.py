@@ -739,7 +739,16 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         patches_home = tmp / "patches-home"
         ask("patch labels", overrides={"NIB_HOME": str(patches_home), "NIB_PATCHES_OFF": "all"})
         patches_header = replay(next((patches_home / "sessions").glob("[0-9a-f]" * 32 + ".jsonl")))[1][0]
-        patch_ids = re.findall(r'\.id = "([^"]+)"', (ROOT / "src/session/prompt.zig").read_text().split("fn patchLines", 1)[0])
+        patch_ids = [i for i in re.findall(r'\.id = "([^"]+)"', (ROOT / "src/session/prompt.zig").read_text().split("fn patchLines", 1)[0])
+                     if i != "existing-tests-only"]
+        assert "patches_on" not in patches_header, patches_header
+        opt_home = tmp / "opt-in-home"
+        ask("opt-in patch", overrides={"NIB_HOME": str(opt_home), "NIB_PATCHES_ON": "existing-tests-only",
+                                       "NIB_PATCHES_OFF": "run-build-test,single-validation"})
+        opt_header = replay(next((opt_home / "sessions").glob("[0-9a-f]" * 32 + ".jsonl")))[1][0]
+        assert opt_header["patches_on"] == ["existing-tests-only"], opt_header
+        assert opt_header["patches_off"] == ["run-build-test", "single-validation"], opt_header
+        assert "do not write new test scripts" in opt_header["messages"][0]["content"]
         assert "expected-continuation" in patches_header["patches_off"], patches_header
         assert patches_header["patches_off"] == sorted(patch_ids), patches_header
         assert patches_header["system_sha"] != header["system_sha"]
