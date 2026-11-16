@@ -14,6 +14,7 @@ const jail = @import("tools/bash/jail.zig");
 
 const Tool = struct {
     root_only: bool = false,
+    tool_delivery_only: bool = false,
     name: []const u8,
     doc: []const u8,
     run: ?*const fn (t: *Tools, gpa: std.mem.Allocator, args: []const u8) anyerror!sandbox.ToolResult = null,
@@ -132,6 +133,16 @@ const all = [_]Tool{
         ,
     },
     .{
+        .name = "wait",
+        .root_only = true,
+        .tool_delivery_only = true,
+        .run = @import("tools/wait.zig").wait,
+        .doc =
+        \\  // With no independent work left, block until background Run/bash/agent tasks finish (default: every pending one except detached) and return their results; a result returned here is not delivered again. May follow other work in the same Run. Never auto-backgrounded; cancellable.
+        \\  async wait(ids) {}, // ids: optional array of task ids → { ok, results: [{ id, kind, ok, output }], not_pending?: [id] }
+        ,
+    },
+    .{
         .name = "llm",
         .run = model_function.llm,
         .doc =
@@ -167,11 +178,12 @@ fn enabled(tool: Tool, depth: u32) bool {
     return !tool.root_only or depth == 0;
 }
 
-fn makeApi(comptime depth: u32, comptime mcp_enabled: bool) Api {
+fn makeApi(comptime depth: u32, comptime mcp_enabled: bool, comptime wait_enabled: bool) Api {
     var n: []const []const u8 = &.{};
     var d: []const u8 = "const tools = {\n";
     for (all) |tool| {
         if (!enabled(tool, depth)) continue;
+        if (tool.tool_delivery_only and !wait_enabled) continue;
         if (!mcp_enabled and (std.mem.eql(u8, tool.name, "mcp") or std.mem.eql(u8, tool.name, "mcp_schema"))) continue;
         n = n ++ .{tool.name};
         d = d ++ tool.doc ++ "\n";
@@ -184,12 +196,15 @@ fn makeApi(comptime depth: u32, comptime mcp_enabled: bool) Api {
     };
 }
 
-const root_api = makeApi(0, true);
-const child_api = makeApi(1, true);
-const inactive_root_api = makeApi(0, false);
-const inactive_child_api = makeApi(1, false);
-pub const names = root_api.names;
-pub const docs = root_api.docs;
+const apis = blk: {
+    var table: [2][2][2]Api = undefined;
+    for (0..2) |depth| for (0..2) |mcp| for (0..2) |wait| {
+        table[depth][mcp][wait] = makeApi(depth, mcp == 1, wait == 1);
+    };
+    break :blk table;
+};
+pub const names = apis[0][1][0].names;
+pub const docs = apis[0][1][0].docs;
 
 pub const RunScope = struct {
     tools: *Tools,
@@ -206,6 +221,13 @@ pub const RunScope = struct {
             if (count.load(.acquire) > 0) return tool.name;
         }
         return "";
+    }
+
+    pub fn blockedInWait(scope: *RunScope) bool {
+        for (all, &scope.active_tools) |tool, *count| {
+            if (tool.tool_delivery_only and count.load(.acquire) > 0) return true;
+        }
+        return false;
     }
 
     pub fn host(scope: *RunScope) sandbox.Host {
@@ -243,6 +265,7 @@ pub const Tools = struct {
     cfg: ?provider.Config = null,
     mcp_client: ?*@import("mcp.zig").Client = null,
     depth: u32 = 0,
+    delivery_tool: bool = false,
     session_id: ?[]const u8 = null,
     forked: bool = false,
     fork_snapshot: ?@import("tools/agent/input.zig").Fork = null,
@@ -271,7 +294,7 @@ pub const Tools = struct {
     jail_unavailable: std.atomic.Value(u8) = .init(0),
     jail_noticed: bool = false,
 
-    fn scope(t: *Tools) ?*RunScope {
+    pub fn scope(t: *Tools) ?*RunScope {
         const value = current_scope orelse return null;
         return if (value.tools == t) value else null;
     }
@@ -323,7 +346,15 @@ pub const Tools = struct {
     }
 
     pub fn api(t: *const Tools) Api {
-        return if (t.depth == 0 or t.forked) root_api else child_api;
+        return t.apiFor(true);
+    }
+
+    fn apiFor(t: *const Tools, mcp_enabled: bool) Api {
+        return apis[@intFromBool(!(t.depth == 0 or t.forked))][@intFromBool(mcp_enabled)][@intFromBool(t.waitEnabled())];
+    }
+
+    pub fn waitEnabled(t: *const Tools) bool {
+        return t.delivery_tool and (t.depth == 0 or t.forked);
     }
 
     pub fn documentation(t: *const Tools, a: std.mem.Allocator) ![]u8 {
@@ -351,7 +382,7 @@ pub const Tools = struct {
         const mcp_enabled = for (cfg.mcp_servers) |server| {
             if (server.enabled) break true;
         } else false;
-        const api_docs = if (mcp_enabled) t.api().docs else if (t.depth == 0 or t.forked) inactive_root_api.docs else inactive_child_api.docs;
+        const api_docs = t.apiFor(mcp_enabled).docs;
         const searchable_docs = if (web_search.supported(cfg)) api_docs else try std.mem.replaceOwned(u8, a, api_docs, search_doc ++ "\n", "");
         defer if (searchable_docs.ptr != api_docs.ptr) a.free(searchable_docs);
         const limited_docs = try std.mem.replaceOwned(u8, a, searchable_docs, "{{llm_limits}}", limits);
@@ -419,6 +450,7 @@ pub const Tools = struct {
             return fail(gpa, "agent is unavailable inside a forked sub-agent", .{}) catch .{ .err = &.{} };
         const r = for (all, 0..) |tool, i| {
             if (!enabled(tool, t.depth)) continue;
+            if (tool.tool_delivery_only and !t.waitEnabled()) continue;
             if (!std.mem.eql(u8, name, tool.name)) continue;
             const active = if (t.scope()) |run_scope| &run_scope.active_tools[i] else null;
             if (active) |count| _ = count.fetchAdd(1, .acq_rel);

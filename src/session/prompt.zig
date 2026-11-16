@@ -101,7 +101,25 @@ pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.To
     const bytes = if (host.cfg) |cfg| cfg.limits.run_output_bytes else @import("output.zig").max_bytes;
     const budget = if (bytes % 1024 == 0) try std.fmt.allocPrint(a, "{d} KiB", .{bytes / 1024}) else try std.fmt.allocPrint(a, "{d} bytes", .{bytes});
     defer a.free(budget);
-    return std.fmt.allocPrint(a, system_template, .{ cwd, docs, budget, lines });
+    const rendered = try std.fmt.allocPrint(a, system_template, .{ cwd, docs, budget, lines });
+    return if (host.waitEnabled()) toolDelivery(a, rendered) else rendered;
+}
+
+/// Each pair rewrites "end the response and the Session waits" for `tools.wait`; a missing phrase is a test failure.
+const tool_delivery_text = [_][2][]const u8{
+    .{ "Background Run/bash/agent results arrive automatically as messages.", "Background Run/bash/agent results arrive appended to the output of your next Run." },
+    .{ "If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn.", "If no independent work remains, call `await tools.wait()` (optionally after other work in the same Run); it returns the results when the tasks finish. Do not end the model response to wait." },
+    .{ "arrive automatically as messages; never sleep", "arrive appended to the output of your next Run; never sleep" },
+    .{ "Idle:reply to wait.", "Idle: await tools.wait()." },
+    .{ "No independent work: brief reply without tools; Session waits.", "No independent work: await tools.wait()." },
+    .{ "No independent work:brief reply without tools; Session waits.", "No independent work: await tools.wait()." },
+    .{ "With no independent work, reply without tools to wait locally.", "With no independent work, await tools.wait()." },
+};
+
+fn toolDelivery(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var current = text;
+    for (tool_delivery_text) |pair| current = try std.mem.replaceOwned(u8, a, current, pair[0], pair[1]);
+    return current;
 }
 
 pub fn turnBudgetText(a: std.mem.Allocator, system: []const u8, max_steps: ?usize, user_text: []const u8) ![]const u8 {
@@ -319,4 +337,21 @@ test "resumed Turns expose budget changes without rewriting the original system"
     const disabled = try turnBudgetText(a, system, null, "prompt");
     try t.expect(std.mem.indexOf(u8, disabled, "no Step limit") != null);
     try t.expect(std.mem.endsWith(u8, disabled, "\n\nprompt"));
+}
+
+test "tool delivery rewrites every wait-by-ending-the-response sentence" {
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var host: tools.Tools = .{ .io = std.testing.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" } };
+    const user = try renderSystem(a, "/work", &host, null);
+    for (tool_delivery_text) |pair| try std.testing.expect(std.mem.indexOf(u8, user, pair[0]) != null);
+    try std.testing.expect(std.mem.indexOf(u8, user, "tools.wait") == null);
+    host.delivery_tool = true;
+    const tool = try renderSystem(a, "/work", &host, null);
+    for (tool_delivery_text) |pair| try std.testing.expect(std.mem.indexOf(u8, tool, pair[0]) == null);
+    try std.testing.expect(std.mem.indexOf(u8, tool, "Session waits") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tool, "reply without tools") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tool, "async wait(ids)") != null);
 }

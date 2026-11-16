@@ -70,11 +70,13 @@ task; a change must be a general behavior. Paid runs are small and approved per 
 5. Audit the base prompt line by line and move Codex-only rules into the Codex profile;
    compare on DeepSeek with and without them.
 6. Deliver background results and interjections without a mid-Turn user message for
-   DeepSeek.
+   DeepSeek. Done as the `delivery = tool` [tuning](0026-tuning.md): results ride on the
+   next tool message and `tools.wait()` replaces ending the response; measured against
+   the `user` variant with `stats.py --group-by tuning`.
 7. Add the uncached-input breakdown (inherent, Turn start, mid-Turn, with causes) to
    `scripts/stats.py`.
 
 ## Not decided
 
-How mid-Turn results are delivered for DeepSeek (folded into the next tool result or
-another carrier) is settled by experiment. Claude's profile waits for data.
+Whether `delivery = tool` beats `user` on cost is settled by experiment. Claude's profile
+waits for data.

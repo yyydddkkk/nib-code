@@ -8,7 +8,7 @@ pub fn stop(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.
     defer parsed.deinit();
     const reason = parsed.value.reason orelse "";
     if (std.mem.trim(u8, reason, " \t\r\n").len == 0)
-        return tools.fail(gpa, "stop requires a nonempty reason. Canceling a running test discards its progress and prevents a completed validation result. Elapsed time or no output alone does not mean it is stuck; reply without tools to wait locally. Stop only for a concrete failure, changed requirement or user request.", .{});
+        return tools.fail(gpa, "stop requires a nonempty reason. Canceling a running test discards its progress and prevents a completed validation result. Elapsed time or no output alone does not mean it is stuck; {s} Stop only for a concrete failure, changed requirement or user request.", .{if (t.waitEnabled()) "await tools.wait() to wait." else "reply without tools to wait locally."});
     return stopTask(t, gpa, parsed.value.id, reason, false);
 }
 

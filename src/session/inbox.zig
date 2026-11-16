@@ -34,6 +34,8 @@ pub const Item = struct { id: u64, text: []const u8, background: ?Background = n
 pub const Inbox = struct {
     mutex: std.Io.Mutex = .init,
     batch: Batch = .{},
+    /// Results returned by `tools.wait`, awaiting the Session's delivery bookkeeping.
+    waited: Batch = .{},
     next_id: u64 = 1,
 
     pub fn enqueue(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, text: []const u8) !u64 {
@@ -68,6 +70,32 @@ pub const Inbox = struct {
         try q.batch.items.append(gpa, .{ .id = message_id, .text = copy, .background = .{ .id = agent_id, .kind = kind, .state = state, .ok = ok, .completion = copy_completion, .execution = execution }, .detached = detached, .invocation = invocation, .completion_arena = owned });
         q.next_id += 1;
         return message_id;
+    }
+
+    pub const Waited = struct { kind: Background.Kind, ok: ?bool, invocation: usize, text: []u8 };
+
+    /// Moves the oldest queued background result of `id` to `waited`; the copy of its text belongs to the caller.
+    pub fn takeForWait(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8) !?Waited {
+        q.mutex.lockUncancelable(io);
+        defer q.mutex.unlock(io);
+        for (q.batch.items.items, 0..) |item, i| {
+            const b = item.background orelse continue;
+            if (!std.mem.eql(u8, b.id, id)) continue;
+            const text = try gpa.dupe(u8, item.text);
+            errdefer gpa.free(text);
+            try q.waited.items.append(gpa, item);
+            _ = q.batch.items.orderedRemove(i);
+            return .{ .kind = b.kind, .ok = b.ok, .invocation = item.invocation, .text = text };
+        }
+        return null;
+    }
+
+    pub fn takeWaited(q: *Inbox, io: std.Io) Batch {
+        q.mutex.lockUncancelable(io);
+        defer q.mutex.unlock(io);
+        const batch = q.waited;
+        q.waited = .{};
+        return batch;
     }
 
     pub fn empty(q: *Inbox, io: std.Io) bool {
@@ -275,4 +303,24 @@ fn cloneCompletion(a: std.mem.Allocator, value: @import("events.zig").RunComplet
     const json = try std.json.Stringify.valueAlloc(a, value, .{});
     defer a.free(json);
     return std.json.parseFromSliceLeaky(@import("events.zig").RunCompletion, a, json, .{ .allocate = .alloc_always });
+}
+
+test "waiting takes one result by id and leaves the rest queued" {
+    const t = std.testing;
+    var q: Inbox = .{};
+    defer q.batch.deinit(t.allocator);
+    defer q.waited.deinit(t.allocator);
+    _ = try q.enqueue(t.allocator, t.io, "user text");
+    _ = try q.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "[background bash b1 finished]\nfirst", false, 0, null);
+    _ = try q.enqueueBackground(t.allocator, t.io, "b2", .bash, .finished, false, "second", false, 0, null);
+    try t.expect(try q.takeForWait(t.allocator, t.io, "b9") == null);
+    const taken = (try q.takeForWait(t.allocator, t.io, "b2")).?;
+    defer t.allocator.free(taken.text);
+    try t.expectEqualStrings("second", taken.text);
+    try t.expectEqual(@as(?bool, false), taken.ok);
+    try t.expectEqual(@as(usize, 2), q.batch.items.items.len);
+    var waited = q.takeWaited(t.io);
+    defer waited.deinit(t.allocator);
+    try t.expectEqual(@as(usize, 1), waited.items.items.len);
+    try t.expectEqualStrings("b2", waited.items.items[0].background.?.id);
 }

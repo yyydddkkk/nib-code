@@ -27,7 +27,7 @@ First-line headers optionally tag new roots/children; old logs still resume. Rec
 | `nib_version` | `build.zig.zon` version plus injected short git hash, e.g. `0.1.0+abc1234`; version alone if hash unavailable |
 | `system_sha` | First 12 lowercase SHA-256 hex characters of rendered `system_template`, including cwd/tools/patches/explicit Step caps, excluding global/project `AGENTS.md`; cwd/tool availability/patches can change it, not just wording |
 | `patches_off` | Actually disabled registered `NIB_PATCHES_OFF` ids, deduplicated/sorted; ignore unknowns, expand all; omit when none |
-| `tuning` | Object of every [tuning](adr/0026-tuning.md)'s variant fixed at Session start, e.g. `{"background_after":"long"}`; resume keeps it, logs without it count as defaults |
+| `tuning` | Object of every [tuning](adr/0026-tuning.md)'s variant fixed at Session start, e.g. `{"delivery":"tool"}`; resume keeps it, logs without it count as defaults |
 
 ## Commits and interruptions
 

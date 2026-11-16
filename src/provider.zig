@@ -83,8 +83,7 @@ pub const Limits = struct {
     stream_idle_timeout_s: usize = 300,
     stream_content_timeout_s: usize = 120,
     request_timeout_s: usize = 300,
-    /// Unset follows the model family's tuning.
-    run_background_after_ms: ?usize = null,
+    run_background_after_ms: usize = 10000,
     run_output_bytes: usize = 16 * 1024,
 };
 

@@ -241,6 +241,24 @@ pub const Background = struct {
         return false;
     }
 
+    /// IDs of undelivered non-detached tasks, except the Run with scope id `own_run`; memory comes from `a`.
+    pub fn pendingIds(bg: *Background, a: std.mem.Allocator, io: std.Io, own_run: ?usize) ![]const []const u8 {
+        bg.mutex.lockUncancelable(io);
+        defer bg.mutex.unlock(io);
+        var ids: std.ArrayList([]const u8) = .empty;
+        for (bg.runs.items) |job| if (!job.delivered and job.scope.id != own_run) try ids.append(a, try a.dupe(u8, job.id));
+        for (bg.jobs.items) |job| if (!job.detached and !job.delivered) try ids.append(a, try a.dupe(u8, job.id));
+        return ids.items;
+    }
+
+    pub fn outstanding(bg: *Background, io: std.Io, id: []const u8) bool {
+        bg.mutex.lockUncancelable(io);
+        defer bg.mutex.unlock(io);
+        for (bg.runs.items) |job| if (!job.delivered and std.mem.eql(u8, job.id, id)) return true;
+        for (bg.jobs.items) |job| if (!job.delivered and std.mem.eql(u8, job.id, id)) return true;
+        return false;
+    }
+
     pub fn pendingNames(bg: *Background, gpa: std.mem.Allocator, io: std.Io) ![]u8 {
         bg.mutex.lockUncancelable(io);
         defer bg.mutex.unlock(io);

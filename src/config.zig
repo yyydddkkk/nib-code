@@ -1108,20 +1108,18 @@ test "environment validation and model-dependent defaults" {
     try t.expectError(error.InvalidProvider, resolve(a, &env, "", "config.toml", &detail));
 }
 
-test "an unset run_background_after_ms differs from an explicit default and NIB_TUNE is validated" {
+test "NIB_TUNE is validated at startup" {
     const t = std.testing;
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var env: Env = .init(a);
     var detail: ?[]u8 = null;
-    try t.expectEqual(@as(?usize, null), (try resolve(a, &env, "", "config.toml", &detail)).limits.run_background_after_ms);
-    try t.expectEqual(@as(?usize, 10000), (try resolve(a, &env, "[limits]\nrun_background_after_ms = 10000\n", "config.toml", &detail)).limits.run_background_after_ms);
-    try env.put("NIB_TUNE", "background_after=long");
+    try env.put("NIB_TUNE", "delivery=tool");
     _ = try resolve(a, &env, "", "config.toml", &detail);
-    try env.put("NIB_TUNE", "background_after=short");
+    try env.put("NIB_TUNE", "delivery=short");
     try t.expectError(error.InvalidTuning, resolve(a, &env, "", "config.toml", &detail));
-    try t.expectEqualStrings("NIB_TUNE: background_after has no variant 'short'; variants: default, long", detail.?);
+    try t.expectEqualStrings("NIB_TUNE: delivery has no variant 'short'; variants: user, tool", detail.?);
 }
 
 test "limits defaults, bounds and diagnostics" {

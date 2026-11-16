@@ -4,23 +4,15 @@ const Profile = @import("profile.zig").Profile;
 /// The variant of every tuning ([ADR 0026](../../docs/adr/0026-tuning.md)). A field is a
 /// tuning, its enum a set of variants whose first value is the default.
 pub const Resolved = struct {
-    background_after: BackgroundAfter = .default,
+    delivery: Delivery = .user,
 
-    pub const BackgroundAfter = enum {
-        default,
-        long,
-
-        pub fn ms(variant: BackgroundAfter) usize {
-            return switch (variant) {
-                .default => 10_000,
-                .long => 120_000,
-            };
-        }
-    };
+    /// How background completions and mid-Turn user messages reach the model:
+    /// `user` inserts user messages at the next Step; `tool` appends them to the next tool result.
+    pub const Delivery = enum { user, tool };
 
     pub fn forProfile(profile: Profile) Resolved {
         return switch (profile) {
-            .deepseek => .{ .background_after = .long },
+            .deepseek => .{ .delivery = .tool },
             .codex, .claude, .default => .{},
         };
     }
@@ -97,8 +89,8 @@ fn tuningNames() []const u8 {
 
 test "profiles pick a variant; unmatched models get the defaults" {
     const t = std.testing;
-    try t.expectEqual(@as(usize, 120_000), Resolved.forProfile(.deepseek).background_after.ms());
-    for ([_]Profile{ .codex, .claude, .default }) |profile| try t.expectEqual(@as(usize, 10_000), Resolved.forProfile(profile).background_after.ms());
+    try t.expectEqual(Resolved.Delivery.tool, Resolved.forProfile(.deepseek).delivery);
+    for ([_]Profile{ .codex, .claude, .default }) |profile| try t.expectEqual(Resolved.Delivery.user, Resolved.forProfile(profile).delivery);
 }
 
 test "NIB_TUNE replaces profile variants" {
@@ -106,10 +98,10 @@ test "NIB_TUNE replaces profile variants" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     var detail: []const u8 = "";
-    try t.expectEqual(Resolved.BackgroundAfter.default, (try Resolved.resolve(arena.allocator(), .deepseek, "background_after=default", &detail)).background_after);
-    try t.expectEqual(Resolved.BackgroundAfter.long, (try Resolved.resolve(arena.allocator(), .codex, " background_after = long ,", &detail)).background_after);
-    try t.expectEqual(Resolved.BackgroundAfter.long, (try Resolved.resolve(arena.allocator(), .deepseek, "", &detail)).background_after);
-    try t.expectEqual(Resolved.BackgroundAfter.long, (try Resolved.resolve(arena.allocator(), .deepseek, null, &detail)).background_after);
+    try t.expectEqual(Resolved.Delivery.user, (try Resolved.resolve(arena.allocator(), .deepseek, "delivery=user", &detail)).delivery);
+    try t.expectEqual(Resolved.Delivery.tool, (try Resolved.resolve(arena.allocator(), .codex, " delivery = tool ,", &detail)).delivery);
+    try t.expectEqual(Resolved.Delivery.tool, (try Resolved.resolve(arena.allocator(), .deepseek, "", &detail)).delivery);
+    try t.expectEqual(Resolved.Delivery.tool, (try Resolved.resolve(arena.allocator(), .deepseek, null, &detail)).delivery);
 }
 
 test "NIB_TUNE rejects unknown names and malformed entries" {
@@ -117,10 +109,10 @@ test "NIB_TUNE rejects unknown names and malformed entries" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const cases = [_]struct { spec: []const u8, message: []const u8 }{
-        .{ .spec = "nope=long", .message = "NIB_TUNE: unknown tuning 'nope'; tunings: background_after" },
-        .{ .spec = "background_after=huge", .message = "NIB_TUNE: background_after has no variant 'huge'; variants: default, long" },
-        .{ .spec = "background_after", .message = "NIB_TUNE: expected <tuning>=<variant>, got 'background_after'" },
-        .{ .spec = "background_after=long,x=y", .message = "NIB_TUNE: unknown tuning 'x'; tunings: background_after" },
+        .{ .spec = "nope=tool", .message = "NIB_TUNE: unknown tuning 'nope'; tunings: delivery" },
+        .{ .spec = "delivery=huge", .message = "NIB_TUNE: delivery has no variant 'huge'; variants: user, tool" },
+        .{ .spec = "delivery", .message = "NIB_TUNE: expected <tuning>=<variant>, got 'delivery'" },
+        .{ .spec = "delivery=tool,x=y", .message = "NIB_TUNE: unknown tuning 'x'; tunings: delivery" },
     };
     for (cases) |case| {
         var detail: []const u8 = "";
@@ -134,10 +126,10 @@ test "the log record round-trips and tolerates unknown names" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const record = try (Resolved{ .background_after = .long }).toLog(a);
-    try t.expectEqual(Resolved.BackgroundAfter.long, Resolved.fromLog(record).background_after);
+    const record = try (Resolved{ .delivery = .tool }).toLog(a);
+    try t.expectEqual(Resolved.Delivery.tool, Resolved.fromLog(record).delivery);
     var future: std.json.ArrayHashMap([]const u8) = .{};
-    try future.map.put(a, "background_after", "gone");
+    try future.map.put(a, "delivery", "gone");
     try future.map.put(a, "other", "x");
-    try t.expectEqual(Resolved.BackgroundAfter.default, Resolved.fromLog(future).background_after);
+    try t.expectEqual(Resolved.Delivery.user, Resolved.fromLog(future).delivery);
 }

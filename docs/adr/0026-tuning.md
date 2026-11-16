@@ -15,8 +15,8 @@ an untestable pile. It has three gaps:
   is clumsy and lets incompatible combinations exist.
 - Patches are appended after the base prompt. A sentence that belongs in the middle of
   a bullet has to be split out and reworded to stand alone.
-- Prompt text is only one kind of model-specific choice. The auto-background threshold
-  (`run_background_after_ms`), compaction timing, and runtime nudges differ by family
+- Prompt text is only one kind of model-specific choice. How results are delivered
+  to the model, compaction timing, and runtime nudges differ by family
   too, but they are plain constants or configuration with no switch, no log record and
   no evidence trail.
 
@@ -29,7 +29,7 @@ patches become one kind of tuning.
 - **Kinds.** A *prompt* tuning fills a named slot in the system template
   (`{validation}`, `{background}`); each variant is the slot's text, possibly empty.
   A *value* tuning is a number or enum read by runtime code
-  (`run_background_after_ms`). Further kinds are added when a real tuning needs one.
+  (`delivery`). Further kinds are added when a real tuning needs one.
 - **Defaults.** Each tuning has a default variant; a Profile overrides only where its
   family differs. Unmatched models get the defaults, which hold only what helps every
   model.
@@ -58,8 +58,9 @@ tunings until existing measurements no longer need it.
    default.
 2. Move the existing patches (`json-escape`, `no-shell-search`,
    `expected-continuation`) into prompt tunings with on/empty variants.
-3. Make `run_background_after_ms` the first value tuning, with the DeepSeek variant
-   settled by experiment.
+3. Make `delivery` (`user`, `tool`) the first value tuning; DeepSeek uses `tool`. A raised
+   `run_background_after_ms` was measured and rejected: it gives up parallel work instead
+   of fixing how results are delivered.
 4. Add the model-change recheck.
 
 ## Not decided
