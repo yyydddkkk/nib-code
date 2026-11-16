@@ -630,6 +630,13 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
         }
         cfg.limits.run_output_bytes = n;
     }
+    if (env.get("NIB_TUNE")) |spec| {
+        var message: []const u8 = "";
+        _ = @import("session/tuning.zig").Resolved.override(.{}, a, spec, &message) catch |err| {
+            detail.* = try a.dupe(u8, message);
+            return err;
+        };
+    }
     if (env.get("NIB_THINKING") == null and env.get("NIB_REASONING_EFFORT") == null) {
         if (file.effort) |v| try cfg.setEffort(v);
     }
@@ -1099,6 +1106,22 @@ test "environment validation and model-dependent defaults" {
     try t.expectError(error.InvalidReasoningEffort, resolve(a, &env, "", "config.toml", &detail));
     try env.put("NIB_PROVIDER", "invalid");
     try t.expectError(error.InvalidProvider, resolve(a, &env, "", "config.toml", &detail));
+}
+
+test "an unset run_background_after_ms differs from an explicit default and NIB_TUNE is validated" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env: Env = .init(a);
+    var detail: ?[]u8 = null;
+    try t.expectEqual(@as(?usize, null), (try resolve(a, &env, "", "config.toml", &detail)).limits.run_background_after_ms);
+    try t.expectEqual(@as(?usize, 10000), (try resolve(a, &env, "[limits]\nrun_background_after_ms = 10000\n", "config.toml", &detail)).limits.run_background_after_ms);
+    try env.put("NIB_TUNE", "background_after=long");
+    _ = try resolve(a, &env, "", "config.toml", &detail);
+    try env.put("NIB_TUNE", "background_after=short");
+    try t.expectError(error.InvalidTuning, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectEqualStrings("NIB_TUNE: background_after has no variant 'short'; variants: default, long", detail.?);
 }
 
 test "limits defaults, bounds and diagnostics" {

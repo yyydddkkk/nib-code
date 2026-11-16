@@ -52,7 +52,7 @@ agent_concurrency = 4
 stream_idle_timeout_s = 300
 stream_content_timeout_s = 120
 request_timeout_s = 300
-run_background_after_ms = 10000
+# run_background_after_ms = 10000  # Optional; omission follows the model family (120000 for DeepSeek, else 10000)
 run_output_bytes = 16384
 
 [skills]
@@ -125,7 +125,7 @@ Linux uses Landlock (kernel 5.19+ with Landlock enabled, ABI 2+), applied in the
 | `llm_input_kib` | UTF-8 prompt + serialized input cap per call (KiB); excess rejects, never truncates | 256 | 1–65536 |
 | `agent_concurrency` | Concurrent children per process; excess queues | 4 | 1–64 |
 | `max_steps` | Steps per Turn; exhaustion returns TooManySteps; omission means unlimited (internal null) | Unlimited | 1–100000 |
-| `run_background_after_ms` | Model-initiated Run automatically backgrounds after this wall time while waiting for tools | 10000 | 1–3600000 |
+| `run_background_after_ms` | Model-initiated Run automatically backgrounds after this wall time while waiting for tools | Model family: 120000 for DeepSeek, else 10000; an explicit value applies to every model ([tuning](adr/0026-tuning.md)) | 1–3600000 |
 | `stream_content_timeout_s` | Seconds without nonempty reasoning/text/tool-argument deltas; heartbeat/metadata do not reset | 120 | 1–3600 |
 | `request_timeout_s` | Total seconds per model attempt; reasoning does not extend it; cancel/join then retry by policy | 300 | 1–3600 |
 | `stream_idle_timeout_s` | Seconds without stream bytes, including first-data wait; heartbeat/metadata reset; timeout retries as disconnection | 300 | 1–3600 |

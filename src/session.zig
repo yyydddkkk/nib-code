@@ -9,6 +9,7 @@ const skills = @import("session/skills.zig");
 const instructions = @import("session/instructions.zig");
 const prompt = @import("session/prompt.zig");
 const Profile = @import("session/profile.zig").Profile;
+const Tuning = @import("session/tuning.zig").Resolved;
 const compaction = @import("session/compact.zig");
 const runner = @import("session/run.zig");
 const session_history = @import("session/history.zig");
@@ -60,6 +61,19 @@ pub const Session = struct {
     inbox: @import("session/inbox.zig").Inbox = .{},
     hook_jobs: std.ArrayList(*@import("session/hooks.zig").TurnJob) = .empty,
     undo_history: @import("tools/undo.zig").History = .{},
+    /// Fixed when the Session starts; resumed Sessions keep the logged variants.
+    tuning: Tuning = .{},
+
+    pub fn runBackgroundAfterMs(s: *const Session) usize {
+        return s.cfg.limits.run_background_after_ms orelse s.tuning.background_after.ms();
+    }
+
+    /// `config.load` validates NIB_TUNE at startup, so a failure here is not user-facing.
+    fn resolveTuning(s: *Session) !void {
+        var detail: []const u8 = "";
+        const env = if (s.options.environ) |e| e.get("NIB_TUNE") else null;
+        s.tuning = try Tuning.resolve(s.arena.allocator(), Profile.forModel(s.cfg.model), env, &detail);
+    }
 
     /// Thread-safe while a Turn runs; other Session mutation is exclusive.
     pub fn enqueue(s: *Session, text: []const u8) !u64 {
@@ -119,6 +133,7 @@ pub const Session = struct {
             s.tools.cfg = s.cfg;
             s.tools.mcp_client = try @import("mcp.zig").Client.create(gpa, io, s.cfg.mcp_servers, options.environ, options.home, options.user_home, s.cfg.sandbox.writable, s.cfg.sandbox.mode != .off);
             s.pending_background_bytes = s.log.pending_background_bytes;
+            s.tuning = s.log.tuning;
             try cfg.checkSession(s.log.provider, s.log.model);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", s.log.custom_provider orelse "")) return error.SessionProviderMismatch;
             s.cache_key = s.log.cache_key orelse s.id;
@@ -140,6 +155,7 @@ pub const Session = struct {
                 s.parent_session_id = options.parent_session_id orelse try a.dupe(u8, fork.session);
                 try s.tools.file_state.importVersions(io, gpa, fork.file_versions);
                 const messages = try session_history.inherit(a, fork);
+                try s.resolveTuning();
                 try s.log.commit(io, gpa, &s.history, &s.context_tokens, .{
                     .mcp_servers = s.cfg.mcp_servers,
                     .messages = messages,
@@ -152,6 +168,7 @@ pub const Session = struct {
                     .cache_key = s.cache_key,
                     .forked_from = .{ .session = try a.dupe(u8, fork.session), .message_count = fork.message_count },
                     .nib_version = @import("build_options").nib_version,
+                    .tuning = try s.tuning.toLog(a),
                 });
             } else {
                 try s.initializeHistory(cwd);
@@ -198,6 +215,7 @@ pub const Session = struct {
         const found = try skills.select(a, discovered, s.cfg.enabled_skills);
         const system = try s.tools.mcp_client.?.prompt(a, try skills.append(a, try instructions.append(s.io, a, base, global, project), found.skills));
         s.log.skills = found.summary;
+        try s.resolveTuning();
         const sha = prompt.systemSha(base);
         try s.log.commit(s.io, s.gpa, &s.history, &s.context_tokens, .{
             .messages = &.{.{ .role = "system", .content = system }},
@@ -213,6 +231,7 @@ pub const Session = struct {
             .mcp_servers = s.cfg.mcp_servers,
             .patches_off = try prompt.disabledPatches(a, s.options.environ),
             .profile = @tagName(Profile.forModel(s.cfg.model)),
+            .tuning = try s.tuning.toLog(a),
         });
     }
 
@@ -920,6 +939,59 @@ test "fork initialization copies history and resume retains independent identity
     try session.reopen(null);
     try t.expect(!session.tools.forked);
     try t.expectEqualStrings(session.id, session.cache_key);
+}
+
+test "tuning follows the model, NIB_TUNE and the log; an explicit limit wins" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    var cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock" };
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        try t.expectEqual(@as(usize, 10_000), session.runBackgroundAfterMs());
+    }
+    cfg.model = "deepseek-flash";
+    var id: []const u8 = undefined;
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        id = try a.dupe(u8, session.id);
+        try t.expectEqual(@as(usize, 120_000), session.runBackgroundAfterMs());
+        try session.commit(session.history.items.len, &.{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "yo" } }, 10, null);
+    }
+    {
+        try env.put("NIB_TUNE", "background_after=default");
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env, .resume_id = id });
+        defer session.deinit();
+        try t.expectEqual(@as(usize, 120_000), session.runBackgroundAfterMs());
+    }
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        try t.expectEqual(@as(usize, 10_000), session.runBackgroundAfterMs());
+        const path = try std.fmt.allocPrint(a, "{s}/sessions/{s}.jsonl", .{ root, session.id });
+        const data = try std.Io.Dir.cwd().readFileAlloc(t.io, path, a, .unlimited);
+        try t.expect(std.mem.indexOf(u8, data, "\"tuning\":{\"background_after\":\"default\"}") != null);
+    }
+    {
+        var explicit = cfg;
+        explicit.limits.run_background_after_ms = 10_000;
+        try env.put("NIB_TUNE", "background_after=long");
+        var session = try Session.init(t.allocator, t.io, &client, explicit, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        try t.expectEqual(@as(usize, 10_000), session.runBackgroundAfterMs());
+    }
+    try env.put("NIB_TUNE", "background_after=nope");
+    try t.expectError(error.InvalidTuning, Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env }));
 }
 
 test "switchConfig updates a zero-Step Session in place and replaces one with Steps" {

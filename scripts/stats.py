@@ -492,8 +492,12 @@ def mechanical_step(codes, recorded_step, recordings):
 
 
 def header_group(header, group_by):
-    field = {'version': 'nib_version', 'system': 'system_sha', 'patches': 'patches_off', 'profile': 'profile'}[group_by]
+    field = {'version': 'nib_version', 'system': 'system_sha', 'patches': 'patches_off', 'profile': 'profile', 'tuning': 'tuning'}[group_by]
     value = header.get(field)
+    if group_by == 'tuning':
+        if isinstance(value, dict) and value and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+            return ','.join(f'{k}={v}' for k, v in sorted(value.items()))
+        return 'unknown'
     if group_by != 'patches':
         return value if isinstance(value, str) and value.strip() else 'unknown'
     if field not in header:
@@ -1058,7 +1062,7 @@ def step_group(record, field):
 
 
 def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None, _step_filter=None):
-    if group_by not in (None, 'version', 'system', 'patches', 'profile', 'transport', 'incremental', 'full_reason'):
+    if group_by not in (None, 'version', 'system', 'patches', 'profile', 'tuning', 'transport', 'incremental', 'full_reason'):
         raise ValueError('invalid group_by')
     paths = list(paths)
     if _systems is None:
@@ -1398,7 +1402,7 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None, _ste
                               _step_filter=(group_by, key) if group_by in ('transport', 'incremental', 'full_reason') else None)
             if group['overall']['sessions']:
                 report['groups'][key] = group
-        report['notes'][0] += (' --group-by transport/incremental/full_reason groups complete Steps by actual transport/continuation state; one session may appear in multiple groups; missing fields mean unknown. Filter by record; mixed-transport Turns are not complete wall-time samples. Other groups use header nib_version/system_sha/patches_off/profile; '
+        report['notes'][0] += (' --group-by transport/incremental/full_reason groups complete Steps by actual transport/continuation state; one session may appear in multiple groups; missing fields mean unknown. Filter by record; mixed-transport Turns are not complete wall-time samples. Other groups use header nib_version/system_sha/patches_off/profile/tuning; '
             'missing/invalid values mean unknown; missing patches_off with valid nib_version or system_sha means none; '
             'explicitly empty patch sets also mean none; patch arrays group as deduplicated sorted sets, with the complete core report recomputed per group.')
     return report
@@ -1543,7 +1547,7 @@ def main():
     parser.add_argument('paths', nargs='*', type=Path, help='session JSONL files or directories')
     parser.add_argument('--since', type=date.fromisoformat, metavar='YYYY-MM-DD', help='record date, inclusive, local time; legacy records fall back to file modification time')
     parser.add_argument('--cwd', type=Path, help='exact session working directory')
-    parser.add_argument('--group-by', choices=('version', 'system', 'patches', 'profile', 'transport', 'incremental', 'full_reason'), help='group by session metadata, actual Step transport, incremental state or full-request reason')
+    parser.add_argument('--group-by', choices=('version', 'system', 'patches', 'profile', 'tuning', 'transport', 'incremental', 'full_reason'), help='group by session metadata, actual Step transport, incremental state or full-request reason')
     parser.add_argument('--json', action='store_true', help='emit JSON instead of text')
     args = parser.parse_args()
     inputs = args.paths or [Path(os.environ.get('NIB_HOME', '~/.nib')).expanduser() / 'sessions']

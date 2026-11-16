@@ -19,6 +19,14 @@ After implementation review and before enabling the patch, `python3 scripts/stat
 
 Measure with `python3 scripts/stats.py --since YYYY-MM-DD --group-by patches` (optionally `--json`). Reuse the conservative write-to-validation classifier, preferring actual tools and `args.command` from complete recordings, otherwise static extraction. Hits require only bash/read with all bash commands validating/checking status. Unclear dynamic/static extraction, compound shell, redirects, and git merge do not hit. Thus this baseline differs from manually counted 316/1757 (about 18%, about 16% of time), including different historical sample scope. Time-share denominator is total candidate-Step duration with `ms`, not model time. Old-log/group differences are signals, not direct causal evidence of patch effects.
 
+## Value tunings
+
+Variants live in `src/session/tuning.zig`; a Profile picks one per tuning, `NIB_TUNE=<tuning>=<variant>[,...]` overrides it for experiments, and the Session log header records the result (`stats.py --group-by tuning`). See [ADR 0026](adr/0026-tuning.md).
+
+| tuning / variant | Model measured | Date | Problem and evidence | Result |
+|---|---|---|---|---|
+| `background_after`: `long` (120000 ms) for DeepSeek, `default` (10000 ms) for the rest | deepseek-flash, effort max | 2026-11-15 | 30 Terminal-Bench 2.1 trials in 3 arms. A model Run over 10 s moves to background and its result arrives later as a user message. With DeepSeek thinking mode a user message starts a new turn, so all earlier `reasoning_content` is dropped: the next request shrinks (e.g. 98k to 64k tokens) and is almost entirely a cache miss, the model loses its reasoning chain and usually spends an extra Step waiting. Those Steps were under 8% of all Steps but 36–41% of all uncached input tokens. Of the 79 backgrounded Runs, 43 finished within 30 s, 56 within 60 s, 68 within 120 s, 75 within 300 s. Pi (same model, no auto-background) never hits this. | 120 s keeps about 86% of those Runs in the foreground. Recheck when the model changes or DeepSeek results are delivered without a user message ([ADR 0025](adr/0025-model-profiles.md)). |
+
 ## Implementation compromises
 
 | Name | Location | Reason | Removal condition |
