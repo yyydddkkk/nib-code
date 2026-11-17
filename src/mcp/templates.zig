@@ -42,3 +42,27 @@ test "plugin environment templates preserve values and reject missing variables"
     try t.expectError(error.InvalidEnvironmentTemplate, validate("${BAD-NAME}"));
     try t.expectError(error.InvalidEnvironmentTemplate, validate("${TOKEN"));
 }
+
+/// The returned list is owned; names borrow the template.
+pub fn references(a: std.mem.Allocator, text: []const u8) ![]const []const u8 {
+    try validate(text);
+    var names: std.ArrayList([]const u8) = .empty;
+    errdefer names.deinit(a);
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, text, i, "${")) |start| {
+        const end = std.mem.indexOfScalarPos(u8, text, start + 2, '}').?;
+        try names.append(a, text[start + 2 .. end]);
+        i = end + 1;
+    }
+    return names.toOwnedSlice(a);
+}
+
+test "environment references are inherited by name without resolving secrets" {
+    const t = std.testing;
+    const names = try references(t.allocator, "prefix-${GITHUB_TOKEN}-${OTHER}");
+    defer t.allocator.free(names);
+    try t.expectEqual(@as(usize, 2), names.len);
+    try t.expectEqualStrings("GITHUB_TOKEN", names[0]);
+    try t.expectEqualStrings("OTHER", names[1]);
+    try t.expectError(error.InvalidEnvironmentTemplate, references(t.allocator, "${BAD-NAME}"));
+}

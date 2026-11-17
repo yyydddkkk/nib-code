@@ -140,6 +140,44 @@ class Plugins(unittest.TestCase):
         self.assertIn("${PLUGIN_TEST_TOKEN}", json.dumps(header))
         self.assertIn("not-for-session-log", log)
 
+    def test_default_mcp_file_can_be_referenced_once_by_multiple_paths(self):
+        (self.source / ".mcp.json").write_text(json.dumps({"mcpServers": {"local": {"command": sys.executable}}}))
+        (self.source / ".claude-plugin/plugin.json").write_text(json.dumps({"name": "example", "mcpServers": ["./.mcp.json", "././.mcp.json"]}))
+        self.assertIn("1 MCP server", self.install())
+        (self.source / ".claude-plugin/plugin.json").write_text(json.dumps({"name": "example", "mcpServers": {"local": {"command": "different"}}}))
+        self.assertIn("PluginMcpNameConflict", self.run_nib("plugin", "install", self.source, ok=False))
+
+    def test_child_inherits_only_names_referenced_by_enabled_plugin_templates(self):
+        (self.source / "server.py").write_text((ROOT / "tests/mock_mcp.py").read_text())
+        (self.source / "mock_http.py").write_text((ROOT / "tests/mock_http.py").read_text())
+        (self.source / ".mcp.json").write_text(json.dumps({"mcpServers": {"local": {"command": sys.executable, "args": ["${CLAUDE_PLUGIN_ROOT}/server.py"], "env": {"MCP_TEST_TOKEN": "${GITHUB_TOKEN}"}}}}))
+        self.env["GITHUB_TOKEN"] = "fake-child-plugin-token"
+        self.install()
+        self.run_nib("plugin", "on", "example")
+        original = self.mock.serve
+        parent_code = ('console.log(await tools.agent({prompt:"mcp-token-probe"}));'
+                       'console.log(await tools.agent({prompt:"mcp-token-probe",fork:true}));')
+        def serve(handler, body):
+            prompt = next((m.get("content", "") for m in reversed(body["messages"]) if m.get("role") == "user"), "")
+            self.mock.code = 'console.log(await tools.mcp("example__local.env", {}));' if prompt == "mcp-token-probe" else parent_code
+            if prompt == "mcp-token-probe":
+                body = dict(body, messages=[m for m in body["messages"]
+                            if not (m.get("role") == "tool" and m.get("content", "").startswith("[forked as child"))])
+            return original(handler, body)
+        self.mock.serve = serve
+        self.ask("parent plugin probe")
+        child_logs = []
+        for path in (self.data / "sessions").glob("*.jsonl"):
+            if path.name.endswith(".calls.jsonl"):
+                continue
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            if records and records[0].get("parent_session_id"):
+                child_logs.append(path.read_text())
+                self.assertNotIn("fake-child-plugin-token", json.dumps(records[0]))
+        self.assertEqual(len(child_logs), 2)
+        for log in child_logs:
+            self.assertIn("fake-child-plugin-token", log)
+
     def test_child_and_fork_keep_parent_package_snapshot(self):
         import shlex
         self.install()
@@ -246,15 +284,15 @@ def tui_plugins():
                 terminal.send("/plugins on example\r")
                 wait_for(lambda: "example = true" in (home / "config.toml").read_text(), "plugin enabled")
                 terminal.send("/new\r/example:check files\r")
-                terminal.until(reply.text.encode())
+                terminal.wait_turn(reply.text)
                 assert "Check files" in reply.messages[1]["content"], reply.messages
                 terminal.send("/plugins off example\r")
                 wait_for(lambda: "example = false" in (home / "config.toml").read_text(), "plugin disabled")
                 terminal.send("/example:check still-here\r")
-                terminal.until(frozen.text.encode())
+                terminal.wait_turn(frozen.text)
                 assert "Check still-here" in frozen.messages[-1]["content"], frozen.messages
                 terminal.send("/new\r$example:check\r")
-                terminal.until(disabled.text.encode())
+                terminal.wait_turn(disabled.text)
                 assert disabled.messages[1]["content"] == "$example:check", disabled.messages
             print(f"plugins TUI {width} columns: passed")
 

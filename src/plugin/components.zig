@@ -65,6 +65,7 @@ const Loader = struct {
     servers: std.ArrayList(Server) = .empty,
     unsupported: std.ArrayList([]const u8) = .empty,
     seen: std.StringHashMapUnmanaged(void) = .empty,
+    mcp_files: std.StringHashMapUnmanaged(enum { loading, loaded }) = .empty,
 
     fn warn(l: *Loader, item: []const u8) !void {
         for (l.unsupported.items) |old| if (std.mem.eql(u8, old, item)) return;
@@ -191,7 +192,15 @@ const Loader = struct {
 
     fn mcp(l: *Loader, value: V, depth: usize) anyerror!void {
         if (depth > 16) return error.PluginMcpNesting;
-        if (value == .string) return l.mcp(try json(l.a, l.io, try path(l.a, l.io, l.root, value.string)), depth + 1);
+        if (value == .string) {
+            const full = try path(l.a, l.io, l.root, value.string);
+            const entry = try l.mcp_files.getOrPut(l.a, full);
+            if (entry.found_existing) return if (entry.value_ptr.* == .loaded) {} else error.PluginMcpNesting;
+            entry.value_ptr.* = .loading;
+            try l.mcp(try json(l.a, l.io, full), depth + 1);
+            l.mcp_files.getPtr(full).?.* = .loaded;
+            return;
+        }
         if (value == .array) {
             for (value.array.items) |item| try l.mcp(item, depth + 1);
             return;
@@ -223,7 +232,11 @@ pub fn load(a: A, io: std.Io, directory: []const u8) !Package {
         if (err == error.FileNotFound) break :blk null;
         return err;
     };
-    if (mcp_value) |v| try l.mcp(v, 0);
+    if (mcp_value) |v| {
+        try l.mcp_files.put(a, mcp_path, .loading);
+        try l.mcp(v, 0);
+        l.mcp_files.getPtr(mcp_path).?.* = .loaded;
+    }
     if (field(manifest, "mcpServers")) |v| try l.mcp(v, 0);
     var fields = manifest.object.iterator();
     while (fields.next()) |entry| {

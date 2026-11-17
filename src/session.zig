@@ -290,8 +290,13 @@ pub const Session = struct {
             s.tools.recovery.enabled = true;
             return .new_session;
         }
-        s.cfg = cfg;
-        s.tools.cfg = cfg;
+        var updated = cfg;
+        updated.enabled_plugins = previous.enabled_plugins;
+        updated.plugin_skills = previous.plugin_skills;
+        updated.plugins_loaded = previous.plugins_loaded;
+        updated.mcp_servers = previous.mcp_servers;
+        s.cfg = updated;
+        s.tools.cfg = updated;
         const cwd = std.process.currentPathAlloc(s.io, s.arena.allocator()) catch |err| {
             s.cfg = previous;
             s.tools.cfg = previous;
@@ -1125,6 +1130,10 @@ test "switchConfig updates a zero-Step Session in place and replaces one with St
     var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root });
     defer session.deinit();
 
+    session.cfg.plugin_skills = &.{.{ .name = "example:review", .description = "review", .location = "/fixture/SKILL.md" }};
+    session.cfg.plugins_loaded = true;
+    session.cfg.enabled_plugins = &.{"example"};
+    session.cfg.mcp_servers = &.{.{ .id = "example__local" }};
     var next = cfg;
     next.model = "other";
     const id = try a.dupe(u8, session.id);
@@ -1133,6 +1142,11 @@ test "switchConfig updates a zero-Step Session in place and replaces one with St
     try t.expectEqualStrings("other", session.cfg.model);
     try t.expectEqualStrings("other", session.tools.cfg.?.model);
     try t.expectEqualStrings("other", session.log.model.?);
+    try t.expect(session.cfg.plugins_loaded);
+    try t.expectEqualStrings("example:review", session.cfg.plugin_skills[0].name);
+    try t.expectEqualStrings("example", session.cfg.enabled_plugins[0]);
+    try t.expectEqualStrings("example__local", session.cfg.mcp_servers[0].id);
+    try t.expectEqualStrings("example:review", session.tools.cfg.?.plugin_skills[0].name);
 
     try session.commit(session.history.items.len, &.{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "yo" } }, 10, null);
     try t.expect(session.log.steps > 0);
