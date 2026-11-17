@@ -22,26 +22,64 @@ pub fn read(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         return fail(gpa, "{s}: {s}", .{ a.value.path, @errorName(err) });
     defer file.close(t.io);
     const stat = try file.stat(t.io);
+    if (stat.size > read_file_limit) return fail(gpa, "{s}: StreamTooLong", .{a.value.path});
     var reader = file.reader(t.io, &.{});
-    const data = reader.interface.allocRemaining(gpa, .limited(undo.file_limit + 1)) catch |err|
+    const page = readPage(gpa, &reader.interface, a.value.offset, a.value.limit, if (stat.kind == .file and stat.size != 0) stat.size else null) catch |err|
         return fail(gpa, "{s}: {s}", .{ a.value.path, @errorName(err) });
-    defer gpa.free(data);
-
-    var start: usize = 0;
-    var line: usize = 1;
-    while (line < a.value.offset and start < data.len) : (line += 1) {
-        start = if (std.mem.indexOfScalarPos(u8, data, start, '\n')) |nl| nl + 1 else data.len;
-    }
-    var end = start;
-    var n: usize = 0;
-    while (n < a.value.limit and end < data.len) : (n += 1) {
-        end = if (std.mem.indexOfScalarPos(u8, data, end, '\n')) |nl| nl + 1 else data.len;
-    }
-    const next_offset: ?usize = if (end < data.len) line + n else null;
-    const result = try std.json.Stringify.valueAlloc(gpa, .{ .text = data[start..end], .next_offset = next_offset }, .{});
+    defer gpa.free(page.text);
+    checkReadStat(stat, try file.stat(t.io)) catch |err|
+        return fail(gpa, "{s}: {s}", .{ a.value.path, @errorName(err) });
+    const result = try std.json.Stringify.valueAlloc(gpa, page, .{});
     errdefer gpa.free(result);
     try t.file_state.remember(t.io, gpa, path, stat);
     return .{ .ok = result };
+}
+
+// Match the inclusive cap of allocRemaining(..., .limited(undo.file_limit + 1)).
+const read_file_limit = undo.file_limit + 1;
+const read_buffer_size = 16 * 1024;
+const Page = struct { text: []const u8, next_offset: ?usize };
+
+fn readPage(gpa: std.mem.Allocator, reader: *std.Io.Reader, offset: usize, limit: usize, known_size: ?u64) !Page {
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(gpa);
+    var buffer: [read_buffer_size]u8 = undefined;
+    var total: usize = 0;
+    var line: usize = 1;
+    var remaining = limit;
+    var next_offset: ?usize = null;
+    while (true) {
+        const lookahead = line >= offset and remaining == 0 and next_offset == null;
+        const capacity = @min(if (lookahead) 1 else buffer.len, read_file_limit + 1 - total);
+        const len = try reader.readSliceShort(buffer[0..capacity]);
+        if (len == 0) break;
+        total += len;
+        if (total > read_file_limit) return error.StreamTooLong;
+        var pos: usize = 0;
+        while (pos < len and next_offset == null) {
+            if (line >= offset and remaining == 0) {
+                next_offset = line;
+                break;
+            }
+            const newline = std.mem.indexOfScalarPos(u8, buffer[0..len], pos, '\n');
+            const end = if (newline) |nl| nl + 1 else len;
+            if (line >= offset) try text.appendSlice(gpa, buffer[pos..end]);
+            if (newline != null) {
+                if (line >= offset) remaining -= 1;
+                line += 1;
+            }
+            pos = end;
+        }
+        // Size-less streams must reach EOF to enforce the same whole-input limit.
+        if (next_offset != null and known_size != null and total <= known_size.?) break;
+    }
+    return .{ .text = try text.toOwnedSlice(gpa), .next_offset = next_offset };
+}
+
+fn checkReadStat(before: std.Io.File.Stat, after: std.Io.File.Stat) !void {
+    if (after.size > read_file_limit) return error.StreamTooLong;
+    if (before.inode != after.inode or before.size != after.size or before.mtime.nanoseconds != after.mtime.nanoseconds)
+        return error.FileChangedDuringRead;
 }
 
 fn writeBlocked(t: *Tools, gpa: std.mem.Allocator, path: []const u8) !?[]const u8 {
@@ -392,6 +430,12 @@ test "read pagination boundaries do not add text" {
         .{ .data = "a\n", .offset = 2, .text = "" },
         .{ .data = "a\n", .offset = 100, .text = "" },
         .{ .data = "a", .limit = 0, .text = "", .next_offset = 1 },
+        .{ .data = "", .limit = 0, .text = "" },
+        .{ .data = "a\nb", .offset = 2, .limit = 0, .text = "", .next_offset = 2 },
+        .{ .data = "a\n", .offset = 2, .limit = 0, .text = "" },
+        .{ .data = "a\nb", .offset = 0, .limit = 1, .text = "a\n", .next_offset = 2 },
+        .{ .data = "中文\r\n\r\n🙂", .offset = 2, .limit = 1, .text = "\r\n", .next_offset = 3 },
+        .{ .data = "中文\r\n\r\n🙂", .offset = 3, .limit = 1, .text = "🙂" },
     }) |c| {
         try tmp.dir.writeFile(testing.io, .{ .sub_path = "f", .data = c.data });
         const args = try std.json.Stringify.valueAlloc(testing.allocator, .{ .path = path, .offset = c.offset, .limit = c.limit }, .{});
@@ -584,4 +628,140 @@ test "file observations are independent per session and follow aliases" {
     defer freeResult(rejected);
     try testing.expect(rejected == .err);
     try f.content("other session");
+}
+
+test "read streaming matches whole-file slicing across buffer boundaries and long lines" {
+    const data = try testing.allocator.alloc(u8, 4 * read_buffer_size + 7);
+    defer testing.allocator.free(data);
+    @memset(data, 'x');
+    @memcpy(data[read_buffer_size - 2 ..][0..8], "中文\r\n");
+    data[3 * read_buffer_size] = '\n';
+    data[3 * read_buffer_size + 1] = '\n';
+    for ([_]usize{ 0, 1, 2, 3, 4, 5, 100, std.math.maxInt(usize) }) |offset| {
+        for ([_]usize{ 0, 1, 2, 3, 2000, std.math.maxInt(usize) }) |limit| {
+            var start: usize = 0;
+            var line: usize = 1;
+            while (line < offset and start < data.len) : (line += 1) {
+                start = if (std.mem.indexOfScalarPos(u8, data, start, '\n')) |nl| nl + 1 else data.len;
+            }
+            var end = start;
+            var n: usize = 0;
+            while (n < limit and end < data.len) : (n += 1) {
+                end = if (std.mem.indexOfScalarPos(u8, data, end, '\n')) |nl| nl + 1 else data.len;
+            }
+            for ([_]?u64{ data.len, null }) |known_size| {
+                var reader = std.Io.Reader.fixed(data);
+                const page = try readPage(testing.allocator, &reader, offset, limit, known_size);
+                defer testing.allocator.free(page.text);
+                try testing.expectEqualStrings(data[start..end], page.text);
+                try testing.expectEqual(if (end < data.len) @as(?usize, line + n) else null, page.next_offset);
+            }
+        }
+    }
+}
+
+test "read streaming uses bounded temporary allocation and stops after lookahead" {
+    const data = try testing.allocator.alloc(u8, undo.file_limit);
+    defer testing.allocator.free(data);
+    @memset(data, 'x');
+    for (0..data.len / 64) |i| data[i * 64 + 63] = '\n';
+    for ([_]usize{ 1, data.len / 64 - 1, data.len / 64 + 1 }) |offset| {
+        var storage: [1024]u8 = undefined;
+        var allocator = std.heap.FixedBufferAllocator.init(&storage);
+        var reader = std.Io.Reader.fixed(data);
+        const page = try readPage(allocator.allocator(), &reader, offset, 1, data.len);
+        try testing.expectEqual(@as(usize, if (offset <= data.len / 64) 64 else 0), page.text.len);
+        if (offset == 1) {
+            try testing.expectEqual(@as(usize, read_buffer_size), reader.seek);
+            try testing.expectEqual(@as(?usize, 2), page.next_offset);
+        } else {
+            try testing.expect(reader.seek >= data.len - read_buffer_size);
+        }
+    }
+    @memset(data[0 .. read_buffer_size - 1], 'x');
+    data[read_buffer_size - 1] = '\n';
+    var reader = std.Io.Reader.fixed(data);
+    const page = try readPage(testing.allocator, &reader, 1, 1, data.len);
+    defer testing.allocator.free(page.text);
+    try testing.expectEqual(@as(usize, read_buffer_size + 1), reader.seek);
+    try testing.expectEqual(@as(?usize, 2), page.next_offset);
+}
+
+test "read streaming enforces the size limit even without useful size metadata" {
+    const data = try testing.allocator.alloc(u8, read_file_limit + 1);
+    defer testing.allocator.free(data);
+    @memset(data, 'x');
+    data[1] = '\n';
+    var reader = std.Io.Reader.fixed(data);
+    try testing.expectError(error.StreamTooLong, readPage(testing.allocator, &reader, 1, 1, null));
+}
+
+test "read preserves the inclusive size boundary for small and empty pages" {
+    var f = try FileTest.init();
+    defer f.deinit();
+    const file = try f.tmp.dir.createFile(testing.io, "f", .{ .read = true });
+    defer file.close(testing.io);
+    try file.writePositionalAll(testing.io, "a\nb\n", 0);
+    for ([_]u64{ undo.file_limit, read_file_limit, read_file_limit + 1, 5 * 1024 * 1024 * 1024 }) |size| {
+        try file.setLength(testing.io, size);
+        for ([_]usize{ 0, 1 }) |limit| {
+            const result = try f.call("read", .{ .path = f.path, .limit = limit });
+            defer freeResult(result);
+            if (size <= read_file_limit) {
+                try testing.expect(result == .ok);
+                try testing.expectEqualStrings(if (limit == 0) "{\"text\":\"\",\"next_offset\":1}" else "{\"text\":\"a\\n\",\"next_offset\":2}", result.ok);
+            } else {
+                try testing.expect(result == .err);
+                try testing.expect(std.mem.endsWith(u8, result.err, "StreamTooLong"));
+            }
+        }
+    }
+    const rejected = try f.call("write", .{ .path = f.path, .content = "stale" });
+    defer freeResult(rejected);
+    try testing.expect(rejected == .err);
+}
+
+test "read detects growth truncation and same-size changes during an early page" {
+    const Hook = struct {
+        var target: std.Io.File = undefined;
+        var inode: std.Io.File.INode = undefined;
+        var new_size: u64 = 0;
+        var mutated = false;
+
+        fn read(userdata: ?*anyopaque, file: std.Io.File, data: []const []u8, offset: u64) std.Io.File.ReadPositionalError!usize {
+            const n = try testing.io.vtable.fileReadPositional(userdata, file, data, offset);
+            const stat = file.stat(testing.io) catch return error.InputOutput;
+            if (!mutated and stat.inode == inode) {
+                mutated = true;
+                target.writePositionalAll(testing.io, "y", 1) catch return error.InputOutput;
+                target.setLength(testing.io, new_size) catch return error.InputOutput;
+                target.setTimestamps(testing.io, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = stat.mtime.nanoseconds + std.time.ns_per_s } } }) catch return error.InputOutput;
+            }
+            return n;
+        }
+    };
+    var f = try FileTest.init();
+    defer f.deinit();
+    const data = try testing.allocator.alloc(u8, 2 * read_buffer_size);
+    defer testing.allocator.free(data);
+    @memset(data, 'x');
+    data[1] = '\n';
+    for ([_]u64{ data.len + 1, data.len - 1, data.len, read_file_limit + 1 }) |size| {
+        try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "f", .data = data });
+        Hook.target = try f.tmp.dir.openFile(testing.io, "f", .{ .mode = .read_write });
+        defer Hook.target.close(testing.io);
+        Hook.inode = (try Hook.target.stat(testing.io)).inode;
+        Hook.new_size = size;
+        Hook.mutated = false;
+        var vtable = testing.io.vtable.*;
+        vtable.fileReadPositional = Hook.read;
+        f.host.io = .{ .userdata = testing.io.userdata, .vtable = &vtable };
+        defer f.host.io = testing.io;
+        const result = try f.call("read", .{ .path = f.path, .limit = 1 });
+        defer freeResult(result);
+        try testing.expect(Hook.mutated);
+        try testing.expect(result == .err);
+        try testing.expect(std.mem.endsWith(u8, result.err, if (size > read_file_limit) "StreamTooLong" else "FileChangedDuringRead"));
+        try testing.expectEqual(@as(u32, 0), f.host.file_state.seen.count());
+    }
 }

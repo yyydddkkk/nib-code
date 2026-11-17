@@ -39,7 +39,7 @@ Standalone nib js/TUI `/js` show sandbox head/tail with `[console output truncat
 
 ## Tool data and explicit limits
 
-read returns { text, next_offset }, preserving requested offset/limit lines (default 2000), separate next-page start or null at EOF, file cap 16 MiB. bash `{ exit_code, output }` preserves output, errors above 16 MiB with redirection advice. Explicit bounds: grep text/context ≤500 bytes; grep/glob truncated marks count limits; fetch text ≤1 MiB with { url, status, content_type, text, truncated }, no notices mixed into text, downloads >5 MiB error.
+read returns { text, next_offset }, preserving requested offset/limit lines (default 2000), separate next-page start or null at EOF, file cap 16 MiB + 1 byte (inclusive). bash `{ exit_code, output }` preserves output, errors above 16 MiB with redirection advice. Explicit bounds: grep text/context ≤500 bytes; grep/glob truncated marks count limits; fetch text ≤1 MiB with { url, status, content_type, text, truncated }, no notices mixed into text, downloads >5 MiB error.
 
 Search fields/UTF-8 columns: [ADR 0012](adr/0012-search-and-fetch-tools.md).
 
@@ -56,6 +56,8 @@ Search fields/UTF-8 columns: [ADR 0012](adr/0012-search-and-fetch-tools.md).
 edit/write write complete contents to random same-directory `.nib-*` files, then atomic same-directory rename, cleaning up on failure. Preserve existing permission bits; follow symlinks to real targets without replacing links. New inodes break hard-link sharing; other links keep old contents. File tools do not fsync: atomic visibility is not power-loss durability. Configuration writes retain fsync.
 
 Sessions track last-observed inode/size/nanosecond mtime by canonical real path, updated by successful read (even one page), edit, write. Overwriting write compares current/observed versions and rejects external changes, requiring reread/new-content-based writes. Unobserved existing files still allow direct write; missing targets are creation. edit reads latest locked content and matches old_text, never replacing from stale Session snapshots; success updates versions.
+
+read scans with a fixed 16 KiB buffer, collecting only requested lines without truncating long lines. Regular files with useful size metadata can stop after the page and lookahead; size-less streams scan to EOF to enforce the same input cap. The existing inclusive implementation boundary is 16 MiB + 1 byte. Size is checked before and after scanning; growth beyond the cap fails with `StreamTooLong`, and an observed inode/size/mtime change during reading fails with `FileChangedDuringRead` without refreshing the Session observation. See [read measurements](read-streaming.md).
 
 read/edit/write share cross-process advisory locks in `$NIB_HOME/locks/` (default `~/.nib/locks/`), named by canonical-path SHA-256 hex. Independent nib processes, children, relative/symlink aliases sharing NIB_HOME coordinate on one lock. read locks keep returned bytes/versions consistent among participating writers. Persist lock files; release unlocks/closes without unlink to avoid waiting/new writers locking different inodes. Lock waits remain cancelable.
 

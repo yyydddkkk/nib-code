@@ -231,11 +231,11 @@ class FileTests(unittest.TestCase):
 
     def test_read_page_records_version_and_edit_refreshes_it(self):
         target = self.cwd / "paged"
-        target.write_text("first\nsecond\n")
+        target.write_text("first\nsecond\n" + "unread tail\n" * 10000)
         modify = command(sys.executable, "-c",
                          "from pathlib import Path; Path('paged').write_text('external\\nsecond\\n')")
         code = "const page = " + js_call("read", path="paged", offset=2, limit=1) + ";\n"
-        code += "if (page.text !== 'second\\n' || page.next_offset !== null) throw new Error('bad page');\n"
+        code += "if (page.text !== 'second\\n' || page.next_offset !== 3) throw new Error('bad page');\n"
         code += js_call("bash", command=modify) + ";\n"
         code += "let rejected = false; try { " + js_call("write", path="paged", content="stale")
         code += "; } catch (error) { if (!/changed|stale/i.test(String(error))) throw error; rejected = true; }\n"
