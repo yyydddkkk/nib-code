@@ -62,6 +62,50 @@ class Providers(unittest.TestCase):
                 self.assertEqual(report.returncode, 0, report.stderr)
                 self.assertGreater(json.loads(report.stdout)["usage"]["prompt_cache_write_tokens"], 0)
 
+    def test_chat_completion_consistency(self):
+        example = 'Quoted example: <｜DSML｜tool_calls><｜DSML｜invoke name="run">console.log("example")</｜DSML｜invoke></｜DSML｜tool_calls>'
+        for structured, reason in ((False, "tool_calls"), (False, "stop"), (False, None), (True, "tool_calls"), (True, None)):
+            with self.subTest(structured=structured, reason=reason), tempfile.TemporaryDirectory(prefix="nib-chat-finish-") as tmp:
+                mock = Mock("chat_completions")
+                self.addCleanup(mock.close)
+
+                def serve(h, body):
+                    h.send_response(200)
+                    h.send_header("Content-Type", "text/event-stream")
+                    h.end_headers()
+
+                    def event(delta, **extra):
+                        h.wfile.write(("data: " + json.dumps({"choices": [{"delta": delta, **extra}]}) + "\n\n").encode())
+
+                    has_result = any(m.get("role") == "tool" for m in body["messages"])
+                    event({"content": example}, finish_reason=None)
+                    if structured and not has_result:
+                        args = json.dumps({"code": 'console.log("fragmented");'})
+                        event({"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "run", "arguments": args[:9]}}]})
+                        event({"tool_calls": [{"index": 0, "function": {"arguments": args[9:]}}]})
+                    terminal = "stop" if has_result else reason
+                    event({}, **({"finish_reason": terminal} if terminal else {}))
+                    h.wfile.write(b'data: {"choices":[],"usage":{"prompt_tokens":10}}\n\ndata: [DONE]\n\n')
+
+                mock.serve = serve
+                env = {k: v for k, v in os.environ.items() if not k.startswith(("NIB_", "DEEPSEEK_"))}
+                env.update(HOME=tmp, NIB_HOME=str(Path(tmp) / "nib"), NIB_PROVIDER="deepseek", NIB_API_KEY=mock.key, DEEPSEEK_API_KEY=mock.key, NIB_BASE_URL=mock.url)
+                result = subprocess.run([str(BIN), "ask", "--json", "check completion"], cwd=tmp, env=env, capture_output=True, text=True, timeout=30)
+                events = [json.loads(line) for line in result.stdout.splitlines()]
+                inconsistent = not structured and reason == "tool_calls"
+                self.assertEqual(result.returncode == 0, not inconsistent, result.stdout + result.stderr)
+                if inconsistent:
+                    self.assertIn("InvalidResponse", events[-1]["error"]["message"])
+                    self.assertFalse(any("end" in e for e in events))
+                else:
+                    self.assertIn("end", events[-1])
+                    self.assertEqual(events[-1]["end"]["steps"], 2 if structured else 1)
+                    self.assertEqual(events[-1]["end"]["text"], example)
+                runs = [e["run_start"] for e in events if "run_start" in e]
+                self.assertEqual(runs, ['console.log("fragmented");'] if structured else [])
+                self.assertEqual(len(mock.requests), 2 if structured else 1)
+                self.assertFalse(mock.errors, mock.errors)
+
     def test_builtins(self):
         for name, protocol, key in [("openai", "responses", "OPENAI_API_KEY"), ("xai", "responses", "XAI_API_KEY"), ("anthropic", "anthropic_messages", "ANTHROPIC_API_KEY"), ("deepseek", "chat_completions", "DEEPSEEK_API_KEY")]:
             with self.subTest(provider=name):
