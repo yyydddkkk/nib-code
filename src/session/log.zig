@@ -41,6 +41,7 @@ pub const Record = struct {
     task_stop: ?TaskStop = null,
     sandbox_unavailable: ?[]const u8 = null,
     at: ?i64 = null,
+    source: ?Source = null,
     diagnostic: ?Diagnostic = null,
     agent_session: ?AgentSession = null,
     background: ?@import("events.zig").Background = null,
@@ -90,6 +91,8 @@ pub const Record = struct {
     repair: bool = false,
 };
 
+pub const Source = struct { step: usize, run: usize, code: []const u8, base: ?[]const u8 = null, arguments: []const u8, failed: bool };
+
 pub const Log = struct {
     tuning: Tuning = .{},
     mcp_servers: []const @import("../mcp/config.zig").Server = &.{},
@@ -136,6 +139,35 @@ pub const Log = struct {
         for (restored.background_repairs) |event| try log.append(io, a, .{ .background = event });
         if (restored.needs_repair or restored.background_repairs.len != 0) try log.file.sync(io);
         return log;
+    }
+
+    pub fn source(log: *Log, io: std.Io, a: std.mem.Allocator, value: Source) !void {
+        log.mutex.lockUncancelable(io);
+        defer log.mutex.unlock(io);
+        try log.append(io, a, .{ .source = value });
+        try log.file.sync(io);
+    }
+
+    pub fn findSource(log: *Log, io: std.Io, a: std.mem.Allocator, reference: []const u8, committed: bool) !?Source {
+        log.mutex.lockUncancelable(io);
+        defer log.mutex.unlock(io);
+        var reader = log.file.reader(io, &.{});
+        const data = try reader.interface.allocRemaining(a, .unlimited);
+        var found: ?Source = null;
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        while (lines.next()) |line| {
+            const record = parseRecord(a, line) catch continue;
+            if (record.source) |value| {
+                const ref = try std.fmt.allocPrint(a, "{d}:{d}", .{ value.step, value.run });
+                if (std.mem.eql(u8, reference, ref)) found = value;
+            }
+        }
+        const value = found orelse return null;
+        if (!committed) return value;
+        for (try @import("../replay.zig").loadMain(a, data)) |run| {
+            if (run.key.step == value.step and run.key.run == value.run and run.expected != null and std.mem.eql(u8, run.code, value.code)) return value;
+        }
+        return null;
     }
 
     pub fn close(log: *Log, io: std.Io) void {
@@ -332,7 +364,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             torn = true;
             continue;
         };
-        if (r.hook != null) continue;
+        if (r.hook != null or r.source != null) continue;
         if (history.items.len == 0 or (steps == 0 and r.from == 0 and r.provider != null)) {
             parent_session_id = r.parent_session_id;
             skills = r.skills orelse .{};

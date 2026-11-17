@@ -554,7 +554,14 @@ pub const Transcript = struct {
                     const Args = struct { code: []const u8 = "" };
                     const args = std.json.parseFromSlice(Args, gpa, call.function.arguments, .{ .ignore_unknown_fields = true }) catch continue;
                     defer args.deinit();
-                    try t.addRun(gpa, args.value.code, false, m.step_effort);
+                    var code = args.value.code;
+                    for (history) |result| {
+                        if (std.mem.eql(u8, result.tool_call_id orelse "", call.id)) {
+                            code = result.executed_source orelse code;
+                            break;
+                        }
+                    }
+                    try t.addRun(gpa, code, false, m.step_effort);
                     try runs.put(call.id, t.entries.items.len - 1);
                 }
                 if (m.step_calls_omitted) |omitted| {

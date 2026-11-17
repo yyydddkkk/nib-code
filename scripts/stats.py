@@ -1165,6 +1165,8 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None, _ste
                     session_selected = True
                     time_filter['selected_records_with_at' if has_at else 'selected_records_using_mtime'] += 1
                 continue
+            if isinstance(record.get('source'), dict):
+                continue
             diagnostic = isinstance(record.get('diagnostic'), dict)
             lifecycle = isinstance(record.get('background') or record.get('background_agent'), dict)
             if not diagnostic and not lifecycle:
@@ -1279,7 +1281,7 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None, _ste
                         step_codes.append(None)
                         continue
                     function = call['function']
-                    if function.get('name') != 'run':
+                    if function.get('name') not in ('run', 'rerun'):
                         step_codes.append(None)
                         continue
                     totals['runs'] += 1
@@ -1295,6 +1297,8 @@ def summarize(paths, since=None, cwd=None, group_by=None, *, _systems=None, _ste
                     except (ValueError, TypeError, RecursionError):
                         args = None
                     code = args.get('code') if isinstance(args, dict) else None
+                    if code is None:
+                        code = next((m.get('executed_source') for m in messages if m.get('tool_call_id') == call.get('id')), None)
                     step_codes.append(code)
                     step_runs[-1] = (call_id, code, None)
                     if isinstance(code, str):

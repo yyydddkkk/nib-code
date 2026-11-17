@@ -27,7 +27,7 @@ _Avoid_: worker (reserved for tool worker threads), persistent agent
 ## Execution
 
 **Run**:
-One execution of model-written code in a fresh Sandbox. Also the only invocation entry point at the model API level.
+One execution of model-written code in a fresh Sandbox. The model starts a Run with full source through `run`, or exact edits to a failed Run through `rerun`. Both execute from the beginning; prior effects may repeat.
 _Avoid_: eval, cell, code-mode call, PTC call
 
 **Background Run**:

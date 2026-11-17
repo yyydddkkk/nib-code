@@ -179,3 +179,11 @@ stats `bash_superseded` counts selected superseded events, text “Bash superses
 `task_stop` separately records id/reason/stopped without history; TUI reason user requested stop. Tool run_ok/background_id are local restore metadata, not changes to provider bodies.
 
 Custom headers combine `provider:"custom"` and `custom_provider`; cross-custom-id resume rejects. Optional usage `prompt_cache_write_tokens` defaults zero, already included in prompt totals. stats accumulates cache writes where present.
+
+Local `source` records carry `{step, run, code, base?, arguments, failed}` for Run
+source resolution. They do not replace history or contribute Steps. A start record
+has `failed:false`; only a completed script failure becomes eligible, and its Run
+must also appear in committed history. Terminal records preserve full executed
+source, including resolved `rerun` edits, without rewriting the original tool call.
+Tool messages for `rerun` may carry local `executed_source` for the Script view;
+provider encoders omit it.

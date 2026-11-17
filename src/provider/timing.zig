@@ -176,7 +176,7 @@ pub const Model = struct {
             codes.deinit(out);
         }
         for (tool_calls, 0..) |call, i| {
-            if (!std.mem.eql(u8, call.function.name, "run")) continue;
+            if (!std.mem.eql(u8, call.function.name, "run") and !std.mem.eql(u8, call.function.name, "rerun")) continue;
             for (m.slots[0..m.used]) |*s| {
                 if (s.call_index != i or s.len == 0) continue;
                 const id = try out.dupe(u8, call.id);

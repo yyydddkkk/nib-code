@@ -145,3 +145,20 @@ A failed configured `after_edit` hook adds `{"hook":{"command":"...","exit_code"
 ## MCP tools
 
 `tools.mcp("server.tool", args)` returns `{ok, content, structured?, error?}`; `tools.mcp_schema("server.tool")` returns its full input JSON Schema. Servers must be enabled in configuration. Server/transport failures return data; malformed arguments reject. Text remains complete inside JS and uses the shared Run display budget. MCP images use the same image store and four-image limit as view; nonvision models get `[image omitted]`. Calls/results are recorded and replayed normally. Wire requests time out after 60 seconds (stdio discovery probe: two seconds); wire messages over 16 MiB fail without truncation. See [MCP tools](mcp.md).
+
+## Repairing failed scripts
+
+The model can call `rerun({base: "12:0", edits: [{old_text: "...", new_text: "..."}]})`.
+A completed script failure includes its Session-scoped source reference: the 1-based
+assistant Step ordinal and 0-based Run index, as in replay. Each edit must have
+nonempty `old_text` matching exactly once; edits apply in order to a copy. Empty,
+missing or ambiguous edits execute nothing. Successful, pending, unknown and foreign
+sources are rejected. Older logs without explicit source/terminal metadata cannot
+provide bases.
+
+This starts a new ordinary Run in a fresh Sandbox, from the beginning. Syntax and
+runtime failures can be repaired; prior effects may repeat. The original source and
+result remain unchanged. A failed repair gets its own reference. Local log metadata
+stores the base, original arguments and full resolved source; model-visible arguments
+stay unchanged. Resume resolves the same references, and offline replay executes the
+recorded source against recorded tool results rather than applying the edits again.

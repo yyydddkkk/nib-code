@@ -8,7 +8,8 @@ pub const tools_json =
     \\"description":"Run JavaScript in a fresh sandbox. The `tools` API it can call is described in the system prompt.",
     \\"parameters":{"type":"object","properties":{"code":{"type":"string",
     \\"description":"JavaScript source. Top-level await is allowed; the last expression's value is returned."}},
-    \\"required":["code"]}}}]
+    \\"required":["code"]}}},
+    \\{"type":"function","function":{"name":"rerun","description":"Apply exact edits to a failed Run source reference and execute from the beginning in a fresh sandbox. Prior effects may repeat. Each old_text must match exactly once; edits apply in order.","parameters":{"type":"object","properties":{"base":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"old_text":{"type":"string","minLength":1},"new_text":{"type":"string"}},"required":["old_text","new_text"]}}},"required":["base","edits"]}}}]
 ;
 
 /// Prompt lines that compensate for current models. Each id is registered in
