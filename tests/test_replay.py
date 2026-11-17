@@ -55,7 +55,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if codes:
             delta["tool_calls"] = [
                 {"index": n, "id": f"run-{len(self.server.requests)}-{n}", "type": "function",
-                 "function": {"name": "run", "arguments": json.dumps({"code": code})}}
+                 "function": {"name": "rerun" if isinstance(code, dict) else "run", "arguments": json.dumps(code if isinstance(code, dict) else {"code": code})}}
                 for n, code in enumerate(codes)]
         events = [{"choices": [{"delta": delta}]},
                   {"choices": [{"delta": {}, "finish_reason": "tool_calls" if codes else "stop"}],
@@ -123,6 +123,68 @@ class ReplayTests(unittest.TestCase):
             'console.log(await tools.read({path: "sample.txt"}));',
             'console.log(await tools.bash({command: "printf side > side-effect; printf bash-output"}));',
         ])
+
+    def test_patch_rerun_resume_validation_and_replay(self):
+        code = 'console.log(await tools.bash({command: "echo effect >> effects"})); throw new Error("bad");'
+        session = self.ask([code])
+        def repair(base, old, new):
+            return {"base": base, "edits": [{"old_text": old, "new_text": new}]}
+        self.ask([repair("1:0", '"bad"', '"again"')], resume=session)
+        self.ask([repair("3:0", 'throw new Error("again")', 'console.log("fixed")')], resume=session)
+        self.assertEqual((self.cwd / "effects").read_text().splitlines(), ["effect"] * 3)
+        report = self.replay(session, "--all")
+        self.assertEqual(report["divergences"], 0, report)
+        self.assertEqual(report["matched"], 3, report)
+        for args in [repair("5:0", "fixed", "wrong"), repair("99:0", "x", "y"),
+                     repair("1:0", "", "x"), repair("1:0", "missing", "x"),
+                     repair("1:0", ";", "x"), {"base": "1:0", "edits": []},
+                     {"base": "1:0", "edits": [{"old_text": '"bad"', "new_text": '"changed"'},
+                                                   {"old_text": "absent", "new_text": "x"}]}]:
+            self.ask([args], resume=session)
+        self.assertEqual((self.cwd / "effects").read_text().splitlines(), ["effect"] * 3)
+        records = jsonl(self.home / "sessions" / f"{session}.jsonl")
+        sources = [r["source"] for r in records if "source" in r]
+        self.assertEqual(sources[0]["code"], code)
+        calls = [c for r in records for m in r["messages"] for c in m.get("tool_calls", [])]
+        reruns = [c for c in calls if c["function"]["name"] == "rerun"]
+        self.assertEqual(json.loads(reruns[0]["function"]["arguments"]), repair("1:0", '"bad"', '"again"'))
+        self.assertTrue(all("executed_source" not in m for request in self.mock.requests for m in request["messages"]))
+        foreign = self.ask([repair("1:0", '"bad"', '"foreign"')])
+        foreign_records = jsonl(self.home / "sessions" / f"{foreign}.jsonl")
+        self.assertFalse(any("source" in r for r in foreign_records))
+        self.assertTrue(any(s.get("base") == "3:0" and 'console.log("fixed")' in s["code"] for s in sources))
+
+    def test_patch_rerun_with_hook_records(self):
+        (self.home / "config.toml").write_text('[hooks]\nafter_edit = ["true"]\nturn_end = ["true"]\n')
+        code = 'await tools.write({path: "edited", content: "before"}); throw new Error("hook repair")'
+        session = self.ask([code])
+        self.ask([{"base": "1:0", "edits": [{"old_text": 'throw new Error("hook repair")',
+                                              "new_text": 'await tools.write({path: "edited", content: "after"})'}]}],
+                 resume=session)
+        self.assertEqual((self.cwd / "edited").read_text(), "after")
+        report = self.replay(session, "--all")
+        self.assertEqual(report["matched"], 2, report)
+        self.assertEqual(report["divergences"], 0, report)
+
+    def test_pending_source_rejected_then_background_failure_repaired(self):
+        (self.home / "config.toml").write_text("[limits]\nrun_background_after_ms = 50\n")
+        code = 'await tools.sleep(300); throw new Error("background failure")'
+        repair = {"base": "1:0", "edits": [{"old_text": 'throw new Error("background failure")',
+                                             "new_text": 'console.log("repaired")'}]}
+        self.mock.reply(codes=[code, repair])
+        self.mock.reply()
+        self.mock.reply()
+        result = self.command("ask", "--json", "background repair")
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        session = events[0]["start"]["session_id"]
+        records = jsonl(self.home / "sessions" / f"{session}.jsonl")
+        outputs = [m.get("content", "") for r in records for m in r["messages"] if m["role"] == "tool"]
+        self.assertTrue(any("base" in output and "error:" in output for output in outputs), outputs)
+        repair["edits"].append({"old_text": "await tools.sleep(300); ", "new_text": ""})
+        self.ask([repair], resume=session)
+        report = self.replay(session, "--all")
+        self.assertEqual(report["matched"], 2, report)
+        self.assertEqual(report["divergences"], 0, report)
 
     def test_all_and_session_global_step_indices_without_side_effects(self):
         session = self.record_files()
@@ -569,7 +631,7 @@ class ReplayTests(unittest.TestCase):
             self.assertTrue(current.startswith(committed))
             additions = [json.loads(line) for line in current[len(committed):].splitlines()]
             self.assertTrue(additions)
-            self.assertTrue(all(r.get("bash") and not r["messages"] for r in additions))
+            self.assertTrue(all((r.get("bash") or r.get("source")) and not r["messages"] for r in additions))
         finally:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate(timeout=10)

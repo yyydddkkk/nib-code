@@ -78,25 +78,35 @@ pub const PollTarget = struct {
     }
 };
 
-pub const Executed = struct { images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
+pub const Executed = struct { executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
 
 /// Output is arena-owned.
 pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming) !Executed {
     const a = s.arena.allocator();
-    if (!std.mem.eql(u8, call.function.name, "run"))
-        return .{ .ok = false, .output = try std.fmt.allocPrint(a, "error: unknown tool `{s}`; the only tool is `run`", .{call.function.name}) };
-
-    const Args = struct { code: ?std.json.Value = null };
-    const args = std.json.parseFromSlice(Args, s.gpa, call.function.arguments, .{ .ignore_unknown_fields = true }) catch
-        return .{ .ok = false, .output = try a.dupe(u8, "error: arguments must be a JSON object { \"code\": string }") };
-    defer args.deinit();
-
-    const code = if (args.value.code) |value| (if (value == .string) value.string else null) else null;
-    if (code == null) return .{ .ok = false, .output = try a.dupe(u8, "error: arguments must be a JSON object { \"code\": string }") };
-    try sink.emit(sink.ctx, .{ .run_start = code.? });
+    const rerun = std.mem.eql(u8, call.function.name, "rerun");
+    if (!rerun and !std.mem.eql(u8, call.function.name, "run"))
+        return .{ .ok = false, .output = try a.dupe(u8, "error: expected run or rerun") };
+    var base: ?[]const u8 = null;
+    const code: []const u8 = if (rerun) resolve: {
+        const args = std.json.parseFromSlice(Rerun, a, call.function.arguments, .{}) catch
+            return .{ .ok = false, .output = "error: expected {base: string, edits: [{old_text: string, new_text: string}]}" };
+        base = args.value.base;
+        const source = try s.log.findSource(s.io, a, args.value.base, true) orelse
+            return .{ .ok = false, .output = "error: base source unavailable in this Session" };
+        if (!source.failed) return .{ .ok = false, .output = "error: base must be a completed failed script" };
+        break :resolve patch(a, source.code, args.value.edits) catch |err|
+            return .{ .ok = false, .output = try std.fmt.allocPrint(a, "error: {s}; edits require nonempty old_text matching exactly once", .{@errorName(err)}) };
+    } else resolve: {
+        const Args = struct { code: []const u8 };
+        const args = std.json.parseFromSlice(Args, a, call.function.arguments, .{ .ignore_unknown_fields = true }) catch
+            return .{ .ok = false, .output = "error: arguments must be a JSON object { \"code\": string }" };
+        break :resolve args.value.code;
+    };
+    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .base = base, .arguments = call.function.arguments, .failed = false });
+    try sink.emit(sink.ctx, .{ .run_start = code });
     const before_omitted = timing.omitted;
     const started: std.Io.Clock.Timestamp = .now(s.io, .awake);
-    const ran = try executeTimed(s, code.?, cancel, timing, sink);
+    const ran = try executeTimed(s, code, cancel, timing, sink);
     if (ran == null) {
         const remaining = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
         const message = if (s.tools.waitEnabled())
@@ -105,19 +115,23 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
             try std.fmt.allocPrint(a, "Run still executing after {d} ms; continuing in background as {s}. Its captured output is preserved and will arrive automatically as a message when it finishes. Continue useful work meanwhile; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read its redirected logs before completion. If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.", .{ s.cfg.limits.run_background_after_ms, s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id });
         const text = try output_format.stepLimitOutput(a, message, remaining);
         try sink.emit(sink.ctx, .{ .run_end = .{ .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id, .ok = true, .output = text, .tool_summary = .{} } });
-        return .{ .output = text, .ok = true, .run_ms = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0)), .remaining_steps = remaining, .tool_summary = .{}, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id };
+        return .{ .executed_source = if (rerun) code else null, .output = text, .ok = true, .run_ms = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0)), .remaining_steps = remaining, .tool_summary = .{}, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id };
     }
     const o = ran.?.outcome;
     defer o.deinit(s.gpa);
 
     if (o.hook_notice.len > 0) try sink.emit(sink.ctx, .{ .notice = o.hook_notice });
     const remaining_steps = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
-    const output = try output_format.stepLimitOutput(a, try output_format.format(a, o, s.cfg.limits.run_output_bytes), remaining_steps);
+    const failed = !o.ok and !cancel.load(.acquire) and !std.mem.eql(u8, o.text, "Error: run timed out");
+    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .base = base, .arguments = call.function.arguments, .failed = failed });
+    const formatted = try output_format.format(a, o, s.cfg.limits.run_output_bytes);
+    const referenced = if (failed) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, s.log.steps + 1, timing.run_index }) else formatted;
+    const output = try output_format.stepLimitOutput(a, referenced, remaining_steps);
     const run_ms = timing.elapsed();
     const tool_summary = try ToolSummary.init(a, timing.entries[0..timing.count], timing.run_index, timing.omitted - before_omitted);
     try tool_summary.annotateViews(a, ran.?.images);
     try sink.emit(sink.ctx, .{ .run_end = .{ .ok = o.ok, .output = output, .changes = ran.?.changes, .tool_summary = tool_summary } });
-    return .{ .output = output, .ok = o.ok, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
+    return .{ .executed_source = if (rerun) code else null, .output = output, .ok = o.ok, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
 }
 
 fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming, sink: Sink) !?Ran {
@@ -236,4 +250,30 @@ test "execute emits per-Run actual tool summaries including empty and overflow" 
     }
     try t.expectEqual(@as(usize, 3), observed.starts);
     try t.expectEqual(@as(usize, 3), observed.ends);
+}
+
+const Edit = struct { old_text: []const u8, new_text: []const u8 };
+const Rerun = struct { base: []const u8, edits: []const Edit };
+
+fn patch(a: std.mem.Allocator, original: []const u8, edits: []const Edit) ![]const u8 {
+    if (edits.len == 0) return error.EmptyEdits;
+    var code = original;
+    for (edits) |edit| {
+        if (edit.old_text.len == 0) return error.EmptyOldText;
+        const first = std.mem.indexOf(u8, code, edit.old_text) orelse return error.OldTextNotFound;
+        if (std.mem.indexOfPos(u8, code, first + 1, edit.old_text) != null) return error.AmbiguousOldText;
+        code = try std.mem.replaceOwned(u8, a, code, edit.old_text, edit.new_text);
+    }
+    return code;
+}
+
+test "patch rejects overlapping matches and applies edits to a copy" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.AmbiguousOldText, patch(a, "aaa", &.{.{ .old_text = "aa", .new_text = "b" }}));
+    const original = "alpha beta";
+    const resolved = try patch(a, original, &.{ .{ .old_text = "alpha", .new_text = "gamma" }, .{ .old_text = "gamma beta", .new_text = "delta" } });
+    try std.testing.expectEqualStrings("delta", resolved);
+    try std.testing.expectEqualStrings("alpha beta", original);
 }

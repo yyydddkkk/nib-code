@@ -111,6 +111,18 @@ pub const Job = struct {
         const o = job.outcome.?;
         const cwd = try std.process.currentPathAlloc(job.t.io, job.gpa);
         defer job.gpa.free(cwd);
-        return .{ .hook_notice = if (o.hook_notice.len > 0) try a.dupe(u8, o.hook_notice) else null, .execution = job.execution, .step = job.step, .run_index = job.timing.run_index, .ok = o.ok, .output = try output.format(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes), .run_ms = job.elapsed_ms, .tool_bytes = job.timing.tool_bytes, .calls = job.timing.entries[0..job.timing.count], .calls_omitted = job.timing.omitted, .changes = try job.scope.changes.take(job.gpa, a, cwd) };
+        const formatted = try output.format(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes);
+        const failed = job.state == .failed;
+        var text = formatted;
+        if (job.t.background.log) |log| {
+            const reference = try std.fmt.allocPrint(a, "{d}:{d}", .{ job.step, job.timing.run_index });
+            if (try log.findSource(job.t.io, a, reference, false)) |original| {
+                var source = original;
+                source.failed = failed;
+                try log.source(job.t.io, a, source);
+                if (failed) text = try std.fmt.allocPrint(a, "{s}\nSource: {s} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, reference });
+            }
+        }
+        return .{ .hook_notice = if (o.hook_notice.len > 0) try a.dupe(u8, o.hook_notice) else null, .execution = job.execution, .step = job.step, .run_index = job.timing.run_index, .ok = o.ok, .output = text, .run_ms = job.elapsed_ms, .tool_bytes = job.timing.tool_bytes, .calls = job.timing.entries[0..job.timing.count], .calls_omitted = job.timing.omitted, .changes = try job.scope.changes.take(job.gpa, a, cwd) };
     }
 };

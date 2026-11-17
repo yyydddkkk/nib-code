@@ -100,6 +100,9 @@ pub const Config = struct {
     open: ?[]const u8 = null,
     sandbox: Sandbox = .{},
     hooks: Hooks = .{},
+    enabled_plugins: []const []const u8 = &.{},
+    plugin_skills: []const @import("session/skills.zig").Skill = &.{},
+    plugins_loaded: bool = false,
     enabled_skills: []const []const u8 = &.{},
     mcp_servers: []const @import("mcp/config.zig").Server = &.{},
     limits: Limits = .{},
@@ -224,6 +227,7 @@ pub const StepEffort = struct {
 };
 
 pub const Message = struct {
+    executed_source: ?[]const u8 = null,
     role: []const u8,
     content: ?[]const u8 = null,
     tool_calls: ?[]const ToolCall = null,

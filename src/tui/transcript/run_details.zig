@@ -18,10 +18,17 @@ pub const State = struct {
     preview_label: [100]u8 = undefined,
 
     pub fn resultExpanded(s: State, e: anytype) bool {
-        const attention = switch (e.run) {
+        var attention = switch (e.run) {
             .failed, .warning, .lost, .timed_out, .canceled => true,
             else => e.hasWarning(),
         };
+        if (e.tool_summary) |summary| {
+            if ((summary.failures orelse 0) > 0) attention = true;
+            for (summary.files) |file| if (file.failed) {
+                attention = true;
+                break;
+            };
+        }
         return s.result_open orelse (e.changes.file_count == 0 or attention);
     }
 
@@ -104,6 +111,7 @@ pub fn draw(e: anytype, win: vaxis.Window, commit: bool, target: ?u16) Layout {
             if (expanded) p.diff(f.diff);
         }
     }
+    if (e.changesOnly()) return p.layout;
     p.layout.rows +|= 1;
     const output = std.mem.trimEnd(u8, e.output.items, "\n");
     const count = lineCount(output);

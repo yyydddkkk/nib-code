@@ -29,9 +29,11 @@ pub const Count = struct { name: []const u8, count: u64 };
 pub const Summary = struct {
     counts: []const Count = &.{},
     omitted: u64 = 0,
+    failures: ?u64 = null,
     files: []const File = &.{},
 
     pub fn init(gpa: Allocator, calls: []const timing.Call, run_index: usize, omitted: u64) !Summary {
+        var failures: u64 = 0;
         var counts: std.ArrayList(Count) = .empty;
         errdefer {
             for (counts.items) |item| gpa.free(item.name);
@@ -39,6 +41,7 @@ pub const Summary = struct {
         }
         for (calls) |call| {
             if (!call.dispatched or call.run_index != run_index) continue;
+            failures += @intFromBool(!call.ok);
             for (counts.items) |*item| {
                 if (std.mem.eql(u8, item.name, call.name)) {
                     item.count += 1;
@@ -79,7 +82,7 @@ pub const Summary = struct {
             }
             gpa.free(owned_files);
         }
-        return .{ .counts = try counts.toOwnedSlice(gpa), .omitted = omitted, .files = owned_files };
+        return .{ .counts = try counts.toOwnedSlice(gpa), .omitted = omitted, .failures = failures, .files = owned_files };
     }
 
     /// Appends the dimensions of each viewed image to its `view` file entry.
@@ -122,7 +125,7 @@ pub const Summary = struct {
             copy.* = .{ .tool = tool, .path = try gpa.dupe(u8, file.path), .duration_ms = file.duration_ms, .failed = file.failed };
             copied_files += 1;
         }
-        return .{ .counts = counts, .omitted = s.omitted, .files = files };
+        return .{ .counts = counts, .omitted = s.omitted, .failures = s.failures, .files = files };
     }
 
     pub fn deinit(s: Summary, gpa: Allocator) void {
@@ -148,8 +151,12 @@ test "summary filters rejected llm and other Runs in first dispatch order" {
     _ = r.reserve("read");
     const llm = r.reserve("llm").?;
     r.complete(llm, 0, 1, false);
+    for (r.entries[0..r.count]) |*call| {
+        if (!std.mem.eql(u8, call.name, "llm")) call.ok = true;
+    }
     const summary = try Summary.init(t.allocator, r.entries[0..r.count], 1, 0);
     defer summary.deinit(t.allocator);
+    try t.expectEqual(@as(?u64, 1), summary.failures);
     try t.expectEqualDeep(&[_]Count{
         .{ .name = "read", .count = 2 },
         .{ .name = "bash", .count = 1 },
@@ -198,7 +205,7 @@ test "empty summary can be cloned and freed" {
     defer summary.deinit(t.allocator);
     const copy = try summary.clone(t.allocator);
     defer copy.deinit(t.allocator);
-    try t.expectEqualDeep(Summary{}, copy);
+    try t.expectEqualDeep(Summary{ .failures = 0 }, copy);
     (Summary{}).deinit(t.allocator);
 }
 

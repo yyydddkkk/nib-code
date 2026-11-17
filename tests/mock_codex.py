@@ -143,6 +143,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     code = 'const broken = "oops\n";' if prompt == "syntax recovery" else 'throw new Error("runtime probe")'
             index = len(output)
             item = dict(codex_run(body, {"code": code}, f"call_{number}"), id=f"fc_{number}", status="completed")
+            if prompt in ("syntax recovery", "runtime recovery") and last.get("type") in ("function_call_output", "custom_tool_call_output"):
+                old = 'const broken = "oops\n";' if prompt == "syntax recovery" else 'throw new Error("runtime probe")'
+                item = {"type": "function_call", "name": "rerun", "call_id": f"call_{number}",
+                        "id": f"fc_{number}", "status": "completed", "arguments": json.dumps({
+                            "base": "1:0", "edits": [{"old_text": old, "new_text": code}]})}
             key = "input" if item["type"] == "custom_tool_call" else "arguments"
             kind = "custom_tool_call_input" if key == "input" else "function_call_arguments"
             arguments = item[key]

@@ -10,6 +10,8 @@ New systems concatenate base instructions, global `$NIB_HOME/AGENTS.md` (default
 
 Codex custom `tool_calls` carry `type:"custom"`; `function.arguments` remains JSON {code}, complete raw JS including optional effort line. Old entries default function. Resume/replay require no migration. Raw Responses outputs/types/argument-byte definitions: [custom Run](codex.md#custom-run-tool).
 
+Plugin-enabled Sessions record an optional `plugin_skills` catalog (names, descriptions, locations, invocation policy and installed roots) alongside `mcp_servers`. Resume restores this catalog; child Sessions inherit it through configuration. Installed roots are retained after uninstall, so reinstalling a package does not change old Session references. Environment templates remain unresolved in MCP snapshots. Old logs without a catalog default to no plugin entries. See [plugins](plugins.md).
+
 ## Tool recording and offline replay
 
 Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent `<session_id>.calls.jsonl` stores actual returns/rejections, mode 0600. Sidecars default on, disableable, independent of main format/resume. nib replay executes saved JS in fresh sandboxes with recorded tools, no models/bash/file writes.
@@ -179,3 +181,13 @@ stats `bash_superseded` counts selected superseded events, text “Bash superses
 `task_stop` separately records id/reason/stopped without history; TUI reason user requested stop. Tool run_ok/background_id are local restore metadata, not changes to provider bodies.
 
 Custom headers combine `provider:"custom"` and `custom_provider`; cross-custom-id resume rejects. Optional usage `prompt_cache_write_tokens` defaults zero, already included in prompt totals. stats accumulates cache writes where present.
+
+Local `source` records carry `{step, run, code, base?, arguments, failed}` for Run
+source resolution. They do not replace history or contribute Steps. A start record
+has `failed:false`; only a completed script failure becomes eligible, and its Run
+must also appear in committed history. Terminal records preserve full executed
+source, including resolved `rerun` edits, without rewriting the original tool call.
+Tool messages for `rerun` may carry local `executed_source` for the Script view;
+provider encoders omit it.
+
+`tool_summary.failures` counts failed retained dispatched calls; use it together with `omitted`. Older summaries omit it; the TUI retains Result and Script when failure status is unknown, including caught tool errors.

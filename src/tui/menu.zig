@@ -307,6 +307,7 @@ test "moving straight from an @ mention to a $ mention loads skills" {
     var session: Session = undefined;
     session.io = testing.io;
     session.options = .{ .home = root, .user_home = root };
+    session.cfg = .{ .base_url = "", .api_key = "", .model = "mock" };
     var m: Menu = .init(testing.allocator);
     defer m.deinit();
     m.mention = .file;

@@ -144,6 +144,17 @@ pub const Entry = struct {
         return false;
     }
 
+    pub fn changesOnly(e: *const Entry) bool {
+        if (e.run != .ok or e.hasWarning()) return false;
+        const summary = e.tool_summary orelse return false;
+        if (summary.counts.len == 0 or summary.omitted > 0 or summary.failures == null or summary.failures.? > 0) return false;
+        for (summary.counts) |call| {
+            if (!std.mem.eql(u8, call.name, "edit") and !std.mem.eql(u8, call.name, "write")) return false;
+        }
+        for (summary.files) |file| if (file.failed) return false;
+        return true;
+    }
+
     /// Rows keep their last state; a row is live while its Run runs or its background result is undelivered.
     pub fn isLive(e: *const Entry, p: Progress) bool {
         return e.run == .running or p.background;
@@ -360,3 +371,78 @@ pub const Entry = struct {
         return segs[0..1];
     }
 };
+
+test "expanded edit and write Runs show only changes without hiding failures or other tools" {
+    const edit: ToolSummary = .{ .counts = &.{.{ .name = "edit", .count = 2 }}, .failures = 0 };
+    const cases = [_]struct {
+        summary: ?ToolSummary = edit,
+        run: @FieldType(Entry, "run") = .ok,
+        notice: []const u8 = "",
+        changes_only: bool = false,
+    }{
+        .{ .changes_only = true },
+        .{ .summary = .{ .counts = &.{.{ .name = "write", .count = 1 }}, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 2 }, .{ .name = "write", .count = 1 } }, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = edit.counts, .failures = 1 } },
+        .{ .summary = .{ .counts = edit.counts } },
+        .{ .run = .failed },
+        .{ .run = .running },
+        .{ .run = .warning },
+        .{ .notice = "after-edit hook failed" },
+        .{ .summary = .{ .counts = edit.counts, .files = &.{.{ .tool = "edit", .path = "a.zig", .failed = true }} } },
+        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 1 }, .{ .name = "bash", .count = 1 } } } },
+        .{ .summary = .{ .counts = &.{ .{ .name = "read", .count = 1 }, .{ .name = "edit", .count = 1 } } } },
+        .{ .summary = .{ .counts = edit.counts, .omitted = 1 } },
+        .{ .summary = .{} },
+        .{ .summary = null },
+    };
+    for (cases) |c| {
+        for ([_]bool{ false, true }) |simple| {
+            var e: Entry = .{ .kind = .run, .open = true, .simple = simple, .run = c.run, .tool_summary = c.summary };
+            defer {
+                e.tool_summary = null;
+                e.deinit(std.testing.allocator);
+            }
+            try e.text.appendSlice(std.testing.allocator, "edit-script");
+            try e.output.appendSlice(std.testing.allocator, "edit-result");
+            try e.hook_notice.appendSlice(std.testing.allocator, c.notice);
+            e.changes = try .init(std.testing.allocator, &.{.{ .path = "a.zig", .added = 1, .removed = 1, .diff = "-before\n+after\n" }});
+            try std.testing.expectEqual(c.changes_only, e.changesOnly());
+            e.details.result_open = true;
+            e.details.script_open = true;
+            var screen = try vaxis.Screen.init(std.testing.allocator, .{ .cols = 120, .rows = 40, .x_pixel = 0, .y_pixel = 0 });
+            defer screen.deinit(std.testing.allocator);
+            const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 120, .height = 40, .screen = &screen };
+            const rows = e.print(win, true);
+            var text: std.ArrayList(u8) = .empty;
+            defer text.deinit(std.testing.allocator);
+            for (0..rows) |row| for (0..win.width) |col| {
+                try text.appendSlice(std.testing.allocator, screen.readCell(@intCast(col), @intCast(row)).?.char.grapheme);
+            };
+            try std.testing.expect(std.mem.indexOf(u8, text.items, "Changes") != null);
+            try std.testing.expect(std.mem.indexOf(u8, text.items, "+after") != null);
+            for ([_][]const u8{ "Result", "Script", "edit-result", "edit-script" }) |body| {
+                try std.testing.expectEqual(!c.changes_only, std.mem.indexOf(u8, text.items, body) != null);
+            }
+            try std.testing.expectEqualStrings("edit-result", e.output.items);
+            try std.testing.expectEqualStrings("edit-script", e.text.items);
+        }
+    }
+}
+
+test "caught tool failures open Result by default without overriding an explicit choice" {
+    const cases = [_]struct { summary: ToolSummary, expanded: bool }{
+        .{ .summary = .{ .failures = 0 }, .expanded = false },
+        .{ .summary = .{ .failures = 1 }, .expanded = true },
+        .{ .summary = .{ .files = &.{.{ .tool = "edit", .path = "a.zig", .failed = true }} }, .expanded = true },
+    };
+    for (cases) |c| {
+        var e: Entry = .{ .kind = .run, .run = .ok, .tool_summary = c.summary, .changes = .{ .file_count = 1 } };
+        try std.testing.expectEqual(c.expanded, e.details.resultExpanded(&e));
+        e.details.result_open = false;
+        try std.testing.expect(!e.details.resultExpanded(&e));
+        e.details.result_open = true;
+        try std.testing.expect(e.details.resultExpanded(&e));
+        try std.testing.expect(!e.details.script_open);
+    }
+}

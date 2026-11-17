@@ -64,6 +64,7 @@ fn parseOptions(args: []const []const u8) !Options {
 }
 
 const Run = struct {
+    source_reference: bool = false,
     key: Key,
     code: []const u8,
     expected: ?[]const u8,
@@ -103,8 +104,9 @@ fn parse(a: Allocator, line: []const u8) !Value {
 }
 
 // Replacement records and fork headers retain assistant messages, not new Steps.
-fn loadMain(a: Allocator, data: []const u8) ![]Run {
+pub fn loadMain(a: Allocator, data: []const u8) ![]Run {
     var runs: std.ArrayList(Run) = .empty;
+    var sources: std.ArrayList(@import("session/log.zig").Source) = .empty;
     var length: usize = 0;
     var step: usize = 0;
     var torn = false;
@@ -119,6 +121,14 @@ fn loadMain(a: Allocator, data: []const u8) ![]Run {
             continue;
         };
         if (record != .object) return error.InvalidReplayLog;
+        if (record.object.get("source")) |source| {
+            const value = try std.json.parseFromValueLeaky(@import("session/log.zig").Source, a, source, .{});
+            try sources.append(a, value);
+            for (runs.items) |*item| if (item.key.step == value.step and item.key.run == value.run) {
+                item.source_reference = value.failed;
+            };
+            continue;
+        }
         if (record.object.get("repair")) |repair| {
             if (repair == .bool and repair.bool) {
                 torn = false;
@@ -132,6 +142,7 @@ fn loadMain(a: Allocator, data: []const u8) ![]Run {
         if (record.object.get("bash")) |b| if (b != .null) continue;
         if (record.object.get("task_stop")) |stop| if (stop != .null) continue;
         if (record.object.get("sandbox_unavailable")) |reason| if (reason != .null) continue;
+        if (record.object.get("hook")) |hook| if (hook != .null) continue;
         const messages: []const Value = if (record.object.get("messages")) |v| try array(v) else &.{};
         if (messages.len == 0 and (try optionalString(record, "transport_fallback")) != null) continue;
         const from = if (record.object.get("from")) |v| try natural(v) else 0;
@@ -156,9 +167,18 @@ fn loadMain(a: Allocator, data: []const u8) ![]Run {
             if (calls_value == .null) continue;
             for (try array(calls_value), 0..) |call, index| {
                 const function = try field(call, "function");
-                if (!std.mem.eql(u8, try string(try field(function, "name")), "run")) continue;
+                const name = try string(try field(function, "name"));
+                if (!std.mem.eql(u8, name, "run") and !std.mem.eql(u8, name, "rerun")) continue;
                 const arguments = parse(a, try string(try field(function, "arguments"))) catch continue;
-                const code = optionalString(arguments, "code") catch continue;
+                const code = if (std.mem.eql(u8, name, "rerun")) resolved: {
+                    var source_index = sources.items.len;
+                    while (source_index > 0) {
+                        source_index -= 1;
+                        const source = sources.items[source_index];
+                        if (source.step == step and source.run == index) break :resolved @as(?[]const u8, source.code);
+                    }
+                    break :resolved @as(?[]const u8, null);
+                } else optionalString(arguments, "code") catch continue;
                 if (code == null) continue;
                 const id = try string(try field(call, "id"));
                 var expected: ?[]const u8 = null;
@@ -185,7 +205,11 @@ fn loadMain(a: Allocator, data: []const u8) ![]Run {
                         }
                     };
                 }
-                try runs.append(a, .{ .key = .{ .step = step, .run = index }, .code = code.?, .expected = expected, .child = child, .remaining_steps = remaining_steps });
+                var source_reference = false;
+                for (sources.items) |source| if (source.step == step and source.run == index) {
+                    source_reference = source.failed;
+                };
+                try runs.append(a, .{ .source_reference = source_reference, .key = .{ .step = step, .run = index }, .code = code.?, .expected = expected, .child = child, .remaining_steps = remaining_steps });
             }
         }
     }
@@ -296,7 +320,9 @@ const Report = struct {
 fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8) !Report {
     const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, recording.end orelse .ok, script != null, original.child);
     defer evaluated.deinit(a);
-    const text = try output.stepLimitOutput(a, try output.format(a, evaluated.outcome, recording.run_output_bytes), original.remaining_steps);
+    const formatted = try output.format(a, evaluated.outcome, recording.run_output_bytes);
+    const referenced = if (original.source_reference) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, original.key.step, original.key.run }) else formatted;
+    const text = try output.stepLimitOutput(a, referenced, original.remaining_steps);
     const incomplete = recording.incomplete or evaluated.incomplete or original.expected == null;
     const determined = script == null and !incomplete and recording.end != .timeout and recording.end != .cancelled;
     const equal = if (original.expected) |expected| std.mem.eql(u8, expected, text) else false;

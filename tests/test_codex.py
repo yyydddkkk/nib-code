@@ -27,7 +27,7 @@ def replay(path):
     for line in path.read_text().splitlines():
         record = json.loads(line)
         records.append(record)
-        if not record.get("repair") and not record.get("diagnostic") and not record.get("bash") and not record.get("task_stop"):
+        if not record.get("source") and not record.get("repair") and not record.get("diagnostic") and not record.get("bash") and not record.get("task_stop"):
             history[record["from"]:] = record["messages"]
     return history, records
 
@@ -168,6 +168,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert "effort-specific" not in body["instructions"] and "run's effort" not in body["instructions"]
         assert "reasoning.encrypted_content" in body["include"]
         assert "messages" not in body
+        assert body["tools"][1]["type"] == "function" and body["tools"][1]["name"] == "rerun"
         tool = body["tools"][0]
         assert tool["type"] == "custom" and tool["name"] == "run"
         assert tool["format"]["type"] == "grammar" and tool["format"]["syntax"] == "lark"
