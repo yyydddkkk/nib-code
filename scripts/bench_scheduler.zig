@@ -166,6 +166,7 @@ pub fn main(init: std.process.Init) !void {
 test "probe validates independent spawn and worker timelines, rejects missing acknowledgements" {
     var s: b.Slot = .{ .enqueued = 1, .dispatch = 2, .spawn_begin = 3, .spawn_end = 9, .worker_enter = 4, .tool_begin = 5, .tool_end = 6, .join_begin = 10, .join_end = 11, .deliver = 12, .bridge_begin = 13, .bridge_end = 14, .received = 15 };
     try validate(&.{s}, false);
+    s.spawn_end = 8;
     s.worker_enter = 9;
     s.tool_begin = 10;
     s.tool_end = 11;
