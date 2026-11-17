@@ -6,6 +6,7 @@ const scheduler = @import("sandbox/scheduler.zig");
 const native = @import("sandbox/native.zig");
 const State = scheduler.State;
 pub const RunTiming = run_timing.Run;
+pub const benchmark = @import("sandbox/benchmark.zig");
 pub const tool_concurrency = 8;
 pub const max_stopped_bytes = 4096;
 
@@ -62,6 +63,7 @@ pub const Host = struct {
     record: ?*Recorder = null,
     waiting: ?*std.atomic.Value(bool) = null,
     virtual: ?*Virtual = null,
+    benchmark_probe: if (benchmark.enabled) ?*benchmark.Probe else void = if (benchmark.enabled) null else {},
 };
 
 pub const LogEntry = console.Entry;
@@ -320,6 +322,14 @@ test "errors are reported, sync and async" {
     defer b.deinit(testing.allocator);
     try testing.expect(!b.ok);
     try testing.expect(std.mem.startsWith(u8, b.text, "Error: later"));
+}
+
+test "production sandbox excludes benchmark acknowledgement bridge and probe storage" {
+    if (comptime benchmark.enabled) return;
+    try testing.expectEqual(0, @sizeOf(@FieldType(Host, "benchmark_probe")));
+    const r = try run("typeof __benchReceived", .{}, null);
+    defer r.deinit(testing.allocator);
+    try testing.expectEqualStrings("\"undefined\"", r.text);
 }
 
 test "sandbox has no host capabilities" {

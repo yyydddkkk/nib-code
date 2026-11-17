@@ -33,6 +33,12 @@ pub const State = struct {
         if (st.host.?.timing) |t| t.result(index, bytes);
     }
 
+    pub inline fn mark(st: *State, call: *Call, comptime field: []const u8) void {
+        if (comptime sandbox.benchmark.enabled) {
+            if (st.host.?.benchmark_probe) |probe| probe.mark(call.creation_index, field);
+        }
+    }
+
     pub const Call = struct {
         state: *State,
         index: usize,
@@ -60,11 +66,14 @@ pub const State = struct {
 
         fn work(call: *Call) void {
             const st = call.state;
+            st.mark(call, "worker_enter");
             const h = st.host.?;
             const timing = if (call.timing_index != null) h.timing else null;
             const start_ms = if (timing) |t| t.elapsed() else 0;
             sandbox.tool_identity = .{};
+            st.mark(call, "tool_begin");
             const result = h.call(h.ctx, st.gpa, call.name, call.args);
+            st.mark(call, "tool_end");
             const end_ms = if (timing) |t| t.elapsed() else 0;
             st.mutex.lockUncancelable(st.io);
             defer st.mutex.unlock(st.io);
@@ -135,13 +144,19 @@ pub const State = struct {
     }
 
     pub fn deliver(st: *State, ctx: *c.JSContext, call: *Call) !void {
+        st.mark(call, "deliver");
         const result = call.result.?;
-        if (st.host.?.record) |recorder| recorder.settle(call.creation_index, call.name, call.args, result);
+        if (st.host.?.record) |recorder| {
+            st.mark(call, "record_begin");
+            recorder.settle(call.creation_index, call.name, call.args, result);
+            st.mark(call, "record_end");
+        }
         st.recordResult(call.timing_index, switch (result) {
             inline else => |bytes| bytes.len,
         });
         st.beginJs();
         defer st.endJs();
+        st.mark(call, "bridge_begin");
         const value = switch (result) {
             .ok => |json| blk: {
                 if (call.string_result) break :blk c.JS_NewStringLen(ctx, json.ptr, json.len);
@@ -161,6 +176,7 @@ pub const State = struct {
         const r = c.JS_Call(ctx, call.settle[@intFromBool(rejected)], js_undefined, 1, @constCast(&arg));
         c.JS_FreeValue(ctx, r);
         c.JS_FreeValue(ctx, arg);
+        st.mark(call, "bridge_end");
         st.calls.items[call.index] = null;
         call.deinit(ctx);
     }
@@ -227,7 +243,9 @@ pub const State = struct {
             if (st.ready == null) st.ready_tail = null;
             st.mutex.unlock(st.io);
             if (ready) |call| {
+                st.mark(call, "join_begin");
                 if (call.thread) |thread| thread.join();
+                st.mark(call, "join_end");
                 call.thread = null;
                 active -= 1;
                 try st.deliver(ctx, call);
@@ -245,15 +263,18 @@ pub const State = struct {
                     active += 1;
                     continue;
                 }
+                st.mark(call, "dispatch");
                 const timing = st.host.?.timing;
                 if (timing) |t| {
                     call.timing_index = t.reserve(call.name);
                     try t.describe(call.timing_index, call.name, call.args);
                 }
+                st.mark(call, "spawn_begin");
                 call.thread = std.Thread.spawn(.{}, Call.work, .{call}) catch |err| {
                     if (timing) |t| t.undoReservation(call.timing_index, call.name);
                     return err;
                 };
+                st.mark(call, "spawn_end");
                 active += 1;
             }
             const failed = if (st.promise) |p| c.JS_PromiseState(ctx, p) == c.JS_PROMISE_REJECTED else false;

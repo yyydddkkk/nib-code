@@ -113,6 +113,8 @@ Run tool concurrency, nib ask --json, and `tools.agent` are implemented; see ADR
 
 ## Measurements
 
+- [Native tool scheduling benchmark](scheduler-benchmark.md): model-free ReleaseFast phase timings, recording controls, observer overhead, and worker-reuse decision.
+
 Observations, not goals or prohibitions. Numbers change; prefer latest measurements and date updates.
 
 Use `python3 scripts/stats.py` for read-only real-log statistics, accepting one or more files/directories. --cwd matches working directories exactly; `--since YYYY-MM-DD` selects each record's at from local midnight inclusively. Resuming old Sessions does not count timestamped historical Steps in the new interval; missing/invalid at falls back to file mtime and may mix in history. Text/JSON `time_filter` report timestamp/fallback record counts and fallback complete-Step counts; exclude headers, repairs, and compaction replacements, but include diagnostics and interruptions. Before/after prompt/tool changes, run `python3 scripts/stats.py` snapshot-directory --json > before.json / `after.json` on snapshots with matching cwd/model/task type. Compare Run failure rate, error categories, average Steps/time, tokens/cache hits, checking sample size and field coverage.

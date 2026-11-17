@@ -14,9 +14,24 @@ pub fn install(gpa: std.mem.Allocator, ctx: *c.JSContext, host: ?Host) !void {
     defer c.JS_FreeValue(ctx, global);
     _ = c.JS_SetPropertyStr(ctx, global, "__log", c.JS_NewCFunction2(ctx, nativeLog, "__log", 1, c.JS_CFUNC_generic, 0));
     _ = c.JS_SetPropertyStr(ctx, global, "__host", c.JS_NewCFunction2(ctx, nativeHost, "__host", 2, c.JS_CFUNC_generic, 0));
+    if (comptime sandbox.benchmark.enabled) {
+        _ = c.JS_SetPropertyStr(ctx, global, "__benchReceived", c.JS_NewCFunction2(ctx, benchmarkReceived, "__benchReceived", 1, c.JS_CFUNC_generic, 0));
+    }
     const names = try std.json.Stringify.valueAlloc(gpa, if (host) |h| h.names else &.{}, .{});
     defer gpa.free(names);
     _ = c.JS_SetPropertyStr(ctx, global, "__names", c.JS_NewStringLen(ctx, names.ptr, names.len));
+}
+
+fn benchmarkReceived(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    if (comptime sandbox.benchmark.enabled) {
+        if (state(ctx).host.?.benchmark_probe) |probe| {
+            var index: u32 = 0;
+            if (argc != 1 or c.JS_ToUint32(ctx, &index, argv[0]) != 0) {
+                probe.invalid_ack = true;
+            } else probe.received(index);
+        }
+    }
+    return js_undefined;
 }
 
 fn virtualTime(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -115,6 +130,7 @@ fn enqueue(st: *State, ctx: *c.JSContext, argc: c_int, argv: [*c]c.JSValue) !c.J
     }
     st.creation_index += 1;
     try st.calls.append(st.gpa, call);
+    st.mark(call, "enqueued");
     if (call.timer != null) {
         if (st.host.?.timing) |t| {
             call.timing_index = t.reserve(name);

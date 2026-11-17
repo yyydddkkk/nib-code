@@ -72,6 +72,8 @@ jobs:
           version: 0.17.0
           use-cache: true
       - run: zig build test --summary all
+      - run: zig build test-bench-scheduler -Doptimize=ReleaseFast --summary all
+      - run: python3 tests/test_bench_scheduler.py
 
   e2e:
     timeout-minutes: 8
