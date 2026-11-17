@@ -9,6 +9,7 @@ const skills = @import("session/skills.zig");
 const instructions = @import("session/instructions.zig");
 const prompt = @import("session/prompt.zig");
 const Profile = @import("session/profile.zig").Profile;
+const Tuning = @import("session/tuning.zig").Resolved;
 const compaction = @import("session/compact.zig");
 const runner = @import("session/run.zig");
 const session_history = @import("session/history.zig");
@@ -60,6 +61,21 @@ pub const Session = struct {
     inbox: @import("session/inbox.zig").Inbox = .{},
     hook_jobs: std.ArrayList(*@import("session/hooks.zig").TurnJob) = .empty,
     undo_history: @import("tools/undo.zig").History = .{},
+    /// Fixed when the Session starts; resumed Sessions keep the logged variants.
+    tuning: Tuning = .{},
+
+    /// `config.load` validates NIB_TUNE at startup, so a failure here is not user-facing.
+    fn resolveTuning(s: *Session) !void {
+        var detail: []const u8 = "";
+        const env = if (s.options.environ) |e| e.get("NIB_TUNE") else null;
+        s.setTuning(try Tuning.resolve(s.arena.allocator(), Profile.forModel(s.cfg.model), env, &detail));
+    }
+
+    fn setTuning(s: *Session, resolved: Tuning) void {
+        s.tuning = resolved;
+        s.tools.delivery_tool = resolved.delivery == .tool;
+        s.tools.validation = resolved.validation;
+    }
 
     /// Thread-safe while a Turn runs; other Session mutation is exclusive.
     pub fn enqueue(s: *Session, text: []const u8) !u64 {
@@ -119,6 +135,7 @@ pub const Session = struct {
             s.tools.cfg = s.cfg;
             s.tools.mcp_client = try @import("mcp.zig").Client.create(gpa, io, s.cfg.mcp_servers, options.environ, options.home, options.user_home, s.cfg.sandbox.writable, s.cfg.sandbox.mode != .off);
             s.pending_background_bytes = s.log.pending_background_bytes;
+            s.setTuning(s.log.tuning);
             try cfg.checkSession(s.log.provider, s.log.model);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", s.log.custom_provider orelse "")) return error.SessionProviderMismatch;
             s.cache_key = s.log.cache_key orelse s.id;
@@ -140,6 +157,7 @@ pub const Session = struct {
                 s.parent_session_id = options.parent_session_id orelse try a.dupe(u8, fork.session);
                 try s.tools.file_state.importVersions(io, gpa, fork.file_versions);
                 const messages = try session_history.inherit(a, fork);
+                try s.resolveTuning();
                 try s.log.commit(io, gpa, &s.history, &s.context_tokens, .{
                     .mcp_servers = s.cfg.mcp_servers,
                     .messages = messages,
@@ -152,6 +170,7 @@ pub const Session = struct {
                     .cache_key = s.cache_key,
                     .forked_from = .{ .session = try a.dupe(u8, fork.session), .message_count = fork.message_count },
                     .nib_version = @import("build_options").nib_version,
+                    .tuning = try s.tuning.toLog(a),
                 });
             } else {
                 try s.initializeHistory(cwd);
@@ -189,6 +208,7 @@ pub const Session = struct {
     pub fn initializeHistory(s: *Session, cwd: []const u8) !void {
         std.debug.assert(s.log.steps == 0);
         const a = s.arena.allocator();
+        try s.resolveTuning();
         const template = try prompt.renderSystem(a, cwd, &s.tools, s.options.environ);
         const base = try prompt.stepLimitPrompt(a, template, s.cfg.limits.max_steps);
         const global = try std.fs.path.join(a, &.{ s.options.home, "AGENTS.md" });
@@ -212,8 +232,8 @@ pub const Session = struct {
             .skills = found.summary,
             .mcp_servers = s.cfg.mcp_servers,
             .patches_off = try prompt.disabledPatches(a, s.options.environ),
-            .patches_on = try prompt.enabledOptInPatches(a, s.options.environ),
             .profile = @tagName(Profile.forModel(s.cfg.model)),
+            .tuning = try s.tuning.toLog(a),
         });
     }
 
@@ -300,6 +320,7 @@ pub const Session = struct {
         s.tools.progress.deinit(s.gpa);
         s.tools.agent_sessions.deinit(s.gpa);
         s.inbox.batch.deinit(s.gpa);
+        s.inbox.waited.deinit(s.gpa);
         s.tools.recovery.clear(s.gpa, s.io);
         s.tools.discardChanges(s.gpa);
         tools.clearImages(&s.tools.images, s.gpa);
@@ -452,6 +473,34 @@ pub const Session = struct {
         try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items), null);
     }
 
+    fn announceDelivered(s: *Session, item: @import("session/inbox.zig").Item, sink: Sink) !void {
+        if (item.background) |b| {
+            s.tools.background.delivered(s.io, b.id, item.invocation);
+            var event = b;
+            event.result = if (std.mem.indexOfScalar(u8, item.text, '\n')) |nl| item.text[nl + 1 ..] else item.text;
+            try sink.emit(sink.ctx, .{ .background = event });
+        } else if (sink.onUserInserted) |notify| try notify(sink.ctx, item.id);
+    }
+
+    /// Delivery `tool`: queued results and user messages ride on the last tool message instead of becoming user messages.
+    fn foldInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink) !@import("session/inbox.zig").Batch {
+        var batch = s.inbox.take(s.io);
+        errdefer batch.deinit(s.gpa);
+        if (batch.items.items.len == 0) return batch;
+        const target = &pending.items[pending.items.len - 1];
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(s.gpa);
+        try text.appendSlice(s.gpa, target.content orelse "");
+        for (batch.items.items) |item| {
+            try text.appendSlice(s.gpa, "\n\n");
+            if (item.background == null) try text.appendSlice(s.gpa, "[user message]\n");
+            try text.appendSlice(s.gpa, item.text);
+        }
+        target.content = try s.arena.allocator().dupe(u8, text.items);
+        for (batch.items.items) |item| try s.announceDelivered(item, sink);
+        return batch;
+    }
+
     fn insertInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink, background_only: bool) !@import("session/inbox.zig").Batch {
         var inserted = if (background_only)
             try s.inbox.insertBackground(s.gpa, s.io, s.arena.allocator(), pending)
@@ -460,13 +509,8 @@ pub const Session = struct {
         errdefer inserted.deinit(s.gpa);
         var has_background = false;
         for (inserted.items.items) |item| {
-            if (item.background) |b| {
-                has_background = true;
-                s.tools.background.delivered(s.io, b.id, item.invocation);
-                var event = b;
-                event.result = if (std.mem.indexOfScalar(u8, item.text, '\n')) |nl| item.text[nl + 1 ..] else item.text;
-                try sink.emit(sink.ctx, .{ .background = event });
-            } else if (sink.onUserInserted) |notify| try notify(sink.ctx, item.id);
+            has_background = has_background or item.background != null;
+            try s.announceDelivered(item, sink);
         }
         if (has_background) {
             try s.commit(s.history.items.len, pending.items, s.context_tokens + compaction.estimateTokens(pending.items), null);
@@ -506,6 +550,7 @@ pub const Session = struct {
 
     fn runSteps(s: *Session, pending: *std.ArrayList(provider.Message), partial: *Partial, sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8) !void {
         var step_index: usize = 0;
+        var held = false;
         while (true) : (step_index += 1) {
             if (cancel.load(.acquire)) return error.Canceled;
             if (s.cfg.limits.max_steps) |max_steps| {
@@ -517,8 +562,10 @@ pub const Session = struct {
                 try s.autoCompact(sink, cancel, detail);
             if (cancel.load(.acquire)) return error.Canceled;
             try tools.Tools.poll(&s.tools);
-            var inserted = try s.insertInbox(pending, sink, false);
+            var inserted = if (held) @import("session/inbox.zig").Batch{} else try s.insertInbox(pending, sink, false);
             defer inserted.deinit(s.gpa);
+            var folded: @import("session/inbox.zig").Batch = .{};
+            defer folded.deinit(s.gpa);
             const background_output_bytes = s.pending_background_bytes;
             var request: std.ArrayList(provider.Message) = .empty;
             defer request.deinit(s.gpa);
@@ -612,6 +659,18 @@ pub const Session = struct {
                 pending.items[assistant_index].waiting = true;
                 try sink.emit(sink.ctx, .{ .notice = "Waiting for background results." });
             }
+            var carried_bytes: u64 = 0;
+            held = s.tuning.delivery == .tool and reply.tool_calls.len > 0 and !waiting;
+            if (held) {
+                try tools.Tools.poll(&s.tools);
+                folded = try s.foldInbox(pending, sink);
+                for (folded.items.items) |item| if (item.background != null) {
+                    carried_bytes += item.text.len;
+                };
+            }
+            var waited = s.inbox.takeWaited(s.io);
+            defer waited.deinit(s.gpa);
+            for (waited.items.items) |item| try s.announceDelivered(item, sink);
             const tokens = reply.usage.prompt_tokens + reply.usage.completion_tokens + output_tokens;
             const ms: u64 = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0));
             try s.log.commit(s.io, s.gpa, &s.history, &s.context_tokens, .{
@@ -647,7 +706,9 @@ pub const Session = struct {
                 .output_bytes = run_timing.output_bytes + background_output_bytes,
                 .run_results = run_results.items,
             });
-            s.pending_background_bytes = 0;
+            s.pending_background_bytes = carried_bytes;
+            for (waited.items.items) |item| if (item.background) |b| try s.log.background(s.io, s.gpa, b, @intCast(s.steps));
+            for (folded.items.items) |item| if (item.background) |b| try s.log.background(s.io, s.gpa, b, @intCast(s.steps + 1));
             s.summary.?.steps += 1;
             s.summary.?.usage = s.usage;
             s.summary.?.timing.model_ms += model_ms;
@@ -921,6 +982,111 @@ test "fork initialization copies history and resume retains independent identity
     try session.reopen(null);
     try t.expect(!session.tools.forked);
     try t.expectEqualStrings(session.id, session.cache_key);
+}
+
+test "tuning follows the model, NIB_TUNE and the log" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    var cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock" };
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        try t.expectEqual(Tuning.Delivery.user, session.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.single, session.tools.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") != null);
+        try t.expect(!session.tools.delivery_tool);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") == null);
+    }
+    cfg.model = "deepseek-flash";
+    var id: []const u8 = undefined;
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        id = try a.dupe(u8, session.id);
+        try t.expectEqual(Tuning.Delivery.tool, session.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.none, session.tools.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") == null);
+        try t.expect(session.tools.delivery_tool);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") != null);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Session waits") == null);
+        try session.commit(session.history.items.len, &.{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "yo" } }, 10, null);
+    }
+    {
+        try env.put("NIB_TUNE", "delivery=user,validation=existing-only");
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env, .resume_id = id });
+        defer session.deinit();
+        try t.expectEqual(Tuning.Delivery.tool, session.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.none, session.tools.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") == null);
+        try t.expect(session.tools.delivery_tool);
+    }
+    {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+        defer session.deinit();
+        try t.expectEqual(Tuning.Delivery.user, session.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.@"existing-only", session.tools.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "do not write new test scripts") != null);
+        const path = try std.fmt.allocPrint(a, "{s}/sessions/{s}.jsonl", .{ root, session.id });
+        const data = try std.Io.Dir.cwd().readFileAlloc(t.io, path, a, .unlimited);
+        try t.expect(std.mem.indexOf(u8, data, "\"tuning\":{\"delivery\":\"user\",\"validation\":\"existing-only\"}") != null);
+    }
+    try env.put("NIB_TUNE", "delivery=nope");
+    try t.expectError(error.InvalidTuning, Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env }));
+}
+
+test "tool delivery folds queued results and user messages into the last tool message" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    var session = try Session.init(t.allocator, t.io, &client, .{ .base_url = "invalid://local", .api_key = "mock", .model = "deepseek-flash" }, .{ .home = root, .user_home = root, .environ = &env });
+    defer session.deinit();
+    const Quiet = struct {
+        events: usize = 0,
+        inserted: usize = 0,
+        fn emit(ctx: *anyopaque, _: Event) !void {
+            const quiet: *@This() = @ptrCast(@alignCast(ctx));
+            quiet.events += 1;
+        }
+        fn user(ctx: *anyopaque, _: u64) !void {
+            const quiet: *@This() = @ptrCast(@alignCast(ctx));
+            quiet.inserted += 1;
+        }
+    };
+    var ctx: Quiet = .{};
+    const sink: Sink = .{ .ctx = &ctx, .emit = Quiet.emit, .onUserInserted = Quiet.user };
+    var pending: std.ArrayList(provider.Message) = .empty;
+    defer pending.deinit(t.allocator);
+    try pending.append(t.allocator, .{ .role = "assistant", .content = "" });
+    try pending.append(t.allocator, .{ .role = "tool", .tool_call_id = "run", .content = "output" });
+    var none = try session.foldInbox(&pending, sink);
+    none.deinit(t.allocator);
+    try t.expectEqualStrings("output", pending.items[1].content.?);
+    _ = try session.inbox.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "[background bash b1 finished]\n{\"exit_code\":0}", false, 0, null);
+    _ = try session.inbox.enqueue(t.allocator, t.io, "wait, also fix x");
+    var folded = try session.foldInbox(&pending, sink);
+    defer folded.deinit(t.allocator);
+    try t.expectEqual(@as(usize, 2), pending.items.len);
+    try t.expectEqualStrings("output\n\n[background bash b1 finished]\n{\"exit_code\":0}\n\n[user message]\nwait, also fix x", pending.items[1].content.?);
+    try t.expectEqual(@as(usize, 2), folded.items.items.len);
+    try t.expectEqual(@as(usize, 1), ctx.inserted);
+    try t.expectEqual(@as(usize, 1), ctx.events);
+    try t.expect(session.inbox.empty(t.io));
 }
 
 test "switchConfig updates a zero-Step Session in place and replaces one with Steps" {

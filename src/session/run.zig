@@ -99,7 +99,10 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     const ran = try executeTimed(s, code.?, cancel, timing, sink);
     if (ran == null) {
         const remaining = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
-        const message = try std.fmt.allocPrint(a, "Run still executing after {d} ms; continuing in background as {s}. Its captured output is preserved and will arrive automatically as a message when it finishes. Continue useful work meanwhile; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read its redirected logs before completion. If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.", .{ s.cfg.limits.run_background_after_ms, s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id });
+        const message = if (s.tools.waitEnabled())
+            try std.fmt.allocPrint(a, "Run still executing after {d} ms; continuing in background as {s}. Its captured output is preserved and will arrive appended to the output of your next Run when it finishes. Continue useful work meanwhile; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read its redirected logs before completion. If no independent work remains, call await tools.wait() (optionally after other work in the same Run); it returns the results when the tasks finish. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.", .{ s.cfg.limits.run_background_after_ms, s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id })
+        else
+            try std.fmt.allocPrint(a, "Run still executing after {d} ms; continuing in background as {s}. Its captured output is preserved and will arrive automatically as a message when it finishes. Continue useful work meanwhile; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read its redirected logs before completion. If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.", .{ s.cfg.limits.run_background_after_ms, s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id });
         const text = try output_format.stepLimitOutput(a, message, remaining);
         try sink.emit(sink.ctx, .{ .run_end = .{ .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id, .ok = true, .output = text, .tool_summary = .{} } });
         return .{ .output = text, .ok = true, .run_ms = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0)), .remaining_steps = remaining, .tool_summary = .{}, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id };
@@ -134,7 +137,7 @@ fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(b
             last_tool = tool;
         }
         try @import("../tools.zig").Tools.poll(&s.tools);
-        if (!attempted and job.timing.elapsed() >= s.cfg.limits.run_background_after_ms and job.waiting.load(.acquire)) {
+        if (!attempted and job.timing.elapsed() >= s.cfg.limits.run_background_after_ms and job.waiting.load(.acquire) and !job.scope.blockedInWait()) {
             attempted = true;
             if (try s.tools.background.adoptRun(job)) {
                 adopted = true;

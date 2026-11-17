@@ -191,7 +191,8 @@ def fixture(tmp, replies, config=None, provider="chat_completions", environment=
             (home / "config.toml").write_text(config.replace("{url}", url))
         env.update(NIB_PROVIDER=provider, NIB_API_KEY="mock",
                    NIB_BASE_URL=url, NIB_HOME=str(home),
-                   HOME=str(tmp), TERM="xterm-256color", **(environment or {}))
+                   HOME=str(tmp), TERM="xterm-256color", NIB_TUNE="delivery=user")
+        env.update(environment or {})
         terminal = Terminal(tmp, env)
         try:
             yield terminal, home, env
@@ -267,6 +268,39 @@ def test_during_run_and_resume(tmp):
         events = [json.loads(line) for line in result.stdout.splitlines()]
         assert not any("user_inserted" in event for event in events), events
         assert events[-1]["end"]["text"] == "resumed-finished"
+
+
+def test_during_run_tool_delivery(tmp):
+    code, started, release = run_code(tmp)
+    first, second = Reply("running", code=code), Reply("run-finished")
+    with fixture(tmp, [first, second], environment={"NIB_TUNE": "delivery=tool"}) as (terminal, home, _):
+        terminal.send("initial\r")
+        wait_for(started.exists, "Run started")
+        terminal.send("interjection one\rinterjection two\r")
+        wait_queued(terminal, "interjection one", "interjection two")
+        release.touch()
+        assert second.received.wait(5)
+        messages = second.messages
+        assert messages[-1]["role"] == "tool", messages
+        assert users(messages) == ["initial"], messages
+        content = messages[-1]["content"]
+        assert content.index("run-result") < content.index("[user message]\ninterjection one") < content.index("[user message]\ninterjection two"), content
+        wait_for(lambda: finished(home, "run-finished"), "committed final Step")
+        terminal.wait_turn("run-finished")
+        assert users(history(home)) == ["initial"]
+
+
+def test_after_final_step_tool_delivery(tmp):
+    first, second = Reply("first-final", gated=True), Reply("next-final")
+    with fixture(tmp, [first, second], environment={"NIB_TUNE": "delivery=tool"}) as (terminal, home, _):
+        terminal.send("initial\r")
+        assert first.received.wait(5)
+        terminal.send("next one\r")
+        wait_queued(terminal, "next one")
+        first.release.set()
+        assert second.received.wait(5)
+        assert users(second.messages) == ["initial", "next one"]
+        wait_for(lambda: finished(home, "next-final"), "automatic next Turn")
 
 
 def test_after_final_step(tmp):
@@ -347,6 +381,6 @@ def test_tool_bytes_bill(tmp):
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-interjections-") as directory:
-        for test in (test_reflect_disabled, test_busy_slash_notice, test_during_run_and_resume, test_after_final_step, test_escape_restores_draft, test_tool_bytes_bill):
+        for test in (test_reflect_disabled, test_busy_slash_notice, test_during_run_and_resume, test_during_run_tool_delivery, test_after_final_step, test_after_final_step_tool_delivery, test_escape_restores_draft, test_tool_bytes_bill):
             test(Path(directory) / test.__name__)
             print(test.__name__ + ": ok")

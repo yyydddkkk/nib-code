@@ -630,6 +630,13 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
         }
         cfg.limits.run_output_bytes = n;
     }
+    if (env.get("NIB_TUNE")) |spec| {
+        var message: []const u8 = "";
+        _ = @import("session/tuning.zig").Resolved.override(.{}, a, spec, &message) catch |err| {
+            detail.* = try a.dupe(u8, message);
+            return err;
+        };
+    }
     if (env.get("NIB_THINKING") == null and env.get("NIB_REASONING_EFFORT") == null) {
         if (file.effort) |v| try cfg.setEffort(v);
     }
@@ -1099,6 +1106,20 @@ test "environment validation and model-dependent defaults" {
     try t.expectError(error.InvalidReasoningEffort, resolve(a, &env, "", "config.toml", &detail));
     try env.put("NIB_PROVIDER", "invalid");
     try t.expectError(error.InvalidProvider, resolve(a, &env, "", "config.toml", &detail));
+}
+
+test "NIB_TUNE is validated at startup" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env: Env = .init(a);
+    var detail: ?[]u8 = null;
+    try env.put("NIB_TUNE", "delivery=tool");
+    _ = try resolve(a, &env, "", "config.toml", &detail);
+    try env.put("NIB_TUNE", "delivery=short");
+    try t.expectError(error.InvalidTuning, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectEqualStrings("NIB_TUNE: delivery has no variant 'short'; variants: user, tool", detail.?);
 }
 
 test "limits defaults, bounds and diagnostics" {
