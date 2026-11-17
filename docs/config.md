@@ -8,6 +8,7 @@
   config.toml     Optional nonsecret runtime configuration
   auth.json       Credentials stored by /provider and nib login (mode 0600)
   sessions/       <32-character-lowercase-hex-ID>.jsonl main logs and matching .calls.jsonl recordings
+  stats.sqlite3   Optional metrics index, created only by scripts/stats_db.py
   reflections.md  Completed /reflect answers and issue publication results
 ```
 

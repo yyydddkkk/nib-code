@@ -12,6 +12,10 @@ Codex custom `tool_calls` carry `type:"custom"`; `function.arguments` remains JS
 
 Plugin-enabled Sessions record an optional `plugin_skills` catalog (names, descriptions, locations, invocation policy and installed roots) alongside `mcp_servers`. Resume restores this catalog; child Sessions inherit it through configuration. Installed roots are retained after uninstall, so reinstalling a package does not change old Session references. Environment templates remain unresolved in MCP snapshots. Old logs without a catalog default to no plugin entries. See [plugins](plugins.md).
 
+## SQLite analysis index
+
+`python3 scripts/stats_db.py` builds an optional, local SQLite metrics index from main logs without changing Session storage or execution. It excludes message/tool bodies and `.calls.jsonl`, skips unchanged files, and transactionally replaces changed files. Schema, import guarantees, and SQL examples: [SQLite metrics index](stats-sqlite.md).
+
 ## Tool recording and offline replay
 
 Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent `<session_id>.calls.jsonl` stores actual returns/rejections, mode 0600. Sidecars default on, disableable, independent of main format/resume. nib replay executes saved JS in fresh sandboxes with recorded tools, no models/bash/file writes.
