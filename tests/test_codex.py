@@ -236,7 +236,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
             assert_timing(timed_records, final_only=prompt == "timing final only")
         print("Codex timing E2E passed: streamed/final-only UTF-8 arguments, model latency and per-tool Run timing")
         for prompt in ("syntax recovery", "runtime recovery"):
-            recovered = ask(prompt)
+            recovered = ask(prompt, overrides={"NIB_RECORD": "on"})
             recovered_id = recovered[0]["start"]["session_id"]
             _, recovery_records = replay(tmp / f"nib/sessions/{recovered_id}.jsonl")
             results = [r for record in recovery_records for r in record.get("run_results", [])]

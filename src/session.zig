@@ -185,9 +185,10 @@ pub const Session = struct {
             }
         }
         errdefer s.log.close(io);
-        const recording = if (options.environ) |env| !std.mem.eql(u8, env.get("NIB_RECORD") orelse "", "off") else true;
-        const calls_path = try std.fmt.allocPrint(a, "{s}/{s}.calls.jsonl", .{ directory, s.id });
-        s.recorder = sandbox.Recorder.init(gpa, io, calls_path, recording);
+        if (@import("config.zig").recordTools(options.environ)) {
+            const calls_path = try std.fmt.allocPrint(a, "{s}/{s}.calls.jsonl", .{ directory, s.id });
+            s.recorder = sandbox.Recorder.init(gpa, io, calls_path, true);
+        }
         errdefer if (s.recorder) |*recorder| recorder.deinit();
         s.tools.session_id = s.id;
         for (s.log.agent_sessions) |entry| {
@@ -1009,6 +1010,29 @@ test "fork initialization copies history and resume retains independent identity
     try session.reopen(null);
     try t.expect(!session.tools.forked);
     try t.expectEqualStrings(session.id, session.cache_key);
+}
+
+test "disabled recording leaves the Session recorder absent" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    const cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock" };
+    for ([_]?*const std.process.Environ.Map{ null, &env }) |environ| {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = environ });
+        defer session.deinit();
+        try t.expect(session.recorder == null);
+    }
+    try env.put("NIB_RECORD", "off");
+    var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
+    defer session.deinit();
+    try t.expect(session.recorder == null);
 }
 
 test "tuning follows the model, NIB_TUNE and the log" {

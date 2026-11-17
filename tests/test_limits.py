@@ -156,6 +156,7 @@ class AgentLimits(unittest.TestCase):
         self.assert_five_step_countdown(events, outputs)
 
     def test_configured_run_output_budget(self):
+        self.env["NIB_RECORD"] = "on"
         (self.cwd / "budget.txt").write_text("x" * 50000)
         self.env["NIB_RUN_OUTPUT_BYTES"] = "32768"
         events, outputs = self.limited_turn("limits-budget", 1)

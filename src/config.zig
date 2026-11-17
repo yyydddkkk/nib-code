@@ -13,6 +13,11 @@ pub fn home(a: Allocator, env: *const Env) ![]const u8 {
     return std.fs.path.join(a, &.{ env.get("HOME") orelse return error.MissingHome, ".nib" });
 }
 
+pub fn recordTools(env: ?*const Env) bool {
+    const value = (if (env) |e| e.get("NIB_RECORD") else null) orelse return false;
+    return !std.mem.eql(u8, value, "off");
+}
+
 pub fn load(a: Allocator, io: std.Io, env: *const Env, home_path: []const u8, detail: *?[]u8) !provider.Config {
     detail.* = null;
     const path = try std.fs.path.join(a, &.{ home_path, "config.toml" });
@@ -1087,6 +1092,20 @@ test "effort creates missing home and invalid files are left intact" {
     const untouched = try tmp.dir.readFileAlloc(t.io, "new/home/config.toml", t.allocator, .unlimited);
     defer t.allocator.free(untouched);
     try t.expectEqualStrings("broken", untouched);
+}
+
+test "tool recording is opt-in and preserves explicit legacy values" {
+    const t = std.testing;
+    var env: Env = .init(t.allocator);
+    defer env.deinit();
+    try t.expect(!recordTools(null));
+    try t.expect(!recordTools(&env));
+    try env.put("NIB_RECORD", "off");
+    try t.expect(!recordTools(&env));
+    for ([_][]const u8{ "on", "", "1", "0", "true", "false", "OFF", "legacy" }) |value| {
+        try env.put("NIB_RECORD", value);
+        try t.expect(recordTools(&env));
+    }
 }
 
 test "environment validation and model-dependent defaults" {

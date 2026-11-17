@@ -85,7 +85,7 @@ One block per script: what changed, what was read, what ran. Click a Run to see 
 
 ## Safety
 
-nib runs model-written code with your permissions, like you would. bash refuses obviously destructive commands; `[sandbox] mode = "workspace"` limits writes to the project, temp dirs and build caches (Landlock on Linux, sandbox-exec on macOS). Commit before you start. Sessions and tool results are logged locally in `~/.nib/sessions` (mode 0600); `NIB_RECORD=off` stops tool recording.
+nib runs model-written code with your permissions, like you would. bash refuses obviously destructive commands; `[sandbox] mode = "workspace"` limits writes to the project, temp dirs and build caches (Landlock on Linux, sandbox-exec on macOS). Commit before you start. Sessions are logged locally in `~/.nib/sessions` (mode 0600). Full tool arguments/results are not recorded by default; set `NIB_RECORD=on` to enable [offline replay](docs/replay.md).
 
 ## More
 

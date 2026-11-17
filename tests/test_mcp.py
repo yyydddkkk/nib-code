@@ -27,7 +27,7 @@ class MCP(unittest.TestCase):
         self.addCleanup(mock.close)
         (data / "config.toml").write_text(config)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("NIB_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_", "XAI_", "CODEX_"))}
-        env.update(HOME=str(home), NIB_HOME=str(data), NIB_PROVIDER="anthropic" if protocol == "anthropic_messages" else "chat_completions", NIB_API_KEY=mock.key, NIB_BASE_URL=mock.url, ANTHROPIC_API_KEY=mock.key, GITHUB_TOKEN="fake-github-token", MCP_TEST_TOKEN="fake-mcp-token", MCP_UNLISTED="do-not-pass")
+        env.update(NIB_RECORD="on", HOME=str(home), NIB_HOME=str(data), NIB_PROVIDER="anthropic" if protocol == "anthropic_messages" else "chat_completions", NIB_API_KEY=mock.key, NIB_BASE_URL=mock.url, ANTHROPIC_API_KEY=mock.key, GITHUB_TOKEN="fake-github-token", MCP_TEST_TOKEN="fake-mcp-token", MCP_UNLISTED="do-not-pass")
         def ask(prompt="probe", *args):
             result = subprocess.run([str(BIN), "ask", "--json", prompt, *args], cwd=project, env=env, text=True, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

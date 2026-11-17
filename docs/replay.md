@@ -5,6 +5,9 @@ nib replay reruns saved JavaScript in fresh QuickJS sandboxes, substituting reco
 ## Usage
 
 ```sh
+# Record tool arguments/results before replaying (local logs may contain secrets)
+NIB_RECORD=on nib ask 'inspect the project'
+
 # ID is the full 32-character lowercase hexadecimal Session ID
 nib replay <session_id> --run 1:0
 nib replay <session_id> --run 1:0 --json
@@ -49,16 +52,20 @@ Script mode changes the program, so output equivalence is not judged; match is n
 
 ## Files and format
 
-Recording defaults on; `NIB_RECORD=off` disables, other/unset values enable. No TOML key; disabling never deletes old records. Children inherit environment but write separate calls files.
+Recording defaults **off**. Set `NIB_RECORD=on` when executing the original Session to enable tool argument/result sidecars; `NIB_RECORD=off` disables them. For compatibility, other explicitly set values (even empty, `0`, `false`, or `OFF`) retain their old enabling behavior; use `on`/`off`. No TOML key or CLI recording flag. New, forked, and resumed child agents inherit the current process environment and write separate calls files. Resume/continue uses the current environment, not the original Session's setting or the presence of an old sidecar.
 
-Two independent files per Session:
+When recording is disabled, normal execution does not create, read, restore, truncate, or delete sidecars, and skips recording hashes, encoding, and sync. Main logs, resume, background state, and timing/byte-count/product-analysis metrics continue unchanged. `nib replay` itself still reads existing recordings with `NIB_RECORD` unset or off.
+
+**Unrecorded tool returns cannot be fully replayed after the fact.** Set `NIB_RECORD=on` before the Runs you need to replay; turning it on during resume records only subsequent Runs. The main log's model-visible output is not a substitute for actual tool returns.
+
+A main log per Session, plus an independent sidecar only when recording is enabled:
 
 ```text
 $NIB_HOME/sessions/<session_id>.jsonl        Main log: messages, code, model-visible Run output
 $NIB_HOME/sessions/<session_id>.calls.jsonl  Sidecar: calls/actual returns, created mode 0600
 ```
 
-Append JSONL per Run, flushing/syncing at Run end. Main logs commit only complete Steps; crashes in later Runs of a Step may leave sidecars ahead. First recording after resume truncates from the first sidecar line with step >= new Step determined by main log, rebuilding dedup only from retained data. Later Runs in the same Recorder do not rescan, preserving earlier uncommitted Runs from this execution. Even tool-free Runs save metadata for pure-JS/time-dependent positioning. Recording failures warn/disable further recording, never fail tools/Sessions. Old logs without sidecars remain resumable but cannot invent recordings.
+Append JSONL per Run, flushing/syncing at Run end. Main logs commit only complete Steps; crashes in later Runs of a Step may leave sidecars ahead. When recording is enabled, the first recording after resume truncates from the first sidecar line with step >= new Step determined by main log, rebuilding dedup only from retained data. Later Runs in the same Recorder do not rescan, preserving earlier uncommitted Runs from this execution. Even tool-free Runs save metadata for pure-JS/time-dependent positioning. Recording failures warn/disable further recording, never fail tools/Sessions. Old logs without sidecars remain resumable but cannot invent recordings.
 
 Every line carries step/run. Each Run writes zero or more call rows, then **one final metadata row**; no type field or separate start/end rows.
 
@@ -85,7 +92,7 @@ First results and each error retain at most **1 MiB (1,048,576 bytes)**, UTF-8-b
 
 Record only at shared settlement delivery, not worker-completed results undelivered to JS. At eval exit compare created/delivered totals; mismatch adds meta.incomplete: true even if only the highest index is missing without holes. Cancellation/JS timeout can leave calls undelivered. Ordinary errors do not stop siblings: `Promise.all` read rejection still waits for bash, and direct throw after tool creation still drains, so those error recordings remain complete/matchable. Missing entries yield incomplete=true/match=null; preserve discovered divergence diagnostically without treating it as conclusive.
 
-Load calls before final meta fills Run metadata. Missing meta/references or truncated entries mark `incomplete=true`; absent metadata does not imply time (internal placeholder 0) or complete matches. --all traverses recorded Runs, including metadata-only Runs; total excludes unrecorded `NIB_RECORD=off` Runs, not all main-log Runs. Recording limits affect neither original JS data nor model budgets; [run-output.md](run-output.md).
+Load calls before final meta fills Run metadata. Missing meta/references or truncated entries mark `incomplete=true`; absent metadata does not imply time (internal placeholder 0) or complete matches. --all traverses recorded Runs, including metadata-only Runs; total excludes unrecorded Runs (unset or `NIB_RECORD=off`), rather than counting all main-log Runs. Recording limits affect neither original JS data nor model budgets; [run-output.md](run-output.md).
 
 ## JSON reports
 

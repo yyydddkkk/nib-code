@@ -14,7 +14,7 @@ Plugin-enabled Sessions record an optional `plugin_skills` catalog (names, descr
 
 ## Tool recording and offline replay
 
-Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent `<session_id>.calls.jsonl` stores actual returns/rejections, mode 0600. Sidecars default on, disableable, independent of main format/resume. nib replay executes saved JS in fresh sandboxes with recorded tools, no models/bash/file writes.
+Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent `<session_id>.calls.jsonl` stores actual returns/rejections, mode 0600. Sidecars default off; set `NIB_RECORD=on` before execution to enable them, independently of main format/resume. Disabled execution leaves existing sidecars untouched and does not read/restore them. Main logs, background state, and existing timing/byte-count/product-analysis metrics remain enabled. Resume/continue and child agents use the current process environment, not a logged recording preference. Unrecorded tool returns cannot be fully replayed later; enabling on resume records only subsequent Runs. nib replay executes saved JS in fresh sandboxes with recorded tools, no models/bash/file writes.
 
 Replay step is **1-based assistant Step ordinal over the Session**, including final answers, never resetting per Turn; run is **0-based `tool_calls` index**. Not `turn_step` or internal tool index. Commands/format/truncation/dedup/undetermined cases: [replay.md](replay.md).
 

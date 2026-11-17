@@ -7,7 +7,7 @@
   AGENTS.md       Global instructions
   config.toml     Optional nonsecret runtime configuration
   auth.json       Credentials stored by /provider and nib login (mode 0600)
-  sessions/       <32-character-lowercase-hex-ID>.jsonl main logs and matching .calls.jsonl recordings
+  sessions/       <32-character-lowercase-hex-ID>.jsonl main logs; optional matching .calls.jsonl recordings
   reflections.md  Completed /reflect answers and issue publication results
 ```
 
@@ -159,7 +159,7 @@ Children inherit effective provider/model/limits through anonymous stdin, skippi
 
 | Variable | Meaning |
 |---|---|
-| `NIB_RECORD` | Recording defaults on; only off disables, without deleting calls files; [replay.md](replay.md) |
+| `NIB_RECORD` | Tool sidecars default off; on enables, off disables; explicit legacy values retained; [replay.md](replay.md) |
 | `NIB_HOME` | User directory, default ~/.nib (holds `auth.json`); the Codex CLI login location is unchanged |
 | `NIB_AUTH_ISSUER` / `NIB_AUTH_PORT` / `NIB_AUTH_NO_BROWSER` | Tests only: OAuth issuer URL (default `https://auth.openai.com`), callback port (default 1455), and skip the browser to force the device-code flow |
 | `NIB_PROVIDER` | codex / openai / anthropic / deepseek / xai / chat_completions or configured custom id |
@@ -182,7 +182,13 @@ Children inherit effective provider/model/limits through anonymous stdin, skippi
 
 ## Tool-result recording
 
-Recording defaults on. `NIB_RECORD=off` disables subsequent recording without deleting sidecars. Other values behave like unset/on; no TOML key. Write `$NIB_HOME/sessions/<session_id>.calls.jsonl`, created mode 0600, independently of main logs/resume. It may contain complete files, output, and secrets beyond display budgets; inspect/delete prior data separately. Sidecars are neither automatically sent to providers nor enumerated by /reflect.
+Tool sidecar recording defaults **off** when `NIB_RECORD` is unset. Set `NIB_RECORD=on` before running nib to record full tool arguments/actual returns; `NIB_RECORD=off` disables it. For compatibility, every other explicitly set value (including an empty string, `1`, `0`, `false`, and `OFF`) still enables recording, as before. Values are case-sensitive; prefer `on`/`off`. Only the unset default changed; there is no TOML key or CLI recording flag.
+
+The current process environment decides at Session initialization, including resume/continue; the main log and existing sidecars do not override it. Child agents inherit that environment and use the same policy for new, forked, and resumed Sessions, with separate sidecars. When disabled, nib does not create a Recorder, open/restore existing sidecars, or perform recording hashes, encoding, or sync. It does not delete or rewrite existing recordings. The explicit `nib replay` command can still read prior recordings regardless of this switch.
+
+When enabled, write `$NIB_HOME/sessions/<session_id>.calls.jsonl`, created mode 0600, independently of main logs/resume. It may contain complete files, output, and secrets beyond display budgets; inspect/delete prior data separately. Sidecars are neither automatically sent to providers nor enumerated by /reflect. Main Session logs, conversation recovery, background task state, and existing timing/byte-count/product-analysis metrics remain enabled regardless of `NIB_RECORD`; SQLite remains a separate offline analysis layer.
+
+Tool returns that were not recorded at execution time cannot be fully replayed later. Enabling recording on resume records subsequent Runs only; it cannot reconstruct earlier tool returns from the main log.
 
 Offline commands, JSONL, SHA-256 deduplication, per-item 1 MiB truncation, privacy/capability boundaries: [replay.md](replay.md).
 

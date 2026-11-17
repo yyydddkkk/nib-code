@@ -272,6 +272,7 @@ class BackgroundRunTests(unittest.TestCase):
                 self.assertEqual(len(self.server.requests), 4 if case == "stop-reason" else 3)
 
     def assert_overlap(self):
+        self.env["NIB_RECORD"] = "on"
         events, rows, session = self.finish(self.launch())
         results = self.results(rows)
         self.assertEqual(len(results), 1)

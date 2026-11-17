@@ -85,7 +85,7 @@ Enter 发送，Shift+Enter 换行，Esc 取消。输入 `/` 查看指令：`/pro
 
 ## 安全
 
-nib 像你自己一样，以你的权限运行模型写的代码。bash 拒绝明显危险的命令；`[sandbox] mode = "workspace"` 将写入限制在项目、临时目录和构建缓存中（Linux 用 Landlock，macOS 用 sandbox-exec）。开始前先提交。会话与工具结果记录在本机 `~/.nib/sessions`（权限 0600）；`NIB_RECORD=off` 关闭工具录制。
+nib 像你自己一样，以你的权限运行模型写的代码。bash 拒绝明显危险的命令；`[sandbox] mode = "workspace"` 将写入限制在项目、临时目录和构建缓存中（Linux 用 Landlock，macOS 用 sandbox-exec）。开始前先提交。会话日志保存在本机 `~/.nib/sessions`（权限 0600）。默认不全文录制工具参数与返回值；设置 `NIB_RECORD=on` 可开启[离线 replay](docs/replay.md)。
 
 ## 更多
 

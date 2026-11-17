@@ -489,13 +489,13 @@ def main():
             first_by_connection.setdefault(request["connection"], request["body"])
         assert all("previous_response_id" not in b for b in first_by_connection.values())
         assert len({b["prompt_cache_key"] for b in first_by_connection.values()}) == 1
-        server, steps, sid, case_home = run_case(tmp, "missing")
+        server, steps, sid, case_home = run_case(tmp, "missing", extra={"NIB_RECORD": "on"})
         assert len(server.requests) == 3 and "previous_response_id" in server.requests[1]["body"]
         assert "previous_response_id" not in server.requests[2]["body"]
         assert steps[1]["transport_fallback"] == "previous_response_not_found" and not steps[1]["incremental"]
         check_saved_run(tmp, sid, case_home)
         for mode in ("handshake", "bad-accept", "protocol", "protocol-emitted"):
-            server, steps, sid, case_home = run_case(tmp, mode)
+            server, steps, sid, case_home = run_case(tmp, mode, extra={"NIB_RECORD": "on"})
             assert server.connections == 1 and server.posts >= 1, (mode, server.requests)
             assert steps[-1]["transport"] == "sse" and steps[-1]["transport_fallback"] and steps[-1]["transport_fallback_at"], (mode, steps)
             fallbacks = [r for r in read_log(case_home, sid) if r.get("transport_fallback") and "model_ms" not in r]
