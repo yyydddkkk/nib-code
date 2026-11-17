@@ -192,11 +192,12 @@ pub fn run(init: std.process.Init, session: *Session) !void {
         const event = try loop.nextEvent();
         const refresh = event.refresh();
         const old_hover = app.hovered;
+        const old_hover_row = app.hovered_row;
         const old_link = app.link;
         const motion = event == .mouse and event.mouse.type == .motion and !app.selection.active;
         if (!motion and event.flushesVisible()) app.transcript.flushVisible();
         if (!try app.handle(event)) break;
-        if (motion and old_hover == app.hovered and std.meta.eql(old_link, app.link)) continue;
+        if (motion and old_hover == app.hovered and old_hover_row == app.hovered_row and std.meta.eql(old_link, app.link)) continue;
         const frame_start = std.Io.Clock.Timestamp.now(io, .awake);
         if (frames.due(frame_start, if (refresh != .immediate and app.transcript.hasBacklog()) .content else refresh)) {
             app.transcript.advanceVisible(frame_start);
@@ -231,6 +232,7 @@ pub const App = struct {
     hover_bg: vaxis.Color = .default,
     terminal_bg: ?[3]u8 = null,
     hovered: ?usize = null,
+    hovered_row: ?u16 = null,
     /// Underlined file path under the pointer; only when `open` is configured.
     link: ?Link = null,
     files: open.Files = .{},
@@ -356,12 +358,16 @@ pub const App = struct {
             .mouse => |m| {
                 if (m.type == .motion and !app.selection.active) {
                     app.hovered = null;
+                    app.hovered_row = null;
                     app.link = null;
                     if (app.selection.dragged) return true;
                     if (app.body) |body| {
                         if (m.col >= body.window.x_off and m.col < body.window.x_off + body.window.width and m.row >= 0 and m.row < body.window.height) {
                             if (@import("tui/selection/history.zig").position(body, app.transcript.entries.items, @intCast(m.col), @intCast(m.row))) |p| {
-                                if (p.row < app.transcript.entries.items[p.entry].toggleRows(body.window)) app.hovered = p.entry;
+                                if (app.transcript.entries.items[p.entry].control(body.window, p.row)) |control_hit| {
+                                    app.hovered = p.entry;
+                                    app.hovered_row = control_hit.first;
+                                }
                                 var text: [open_buf_len]u8 = undefined;
                                 if (app.hitAt(p.entry, p.row, m.col, m.row, &text)) |hit| app.link = .{ .row = @intCast(m.row), .x0 = hit.found.x0, .x1 = hit.found.x1 };
                             }
@@ -918,7 +924,11 @@ pub const App = struct {
 
     fn clickEntry(app: *App, entry: usize, row: u16) void {
         const frame = app.body orelse return;
-        if (entry < app.transcript.entries.items.len and row < app.transcript.entries.items[entry].toggleRows(frame.window)) app.toggleEntry(entry);
+        if (entry >= app.transcript.entries.items.len) return;
+        const e = &app.transcript.entries.items[entry];
+        const control_hit = e.control(frame.window, row) orelse return;
+        e.toggleControl(control_hit);
+        app.scroll.toggled(frame.top, control_hit.action == null and app.transcript.latestDetails() == entry);
     }
 
     pub fn toggleSimple(app: *App) !void {
@@ -966,6 +976,7 @@ pub const App = struct {
             .user_bg = app.user_bg,
             .code_bg = app.code_bg,
             .hovered = app.hovered,
+            .hovered_row = app.hovered_row,
             .hover_bg = app.hover_bg,
             .usage = app.usage,
             .steps = app.steps,
@@ -1699,6 +1710,7 @@ fn clickApp(app: *App, vx: *vaxis.Vaxis, top: @import("tui/viewport.zig").Anchor
     app.notice = null;
     app.cfg = .{ .base_url = "", .api_key = "", .model = "mock" };
     app.link = null;
+    app.hovered_row = null;
     app.files = .{};
     app.files_revision = 0;
     app.project = null;
@@ -1908,4 +1920,39 @@ test "file paths are links only when open is configured; a click runs the comman
     _ = try app.handle(mouseEvent(6, 0, .press));
     _ = try app.handle(mouseEvent(6, 0, .release));
     try std.testing.expectEqualStrings("Could not run open-tool", app.notice.?);
+}
+
+test "scrolled nested Run headings toggle without collapsing the Run or its siblings" {
+    const a = std.testing.allocator;
+    var vx: vaxis.Vaxis = undefined;
+    vx.screen = try vaxis.Screen.init(a, .{ .cols = 120, .rows = 40, .x_pixel = 0, .y_pixel = 0 });
+    defer vx.screen.deinit(a);
+    var app: App = undefined;
+    app.gpa = a;
+    app.io = std.testing.io;
+    app.flow = .{ .gpa = a };
+    clickApp(&app, &vx, .{ .row = 2 }, .{ .row = 2 });
+    app.body.?.window.width = 120;
+    app.body.?.window.height = 40;
+    defer app.transcript.deinit(a);
+    try app.transcript.startRun(a, "script-body");
+    try app.transcript.endRun(a, true, "result-body", 1, .{});
+    const e = &app.transcript.entries.items[0];
+    e.open = true;
+    _ = e.print(app.body.?.window.child(.{ .y_off = -2 }), true);
+    _ = try app.handle(mouseEvent(5, 3, .motion));
+    try std.testing.expectEqual(@as(?usize, 0), app.hovered);
+    try std.testing.expectEqual(@as(?u16, 5), app.hovered_row);
+    _ = try app.handle(mouseEvent(5, 3, .press));
+    _ = try app.handle(mouseEvent(5, 3, .release));
+    try std.testing.expect(e.open and e.details.script_open);
+    try std.testing.expect(e.details.result_open == null);
+    try std.testing.expectEqual(@as(u16, 2), app.scroll.top.?.row);
+    app.clickEntry(0, 6);
+    try std.testing.expect(e.open and e.details.script_open);
+    _ = try app.handle(mouseEvent(5, 3, .press));
+    _ = try app.handle(mouseEvent(9, 3, .drag));
+    try std.testing.expect(app.selection.dragged);
+    try std.testing.expect(app.selection.takeClick() == null);
+    try std.testing.expect(e.details.script_open);
 }

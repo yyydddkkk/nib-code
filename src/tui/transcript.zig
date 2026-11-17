@@ -741,7 +741,7 @@ test "runs fold to one line until expanded" {
     var segs: [max_segments]vaxis.Segment = undefined;
     try testing.expectEqualStrings("Run", e.segments(&segs)[2].text);
     toggleAll(&t);
-    try testing.expectEqual(@as(u16, 10), e.height(win));
+    try testing.expectEqual(@as(u16, 7), e.height(win));
 }
 
 test "entry height cache reuses measurements and invalidates on width or append" {
@@ -835,12 +835,12 @@ test "a Run shows changed files in its summary and a colored diff when open" {
     try testing.expectEqualStrings("Run", e.label.items);
     try testing.expectEqual(@as(u16, 2), e.height(win));
     toggleAll(&t);
-    var segs: [max_segments]vaxis.Segment = undefined;
-    const shown = e.segments(&segs);
-    try testing.expectEqualStrings("-old\n", shown[8].text);
-    try testing.expectEqual(@as(u8, 1), shown[8].style.fg.index);
-    try testing.expectEqualStrings("+hi\n", shown[11].text);
-    try testing.expectEqual(@as(u16, 13), e.height(win));
+    const text_view = try entryText(gpa, e, 60);
+    defer gpa.free(text_view);
+    try testing.expect(std.mem.indexOf(u8, text_view, "▸ src/a.zig +1 −1") != null);
+    try testing.expect(std.mem.indexOf(u8, text_view, "▸ b.md (new) +1 −0") != null);
+    try testing.expect(std.mem.indexOf(u8, text_view, "-old") == null);
+    try testing.expectEqual(@as(u16, 9), e.height(win));
 
     var many: [3]Change = undefined;
     for (&many) |*c| c.* = .{ .path = "x", .added = 2, .removed = 1, .diff = "" };
@@ -861,20 +861,13 @@ test "an open Run emphasizes the changed middle of paired diff lines" {
     try t.endRun(gpa, true, "", 300, try .init(gpa, &.{.{ .path = "a.zig", .added = 1, .removed = 1, .diff = diff }}));
     toggleAll(&t);
     const e = &t.entries.items[0];
-    var segs: [max_segments]vaxis.Segment = undefined;
-    const shown = e.segments(&segs);
-    try testing.expectEqualStrings("-let count = 1", shown[7].text);
-    try testing.expectEqualStrings("0", shown[8].text);
-    try testing.expect(shown[8].style.bold and !shown[7].style.bold);
-    try testing.expectEqual(@as(u8, 1), shown[8].style.fg.index);
-    try testing.expectEqualStrings("+let count = 1", shown[10].text);
-    try testing.expectEqualStrings("1", shown[11].text);
-    try testing.expectEqual(@as(u8, 2), shown[11].style.fg.index);
     const rows = e.print(win, true);
     try testing.expectEqual(e.height(win), rows);
-    try testing.expectEqualStrings("0", screen.readCell(14, 4).?.char.grapheme);
-    try testing.expect(screen.readCell(14, 4).?.style.bold);
-    try testing.expect(!screen.readCell(13, 4).?.style.bold);
+    try testing.expectEqualStrings("0", screen.readCell(20, 4).?.char.grapheme);
+    try testing.expect(screen.readCell(20, 4).?.style.bold);
+    try testing.expect(!screen.readCell(19, 4).?.style.bold);
+    try testing.expectEqual(@as(u8, 1), screen.readCell(20, 4).?.style.fg.index);
+    try testing.expectEqual(@as(u8, 2), screen.readCell(20, 5).?.style.fg.index);
 }
 
 test "agent tree stays visible folded, expanded and after Run ends" {
@@ -889,12 +882,14 @@ test "agent tree stays visible folded, expanded and after Run ends" {
     try testing.expectEqualStrings("", e.segments(&segs)[1].text);
     toggleAll(&t);
     try testing.expectEqualStrings("  └─ a1 fix it · running · step 3 · edit src/x.zig", e.agent_tree.rows.items[0].text);
-    try testing.expectEqualStrings(e.text.items, e.segments(&segs)[10].text);
+    try testing.expect(!e.details.script_open);
     try t.progress(gpa, .{ .id = "a1", .prompt = "fix it", .state = .done, .step = 3, .tools = &.{"edit"}, .files = &.{"src/x.zig"} });
     try t.endRun(gpa, true, "done", 1234, .{});
     try testing.expectEqualStrings("Run", e.segments(&segs)[2].text);
     try testing.expectEqualStrings("", e.segments(&segs)[1].text);
-    try testing.expectEqualStrings("done", e.segments(&segs)[8].text);
+    const opened = try entryText(gpa, e, 120);
+    defer gpa.free(opened);
+    try testing.expect(std.mem.indexOf(u8, opened, "done") != null);
     try testing.expectEqualStrings("  └─ a1 fix it · completed · step 3 · edit src/x.zig", e.agent_tree.rows.items[0].text);
     try t.progress(gpa, .{ .id = "a1", .prompt = "late" });
     try testing.expectEqualStrings("Run", e.label.items);
@@ -1112,15 +1107,15 @@ test "agent rows have stable heights across folding resizing completion and scro
     try testing.expectEqualStrings("└", screen.readCell(2, 2).?.char.grapheme);
     try testing.expectEqualStrings(" ", screen.readCell(0, 3).?.char.grapheme);
     toggleAll(&t);
-    try testing.expectEqual(@as(u16, 9), e.height(win));
+    try testing.expectEqual(@as(u16, 8), e.height(win));
     _ = e.print(win, true);
-    try testing.expectEqualStrings("C", screen.readCell(0, 3).?.char.grapheme);
+    try testing.expectEqualStrings("R", screen.readCell(4, 4).?.char.grapheme);
     try t.progress(gpa, .{ .id = "a2", .prompt = "second", .state = .failed, .step = 4, .tools = &.{"bash"} });
-    try testing.expectEqual(@as(u16, 9), e.height(win));
+    try testing.expectEqual(@as(u16, 8), e.height(win));
     try t.endRun(gpa, true, "result", 2000, .{});
-    try testing.expectEqual(@as(u16, 9), e.height(win));
+    try testing.expectEqual(@as(u16, 8), e.height(win));
     _ = e.print(win, true);
-    try testing.expectEqualStrings("R", screen.readCell(0, 5).?.char.grapheme);
+    try testing.expectEqualStrings("r", screen.readCell(4, 5).?.char.grapheme);
     try testing.expectEqualStrings("  ├─ a2 second · failed · step 4 · bash", e.agent_tree.rows.items[0].text);
     toggleAll(&t);
     try testing.expectEqual(@as(u16, 3), e.height(win));
@@ -1640,7 +1635,7 @@ test "Run facts name changed files and retain warning without changing script su
     try testing.expectEqual(@as(u8, 3), segs[0].style.fg.index);
 }
 
-test "expanded Runs retain all result lines and label bounded diffs as previews" {
+test "Run detail previews retain complete results and per-file diffs" {
     const a = testing.allocator;
     var t: Transcript = .{};
     defer t.deinit(a);
@@ -1652,20 +1647,38 @@ test "expanded Runs retain all result lines and label bounded diffs as previews"
         try result.print(a, "result {d}\n", .{i});
         try diff.print(a, "+line {d}\n", .{i});
     }
-    try t.startRun(a, "script");
+    try t.startRun(a, "secret-script");
     try t.endRun(a, true, result.items, 1, try .init(a, &.{.{ .path = "a", .added = 240, .removed = 0, .diff = diff.items }}));
     const e = &t.entries.items[0];
     try testing.expectEqualStrings(result.items, e.output.items);
+    try testing.expectEqualStrings(diff.items, e.changes.files[0].diff);
     try testing.expectEqualStrings("Diff preview · 60 of 241 lines\n", e.changes.preview);
-    try testing.expect(std.mem.indexOf(u8, e.changes.diff, "more lines") == null);
     toggleAll(&t);
-    var segs: [max_segments]vaxis.Segment = undefined;
-    const shown = e.segments(&segs);
-    try testing.expectEqualStrings("Changes\n", shown[4].text);
-    try testing.expectEqualStrings("Result\n", shown[shown.len - 4].text);
-    try testing.expect(std.mem.endsWith(u8, shown[shown.len - 3].text, "result 239"));
-    try testing.expectEqualStrings("\nScript\n", shown[shown.len - 2].text);
-    try testing.expectEqualStrings("script", shown[shown.len - 1].text);
+    const collapsed = try entryText(a, e, 120);
+    defer a.free(collapsed);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "result 0") == null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "secret-script") == null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "+line 0") == null);
+    e.details.result_open = true;
+    e.cached = null;
+    const preview = try entryText(a, e, 120);
+    defer a.free(preview);
+    try testing.expect(std.mem.indexOf(u8, preview, "Preview · first 20 of 240 lines") != null);
+    try testing.expect(std.mem.indexOf(u8, preview, "result 19") != null);
+    try testing.expect(std.mem.indexOf(u8, preview, "result 20") == null);
+    e.details.full_result = true;
+    e.details.script_open = true;
+    e.changes.files[0].open = true;
+    e.cached = null;
+    const full = try entryText(a, e, 120);
+    defer a.free(full);
+    try testing.expect(std.mem.indexOf(u8, full, "result 239") != null);
+    try testing.expect(std.mem.indexOf(u8, full, "+line 239") != null);
+    try testing.expect(std.mem.indexOf(u8, full, "secret-script") != null);
+    var copy = try e.changes.clone(a);
+    defer copy.deinit(a);
+    try testing.expectEqualStrings(diff.items, copy.files[0].diff);
+    try testing.expect(copy.files[0].open.?);
 }
 
 test "retry removes only the failed attempt and preserves interjections and prior answers" {
@@ -1821,4 +1834,100 @@ test "Simple collapsed Run shows path facts on its title row" {
         const expected = if (simple) c.simple else c.normal;
         try testing.expectEqualStrings(expected, std.mem.trimEnd(u8, row, " "));
     };
+}
+
+fn entryText(a: std.mem.Allocator, e: *Entry, width: u16) ![]u8 {
+    var screen = try vaxis.Screen.init(a, .{ .cols = width, .rows = 1024, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(a);
+    const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = width, .height = 1024, .screen = &screen };
+    const rows = e.print(win, true);
+    try testing.expectEqual(rows, e.height(win));
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(a);
+    for (0..@min(rows, 1024)) |y| {
+        for (0..width) |x| {
+            const cell = screen.readCell(@intCast(x), @intCast(y)).?;
+            try text.appendSlice(a, if (cell.char.grapheme.len == 0) " " else cell.char.grapheme);
+        }
+        try text.append(a, '\n');
+    }
+    return text.toOwnedSlice(a);
+}
+
+test "Run detail controls preserve siblings and mode state at narrow and wide widths" {
+    const a = testing.allocator;
+    for ([_]u16{ 60, 120, 160 }) |width| {
+        var screen: vaxis.Screen = .{};
+        const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = width, .height = 40, .screen = &screen };
+        var t: Transcript = .{};
+        defer t.deinit(a);
+        try t.startRun(a, "hidden-script");
+        try t.endRun(a, true, "output-body", 1, try .init(a, &.{
+            .{ .path = "src/a-long-path-with-界-symbols-and-enough-text-to-wrap-at-sixty-columns.zig", .added = 1, .removed = 0, .diff = "+first-body\n" },
+            .{ .path = "b.zig", .added = 1, .removed = 0, .diff = "+second-body\n" },
+        }));
+        const e = &t.entries.items[0];
+        e.open = true;
+        const file_hit = e.control(win, 3).?;
+        try testing.expectEqual(@as(usize, 0), file_hit.action.?.file);
+        if (width == 60) {
+            try testing.expect(file_hit.rows > 1);
+            try testing.expectEqual(@as(usize, 0), e.control(win, 4).?.action.?.file);
+        }
+        e.toggleControl(file_hit);
+        try testing.expect(e.open and e.changes.files[0].open.?);
+        try testing.expect(e.changes.files[1].open == null);
+        try testing.expect(!e.details.script_open);
+        var script_hit: ?Entry.Control = null;
+        for (0..e.height(win)) |row| {
+            if (e.control(win, @intCast(row))) |hit| {
+                if (hit.action) |action| if (action == .script) {
+                    script_hit = hit;
+                    break;
+                };
+            }
+        }
+        e.toggleControl(script_hit.?);
+        const normal = try entryText(a, e, width);
+        defer a.free(normal);
+        try testing.expect(std.mem.indexOf(u8, normal, "hidden-script") != null);
+        try testing.expect(std.mem.indexOf(u8, normal, "output-body") == null);
+        try testing.expect(std.mem.indexOf(u8, normal, "+first-body") != null);
+        try testing.expect(std.mem.indexOf(u8, normal, "+second-body") == null);
+        e.simple = true;
+        const simple = try entryText(a, e, width);
+        defer a.free(simple);
+        try testing.expectEqualStrings(normal, simple);
+        e.simple = false;
+        e.toggleControl(e.control(win, 0).?);
+        try testing.expect(!e.open);
+        e.toggleControl(e.control(win, 0).?);
+        try testing.expect(e.details.script_open and e.changes.files[0].open.?);
+        const restored = try entryText(a, e, width);
+        defer a.free(restored);
+        try testing.expectEqualStrings(normal, restored);
+    }
+}
+
+test "read-only Runs omit Changes and failed edits expose output without exposing Script" {
+    const a = testing.allocator;
+    var t: Transcript = .{};
+    defer t.deinit(a);
+    try t.startRun(a, "private-script");
+    try t.endRun(a, true, "read-result", 1, .{});
+    const e = &t.entries.items[0];
+    e.open = true;
+    const read_view = try entryText(a, e, 60);
+    defer a.free(read_view);
+    try testing.expect(std.mem.indexOf(u8, read_view, "Changes") == null);
+    try testing.expect(std.mem.indexOf(u8, read_view, "read-result") != null);
+    try testing.expect(std.mem.indexOf(u8, read_view, "private-script") == null);
+    e.changes = try .init(a, &.{.{ .path = "a", .added = 1, .removed = 0, .diff = "+small-diff\n" }});
+    e.run = .failed;
+    e.cached = null;
+    const failed = try entryText(a, e, 60);
+    defer a.free(failed);
+    try testing.expect(std.mem.indexOf(u8, failed, "+small-diff") != null);
+    try testing.expect(std.mem.indexOf(u8, failed, "read-result") != null);
+    try testing.expect(std.mem.indexOf(u8, failed, "private-script") == null);
 }

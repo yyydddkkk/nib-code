@@ -97,9 +97,35 @@ pub const ChangeText = struct {
     /// Per file a header line, then its diff lines; at most `max_diff_lines` in all.
     diff: []u8 = &.{},
     preview: []u8 = &.{},
+    files: []FileDiff = &.{},
+
+    pub const FileDiff = struct {
+        header: []u8,
+        diff: []u8,
+        open: ?bool = null,
+
+        pub fn expanded(f: FileDiff, single: bool) bool {
+            return f.open orelse (single and @import("run_details.zig").lineCount(f.diff) <= 20);
+        }
+    };
 
     pub fn init(gpa: std.mem.Allocator, changes: []const Change) !ChangeText {
         if (changes.len == 0) return .{};
+        const files = try gpa.alloc(FileDiff, changes.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (files[0..initialized]) |f| {
+                gpa.free(f.header);
+                gpa.free(f.diff);
+            }
+            gpa.free(files);
+        }
+        for (changes, files) |c, *f| {
+            const header = try std.fmt.allocPrint(gpa, "{s}{s} +{d} −{d}", .{ c.path, if (c.created) " (new)" else "", c.added, c.removed });
+            errdefer gpa.free(header);
+            f.* = .{ .header = header, .diff = try gpa.dupe(u8, c.diff) };
+            initialized += 1;
+        }
         var summary: std.ArrayList(u8) = .empty;
         errdefer summary.deinit(gpa);
         for (changes, 0..) |c, i| {
@@ -128,7 +154,7 @@ pub const ChangeText = struct {
         errdefer gpa.free(preview);
         const summary_text = try summary.toOwnedSlice(gpa);
         errdefer gpa.free(summary_text);
-        return .{ .file_count = changes.len, .summary = summary_text, .diff = try diff.toOwnedSlice(gpa), .preview = preview };
+        return .{ .file_count = changes.len, .summary = summary_text, .diff = try diff.toOwnedSlice(gpa), .preview = preview, .files = files };
     }
 
     pub fn clone(c: ChangeText, gpa: std.mem.Allocator) !ChangeText {
@@ -136,13 +162,35 @@ pub const ChangeText = struct {
         errdefer gpa.free(summary);
         const diff = try gpa.dupe(u8, c.diff);
         errdefer gpa.free(diff);
-        return .{ .summary = summary, .file_count = c.file_count, .diff = diff, .preview = try gpa.dupe(u8, c.preview) };
+        const preview = try gpa.dupe(u8, c.preview);
+        errdefer gpa.free(preview);
+        const files = try gpa.alloc(FileDiff, c.files.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (files[0..initialized]) |f| {
+                gpa.free(f.header);
+                gpa.free(f.diff);
+            }
+            gpa.free(files);
+        }
+        for (c.files, files) |f, *copy| {
+            const header = try gpa.dupe(u8, f.header);
+            errdefer gpa.free(header);
+            copy.* = .{ .header = header, .diff = try gpa.dupe(u8, f.diff), .open = f.open };
+            initialized += 1;
+        }
+        return .{ .summary = summary, .file_count = c.file_count, .diff = diff, .preview = preview, .files = files };
     }
 
     pub fn deinit(c: *ChangeText, gpa: std.mem.Allocator) void {
         gpa.free(c.summary);
         gpa.free(c.diff);
         gpa.free(c.preview);
+        for (c.files) |f| {
+            gpa.free(f.header);
+            gpa.free(f.diff);
+        }
+        gpa.free(c.files);
         c.* = .{};
     }
 };

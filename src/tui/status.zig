@@ -59,6 +59,7 @@ pub const Activity = struct {
 pub const Status = struct {
     cfg: provider.Config,
     hovered: ?usize = null,
+    hovered_row: ?u16 = null,
     hover_bg: @import("vaxis").Color = .default,
     user_bg: @import("vaxis").Color = .default,
     code_bg: @import("vaxis").Color = .default,

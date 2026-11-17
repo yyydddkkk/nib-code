@@ -11,11 +11,11 @@ const BackgroundKind = @FieldType(@import("../../session/events.zig").Background
 const ToolSummary = @import("../../session/tool_summary.zig").Summary;
 const ChangeText = @import("changes.zig").ChangeText;
 const label = @import("label.zig");
-const intraline = @import("intraline.zig");
+const run_details = @import("run_details.zig");
 const actualToolSummary = label.actualToolSummary;
 
 pub const max_diff_lines = 60;
-pub const max_segments = 16 + 3 * max_diff_lines;
+pub const max_segments = 16;
 
 pub const Kind = enum { user, assistant, run, background, info, err, bill, failure, changes };
 
@@ -56,6 +56,7 @@ pub const Entry = struct {
     step_effort: ?provider.StepEffort = null,
     /// Collapsible entries share the transcript ctrl+o state.
     open: bool = false,
+    details: run_details.State = .{},
     cached: ?struct { width: u16, len: usize, open: bool, rows: u16 } = null,
 
     const Invocation = struct {
@@ -158,6 +159,7 @@ pub const Entry = struct {
 
     pub fn toggleRows(e: *Entry, win: vaxis.Window) u16 {
         if (!e.collapsible()) return 0;
+        if (e.open) return 1;
         const open = e.open;
         e.open = false;
         defer e.open = open;
@@ -181,31 +183,9 @@ pub const Entry = struct {
         const wrap: @FieldType(vaxis.Window.PrintOptions, "wrap") = if (folded) .none else if (e.kind == .run or e.kind == .background or e.kind == .failure) .grapheme else .word;
         const shown = segments(e, &segs);
         if (e.kind == .run) {
-            if (e.simple and !e.open and e.title_files.items.len > 0) {
-                const title_text = e.label.items;
-                const at = @min(e.title_files_at, title_text.len);
-                const title = [_]vaxis.Segment{ shown[0], shown[1], .{ .text = title_text[0..at] }, .{ .text = e.title_files.items }, .{ .text = title_text[at..] } };
-                _ = win.print(&title, .{ .wrap = .none, .commit = commit });
-            } else _ = win.print(shown[0..3], .{ .wrap = .none, .commit = commit });
-            if (e.simple and !e.open and e.run != .running) return 1;
-            if (e.simple and !e.open) return 1 +| e.agent_tree.print(win.child(.{ .y_off = 1 }), commit);
-            var rows: u16 = 1;
-            if (e.changes.summary.len > 0) {
-                const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.changes.summary, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
-                rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
-            }
-            if (e.files.items.len > 0) {
-                const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.files.items, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
-                rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
-            }
-            if (e.hook_notice.items.len > 0) {
-                _ = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.hook_notice.items, .style = .{ .fg = .{ .index = 3 } } }, .{ .wrap = .none, .commit = commit });
-                rows +|= 1;
-            }
-            rows +|= e.agent_tree.print(win.child(.{ .y_off = rows }), commit);
+            const rows = e.printRunPrefix(win, commit);
             if (!e.open) return rows;
-            const details = win.child(.{ .y_off = rows }).print(shown[4..], .{ .wrap = .grapheme, .commit = commit });
-            return rows +| @max(1, details.row +| @intFromBool(details.col > 0));
+            return rows +| run_details.draw(e, win.child(.{ .y_off = rows }), commit, null).rows;
         }
         if (folded and e.kind == .user) {
             const suffix_width = vaxis.gwidth.gwidth(e.label.items, win.screen.width_method) + @as(u16, if (e.queued != null) 9 else 0);
@@ -220,6 +200,54 @@ pub const Entry = struct {
         }
         const r = win.print(shown, .{ .wrap = wrap, .commit = commit });
         return if (folded) 1 else @max(1, r.row +| @intFromBool(r.col > 0));
+    }
+
+    fn printRunPrefix(e: *Entry, win: vaxis.Window, commit: bool) u16 {
+        var segs: [max_segments]vaxis.Segment = undefined;
+        const shown = e.segments(&segs);
+        if (e.simple and !e.open and e.title_files.items.len > 0) {
+            const title_text = e.label.items;
+            const at = @min(e.title_files_at, title_text.len);
+            const title = [_]vaxis.Segment{ shown[0], shown[1], .{ .text = title_text[0..at] }, .{ .text = e.title_files.items }, .{ .text = title_text[at..] } };
+            _ = win.print(&title, .{ .wrap = .none, .commit = commit });
+        } else _ = win.print(shown, .{ .wrap = .none, .commit = commit });
+        if (e.simple and !e.open and e.run != .running) return 1;
+        if (e.simple and !e.open) return 1 +| e.agent_tree.print(win.child(.{ .y_off = 1 }), commit);
+        var rows: u16 = 1;
+        if (!e.open and e.changes.summary.len > 0) {
+            const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.changes.summary, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
+            rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
+        }
+        if (e.files.items.len > 0) {
+            const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.files.items, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
+            rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
+        }
+        if (e.hook_notice.items.len > 0) {
+            _ = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.hook_notice.items, .style = .{ .fg = .{ .index = 3 } } }, .{ .wrap = .none, .commit = commit });
+            rows +|= 1;
+        }
+        rows +|= e.agent_tree.print(win.child(.{ .y_off = rows }), commit);
+        return rows;
+    }
+
+    pub const Control = struct { first: u16, rows: u16, action: ?run_details.Action = null };
+
+    pub fn control(e: *Entry, win: vaxis.Window, row: u16) ?Control {
+        const parent_rows = e.toggleRows(win);
+        if (row < parent_rows) return .{ .first = 0, .rows = parent_rows };
+        if (e.kind != .run or !e.open) return null;
+        const prefix_rows = e.printRunPrefix(win, false);
+        if (row < prefix_rows) return null;
+        var measure = win;
+        measure.height = std.math.maxInt(u16);
+        const layout = run_details.draw(e, measure, false, row - prefix_rows);
+        const hit = layout.hit orelse return null;
+        return .{ .first = prefix_rows +| hit.first, .rows = hit.rows, .action = hit.action };
+    }
+
+    pub fn toggleControl(e: *Entry, control_hit: Control) void {
+        if (control_hit.action) |action| e.details.toggle(e, action) else e.open = !e.open;
+        e.cached = null;
     }
 
     /// `label` is the summary line, `text` one row per file while open.
@@ -308,44 +336,7 @@ pub const Entry = struct {
                 segs[0] = if (e.run == .failed) .{ .text = "✗ ", .style = .{ .fg = .{ .index = 1 } } } else if (e.run == .warning or e.run == .lost or e.run == .timed_out or e.run == .canceled or e.hasWarning()) .{ .text = "! ", .style = .{ .fg = .{ .index = 3 } } } else .{ .text = "  ", .style = dim };
                 segs[1] = .{ .text = "", .style = dim };
                 segs[2] = .{ .text = e.label.items };
-                if (!e.open) return segs[0..3];
-                segs[3] = .{ .text = "\n" };
-                segs[4] = .{ .text = "Changes\n", .style = .{ .bold = true, .dim = true } };
-                segs[5] = .{ .text = e.changes.preview, .style = dim };
-                var n: usize = 6;
-                const diff = e.changes.diff;
-                if (diff.len == 0) {
-                    segs[n] = .{ .text = "No file changes\n", .style = dim };
-                    n += 1;
-                }
-                var lines: intraline.Lines = .{ .text = diff };
-                while (n + 3 <= segs.len - 5) {
-                    const item = lines.next() orelse break;
-                    const line = item.line;
-                    const style: vaxis.Style = switch (line[0]) {
-                        '+' => .{ .fg = .{ .index = 2 } },
-                        '-' => .{ .fg = .{ .index = 1 } },
-                        ' ' => dim,
-                        else => .{ .bold = true, .dim = true },
-                    };
-                    if (item.emphasis) |r| {
-                        var strong = style;
-                        strong.bold = true;
-                        segs[n] = .{ .text = line[0..r.start], .style = style };
-                        segs[n + 1] = .{ .text = line[r.start..r.end], .style = strong };
-                        segs[n + 2] = .{ .text = line[r.end..], .style = style };
-                        n += 3;
-                    } else {
-                        segs[n] = .{ .text = line, .style = style };
-                        n += 1;
-                    }
-                }
-                segs[n] = .{ .text = "Result\n", .style = .{ .bold = true, .dim = true } };
-                segs[n + 1] = .{ .text = if (e.output.items.len == 0) "No result" else std.mem.trimEnd(u8, e.output.items, "\n"), .style = if (e.run == .failed) .{ .fg = .{ .index = 1 }, .dim = true } else dim };
-                segs[n + 2] = .{ .text = "\nScript\n", .style = .{ .bold = true, .dim = true } };
-                segs[n + 3] = .{ .text = e.text.items, .style = dim };
-                n += 4;
-                return segs[0..n];
+                return segs[0..3];
             },
             .background => {
                 segs[0] = if (e.run == .warning) .{ .text = "! ", .style = .{ .fg = .{ .index = 3 } } } else if (e.run == .superseded) .{ .text = "  ", .style = dim } else .{ .text = if (e.run == .ok) "✓ " else "✗ ", .style = .{ .fg = .{ .index = if (e.run == .ok) 2 else 1 } } };

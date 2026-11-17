@@ -64,9 +64,11 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
         const h = e.height(body);
         if (y + h > 0) _ = e.print(body.child(.{ .y_off = @intCast(y), .height = h }), true);
         if (s.hovered == index) {
-            const rows = e.toggleRows(body);
+            const control_hit = e.control(body, s.hovered_row orelse 0);
+            const first = if (control_hit) |c| c.first else 0;
+            const rows = if (control_hit) |c| c.rows else 0;
             for (0..body_h) |row| {
-                if (@as(i32, @intCast(row)) < y or @as(i32, @intCast(row)) >= y + rows) continue;
+                if (@as(i32, @intCast(row)) < y + first or @as(i32, @intCast(row)) >= y + first + rows) continue;
                 for (0..body.width) |col| {
                     const cell = &win.screen.buf[row * win.screen.width + col + @as(usize, @intCast(body.x_off))];
                     cell.style.bg = s.hover_bg;
@@ -541,7 +543,7 @@ test "hover covers full summary width and leaves expanded details unchanged" {
     const color: vaxis.Color = .{ .rgb = .{ 8, 8, 8 } };
     const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .hover_bg = color }, &text).?;
     const rows = entry.toggleRows(frame.window);
-    try testing.expect(rows >= 2);
+    try testing.expectEqual(@as(u16, 1), rows);
     for (0..rows) |row| for (1..79) |col| {
         try testing.expectEqualDeep(color, screen.readCell(@intCast(col), @intCast(row)).?.style.bg);
     };
@@ -650,7 +652,15 @@ test "resize and mode transitions match a fresh frame" {
     defer t.deinit(a);
     try t.add(a, .user, "Check symbols 界 and wrapping");
     try t.add(a, .assistant, "# Heading\nA completed **Markdown** line with 界 symbols and enough words to wrap in a narrow terminal.\n```zig\nconst value = 42;\n```\nDone.");
-    try t.add(a, .run, "script");
+    try t.startRun(a, "secret-script");
+    try t.endRun(a, true, "result text", 1, try .init(a, &.{
+        .{ .path = "src/a.zig", .added = 1, .removed = 1, .diff = "-old\n+new\n" },
+        .{ .path = "src/b.zig", .added = 1, .removed = 0, .diff = "+second\n" },
+    }));
+    t.entries.items[2].open = true;
+    t.entries.items[2].details.script_open = true;
+    t.entries.items[2].details.result_open = false;
+    t.entries.items[2].changes.files[0].open = true;
     try t.add(a, .bill, "1 Run · 2 steps");
     try t.add(a, .user, "Again");
     var input: Editor = .{};
@@ -685,6 +695,11 @@ test "resize and mode transitions match a fresh frame" {
         const after = try snapshot(a, &fresh_screen);
         defer a.free(after);
         try testing.expectEqualStrings(after, before);
+        try testing.expect(t.entries.items[2].open);
+        try testing.expect(t.entries.items[2].details.script_open);
+        try testing.expect(!t.entries.items[2].details.result_open.?);
+        try testing.expect(t.entries.items[2].changes.files[0].open.?);
+        try testing.expect(t.entries.items[2].changes.files[1].open == null);
     }
 }
 
@@ -744,4 +759,35 @@ test "changes line sits directly under the footer, opens to file rows and is hid
     defer a.free(simple);
     try testing.expect(std.mem.indexOf(u8, simple, "files changed") == null);
     try testing.expect(std.mem.indexOf(u8, simple, "120k") == null);
+}
+
+test "nested Run hover highlights only its heading and output stays readable" {
+    const a = testing.allocator;
+    var screen = try vaxis.Screen.init(a, .{ .cols = 120, .rows = 40, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(a);
+    const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 120, .height = 40, .screen = &screen };
+    var t: Transcript = .{};
+    defer t.deinit(a);
+    try t.startRun(a, "script-body");
+    try t.endRun(a, true, "output-body", 1, .{});
+    const e = &t.entries.items[0];
+    e.open = true;
+    e.details.script_open = true;
+    var input: Editor = .{};
+    defer input.deinit(a);
+    var scroll: Viewport = .{};
+    var text: status.Text = .{};
+    const color: vaxis.Color = .{ .rgb = .{ 18, 18, 18 } };
+    const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .hovered_row = 2, .hover_bg = color }, &text).?;
+    try testing.expectEqualDeep(color, screen.readCell(3, 2).?.style.bg);
+    try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(3, 0).?.style.bg);
+    try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(5, 3).?.style.bg);
+    try testing.expectEqualStrings("o", screen.readCell(5, 3).?.char.grapheme);
+    try testing.expect(!screen.readCell(5, 3).?.style.dim);
+    try testing.expectEqualStrings("s", screen.readCell(5, 6).?.char.grapheme);
+    try testing.expect(!screen.readCell(5, 6).?.style.dim);
+    const history: @import("selection/history.zig").History = .{ .anchor = .{ .entry = 0, .row = 3, .col = 5 }, .end = .{ .entry = 0, .row = 3, .col = 15 } };
+    const copied = try history.text(a, frame, t.entries.items);
+    defer a.free(copied);
+    try testing.expectEqualStrings("output-body", copied);
 }
