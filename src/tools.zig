@@ -592,23 +592,31 @@ test "tool docs are valid JavaScript" {
 }
 
 test "Promise.all runs bash concurrently and await remains sequential" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer testing.allocator.free(root);
     var t: Tools = .{ .io = testing.io, .home = "/home/nobody" };
     defer t.progress.deinit(testing.allocator);
-    const clock = std.Io.Clock.awake;
-    const start = clock.now(testing.io);
-    const parallel = try sandbox.eval(testing.allocator, testing.io,
-        \\await Promise.all([tools.bash({command: "sleep 0.3"}), tools.bash({command: "sleep 0.3"})])
-    , .{}, t.host(), null);
+    const left = try std.fmt.allocPrint(testing.allocator, "touch {s}/left; while [ ! -f {s}/right ]; do sleep 0.01; done", .{ root, root });
+    defer testing.allocator.free(left);
+    const right = try std.fmt.allocPrint(testing.allocator, "touch {s}/right; while [ ! -f {s}/left ]; do sleep 0.01; done", .{ root, root });
+    defer testing.allocator.free(right);
+    const parallel_code = try std.fmt.allocPrint(testing.allocator, "const r = await Promise.all([tools.bash({{command:{f},timeout_ms:5000}}), tools.bash({{command:{f},timeout_ms:5000}})]); if (r.some(x=>x.exit_code!==0)) throw new Error('parallel gate failed');", .{ std.json.fmt(left, .{}), std.json.fmt(right, .{}) });
+    defer testing.allocator.free(parallel_code);
+    const parallel = try sandbox.eval(testing.allocator, testing.io, parallel_code, .{}, t.host(), null);
     defer parallel.deinit(testing.allocator);
-    const middle = clock.now(testing.io);
-    const serial = try sandbox.eval(testing.allocator, testing.io,
-        \\await tools.bash({command: "sleep 0.3"}); await tools.bash({command: "sleep 0.3"})
-    , .{}, t.host(), null);
+    try testing.expect(parallel.ok);
+    const first = try std.fmt.allocPrint(testing.allocator, "printf 'first\\n' > {s}/serial", .{root});
+    defer testing.allocator.free(first);
+    const second = try std.fmt.allocPrint(testing.allocator, "grep -qx first {s}/serial && printf second", .{root});
+    defer testing.allocator.free(second);
+    const serial_code = try std.fmt.allocPrint(testing.allocator, "const a=await tools.bash({{command:{f}}}); const b=await tools.bash({{command:{f}}}); [a.exit_code,b.exit_code,b.output]", .{ std.json.fmt(first, .{}), std.json.fmt(second, .{}) });
+    defer testing.allocator.free(serial_code);
+    const serial = try sandbox.eval(testing.allocator, testing.io, serial_code, .{}, t.host(), null);
     defer serial.deinit(testing.allocator);
-    const end = clock.now(testing.io);
-    try testing.expect(parallel.ok and serial.ok);
-    try testing.expect(start.durationTo(middle).toMilliseconds() < 550);
-    try testing.expect(middle.durationTo(end).toMilliseconds() >= 600);
+    try testing.expect(serial.ok);
+    try testing.expectEqualStrings("[0,0,\"second\"]", serial.text);
 }
 
 test "cancel and deadline join running tools and discard queued calls" {

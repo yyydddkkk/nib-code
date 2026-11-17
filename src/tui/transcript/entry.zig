@@ -146,7 +146,7 @@ pub const Entry = struct {
     fn changesOnly(e: *const Entry) bool {
         if (e.run != .ok or e.hasWarning()) return false;
         const summary = e.tool_summary orelse return false;
-        if (summary.counts.len == 0 or summary.omitted > 0) return false;
+        if (summary.counts.len == 0 or summary.omitted > 0 or summary.failures == null or summary.failures.? > 0) return false;
         for (summary.counts) |call| {
             if (!std.mem.eql(u8, call.name, "edit") and !std.mem.eql(u8, call.name, "write")) return false;
         }
@@ -383,7 +383,7 @@ pub const Entry = struct {
 };
 
 test "expanded edit and write Runs show only changes without hiding failures or other tools" {
-    const edit: ToolSummary = .{ .counts = &.{.{ .name = "edit", .count = 2 }} };
+    const edit: ToolSummary = .{ .counts = &.{.{ .name = "edit", .count = 2 }}, .failures = 0 };
     const cases = [_]struct {
         summary: ?ToolSummary = edit,
         run: @FieldType(Entry, "run") = .ok,
@@ -391,8 +391,10 @@ test "expanded edit and write Runs show only changes without hiding failures or 
         changes_only: bool = false,
     }{
         .{ .changes_only = true },
-        .{ .summary = .{ .counts = &.{.{ .name = "write", .count = 1 }} }, .changes_only = true },
-        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 2 }, .{ .name = "write", .count = 1 } } }, .changes_only = true },
+        .{ .summary = .{ .counts = &.{.{ .name = "write", .count = 1 }}, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 2 }, .{ .name = "write", .count = 1 } }, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = edit.counts, .failures = 1 } },
+        .{ .summary = .{ .counts = edit.counts } },
         .{ .run = .failed },
         .{ .run = .running },
         .{ .run = .warning },

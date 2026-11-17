@@ -179,3 +179,5 @@ stats `bash_superseded` counts selected superseded events, text “Bash superses
 `task_stop` separately records id/reason/stopped without history; TUI reason user requested stop. Tool run_ok/background_id are local restore metadata, not changes to provider bodies.
 
 Custom headers combine `provider:"custom"` and `custom_provider`; cross-custom-id resume rejects. Optional usage `prompt_cache_write_tokens` defaults zero, already included in prompt totals. stats accumulates cache writes where present.
+
+`tool_summary.failures` counts failed retained dispatched calls; use it together with `omitted`. Older summaries omit it; the TUI retains Result and Script when failure status is unknown, including caught tool errors.
