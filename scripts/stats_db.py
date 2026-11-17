@@ -160,16 +160,36 @@ def add_foreground_runs(db, path, line, step, record, messages, at, time_source)
                 [item for item in details if integer(item.get('run_index')) == index], call_id, background_id)
 
 
+def add_background_run(db, path, line, result, background_id, at, time_source):
+    if not isinstance(result, dict):
+        return
+    step, index = integer(result.get('step')), integer(result.get('run_index'))
+    if step is None or step == 0 or index is None:
+        return
+    if db.execute("SELECT 1 FROM runs WHERE session_path = ? AND phase = 'background' "
+                  'AND step = ? AND run_index = ?', (path, step, index)).fetchone():
+        return
+    add_run(db, path, line, step, index, 'background', at, time_source, result,
+            objects(result.get('calls')), background_id=text(background_id))
+
+
 def add_background_runs(db, path, line, messages, at, time_source):
     for message in messages:
-        result = message.get('background_run')
-        if not isinstance(result, dict):
-            continue
-        step, index = integer(result.get('step')), integer(result.get('run_index'))
-        if step is None or step == 0 or index is None:
-            continue
-        add_run(db, path, line, step, index, 'background', at, time_source, result,
-                objects(result.get('calls')), background_id=text(message.get('background_id')))
+        add_background_run(db, path, line, message.get('background_run'),
+                           message.get('background_id'), at, time_source)
+
+
+def session_metadata(record):
+    tuning = record.get('tuning')
+    patches = record.get('patches_off')
+    return dict(
+        at_ms=integer(record.get('at')),
+        **{field: text(record.get(field)) for field in (
+            'parent_session_id', 'cwd', 'nib_version', 'provider', 'model', 'profile', 'system_sha')},
+        tuning=json.dumps(tuning, sort_keys=True) if isinstance(tuning, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in tuning.items()) else None,
+        patches_off=json.dumps(patches) if isinstance(patches, list) and all(
+            isinstance(item, str) for item in patches) else None)
 
 
 def add_step(db, path, line, step, record, messages, at, time_source):
@@ -243,21 +263,17 @@ def import_session(db, path, rebuild=False):
                         invalid += 1
                         continue
                     header = record
-                    tuning = record.get('tuning')
-                    patches = record.get('patches_off')
                     insert(db, 'sessions', dict(
-                        path=key, session_id=path.stem, at_ms=integer(record.get('at')),
-                        **{field: text(record.get(field)) for field in (
-                            'parent_session_id', 'cwd', 'nib_version', 'provider', 'model', 'profile', 'system_sha')},
-                        tuning=json.dumps(tuning, sort_keys=True) if isinstance(tuning, dict) and all(
-                            isinstance(k, str) and isinstance(v, str) for k, v in tuning.items()) else None,
-                        patches_off=json.dumps(patches) if isinstance(patches, list) and all(
-                            isinstance(item, str) for item in patches) else None,
+                        path=key, session_id=path.stem, **session_metadata(record),
                         source_identity=before[0], source_size=before[1], source_mtime_ns=before[2],
                         source_ctime_ns=before[3]))
                     length = len(messages)
                     continue
                 at, time_source = timestamp(record, before[2])
+                background = record.get('background')
+                if isinstance(background, dict) and background.get('kind') == 'run':
+                    add_background_run(db, key, line, background.get('completion'),
+                                       background.get('id'), at, time_source)
                 diagnostic = record.get('diagnostic')
                 if isinstance(diagnostic, dict):
                     insert(db, 'diagnostics', dict(
@@ -270,6 +286,11 @@ def import_session(db, path, rebuild=False):
                 replacement = record['from'] < length
                 length = record['from'] + len(messages)
                 if replacement:
+                    if step == 0 and record['from'] == 0 and messages[0]['role'] == 'system' and 'model' in record:
+                        metadata = session_metadata(record)
+                        assignments = ', '.join(f'{column} = ?' for column in metadata)
+                        db.execute(f'UPDATE sessions SET {assignments} WHERE path = ?',
+                                   (*metadata.values(), key))
                     continue
                 add_background_runs(db, key, line, messages, at, time_source)
                 assistants = sum(message['role'] == 'assistant' for message in messages)

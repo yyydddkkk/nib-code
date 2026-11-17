@@ -8,11 +8,12 @@
   config.toml     Optional nonsecret runtime configuration
   auth.json       Credentials stored by /provider and nib login (mode 0600)
   sessions/       <32-character-lowercase-hex-ID>.jsonl main logs and matching .calls.jsonl recordings
-  stats.sqlite3   Optional metrics index, created only by scripts/stats_db.py
   reflections.md  Completed /reflect answers and issue publication results
 ```
 
 No XDG configuration/data reads, old-file searches, or automatic migration. Users move retained instructions/Sessions themselves. `NIB_HOME` does not change the Codex CLI login nib may import: `$CODEX_HOME/auth.json`, default ~/.codex/auth.json.
+
+`stats.sqlite3` is an optional metrics index created only by `scripts/stats_db.py`; see [SQLite metrics index](stats-sqlite.md).
 
 ## `auth.json`
 

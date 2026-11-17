@@ -171,6 +171,54 @@ class StatsDatabaseTest(unittest.TestCase):
                                         'WHERE sessions.parent_session_id IS NULL').fetchone(), (1,))
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM tool_calls').fetchone(), (2,))
 
+    def test_background_lifecycle_completions_with_tool_delivery(self):
+        for delivery in ('wait', 'fold', 'user_first'):
+            with self.subTest(delivery=delivery):
+                records = self.records()[:3]
+                records[2]['run_results'][0]['background_id'] = 'r1'
+                records[2]['calls'] = []
+                result = dict(step=1, run_index=0, ok=False, run_ms=200, tool_bytes=80,
+                              calls_omitted=1, calls=[dict(name='bash', start_ms=2, end_ms=190,
+                                                          ok=True, run_index=0, result_bytes=80)])
+                lifecycle = dict(background=dict(id='r1', kind='run', state='finished',
+                                                 completion=result), at=5000)
+                if delivery == 'user_first':
+                    records.append(dict({'from': 4}, messages=[dict(
+                        role='user', background_id='r1', background_run=result)], at=5000))
+                elif delivery == 'fold':
+                    records[2]['messages'][1]['content'] += '\n[background result]'
+                records.extend([lifecycle, lifecycle])
+                self.write(records)
+                stats_db.import_session(self.db, self.path, rebuild=True)
+                self.assertEqual(self.db.execute(
+                    'SELECT step, run_index, phase, ok, run_ms, tool_bytes, background_id '
+                    'FROM runs ORDER BY id').fetchall(),
+                    [(1, 0, 'background_start', None, 30, 99, 'r1'),
+                     (1, 0, 'background', 0, 200, 80, 'r1')])
+                self.assertEqual(self.db.execute(
+                    'SELECT name, duration_ms, result_bytes FROM tool_calls').fetchall(),
+                    [('bash', 188, 80)])
+
+    def test_model_switch_before_first_step_replaces_session_metadata(self):
+        records = self.records()
+        replacement = dict(records[0], model='switched', provider='anthropic', profile='other',
+                           system_sha='new-sha', tuning=dict(delivery='tool'),
+                           patches_off=['patch'], at=2500)
+        records.insert(2, replacement)
+        records[3]['from'] = 1
+        records[4]['from'] = 3
+        compacted = dict(replacement, model='not-a-model-switch')
+        records.append(compacted)
+        self.write(records)
+        for rebuild in (False, True):
+            stats_db.import_session(self.db, self.path, rebuild=rebuild)
+            self.assertEqual(self.db.execute(
+                'SELECT model, provider, profile, system_sha, tuning, patches_off, at_ms '
+                'FROM sessions').fetchone(),
+                ('switched', 'anthropic', 'other', 'new-sha', '{"delivery": "tool"}',
+                 '["patch"]', 2500))
+            self.assertEqual(len(self.rows('steps')), 2)
+
     def test_unknown_is_null_not_success_or_zero(self):
         records = self.records()[:3]
         record = records[2]

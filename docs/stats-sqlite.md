@@ -36,13 +36,13 @@ The database uses SQLite's normal rollback journal and a bounded lock timeout. T
 | `tool_calls` | Actual bounded `calls[]` timing details attached to a Run; tool name, start/end/duration, outcome, result bytes, dispatch/background flags and task ID. |
 | `diagnostics` | Provider diagnostic name, attempt count and Step reference, without the diagnostic message. |
 
-`session_path` links rows to `sessions.path`; `tool_calls.run_id` links to `runs.id`. Foreign-key cascades remove old dependent rows on reimport. Internal Run IDs are not stable across reimports. Source lines are 1-based, Step ordinals are 1-based, and Run indices are 0-based. Interrupted assistant records consume an ordinal and have `status='interrupted'`; filter to `status='complete'` for completed-Step analysis. Compaction replacements update the message-history length but do not create new work rows; original execution observations remain.
+`session_path` links rows to `sessions.path`; `tool_calls.run_id` links to `runs.id`. Foreign-key cascades remove old dependent rows on reimport. Internal Run IDs are not stable across reimports. Source lines are 1-based, Step ordinals are 1-based, and Run indices are 0-based. Interrupted assistant records consume an ordinal and have `status='interrupted'`; filter to `status='complete'` for completed-Step analysis. Compaction replacements update the message-history length but do not create new work rows; original execution observations remain. A replacement initialization header before the first Step updates Session configuration labels, so model/provider switches before execution are attributed to the configuration actually used.
 
 Runs have three phases:
 
 - `foreground`: ordinary Run observation from a complete Step. Missing legacy outcomes remain NULL.
 - `background_start`: automatic background handoff, not completion. `ok` is NULL even if a notification says success. Its timing is the foreground wait, not the full execution time.
-- `background`: final `messages[].background_run` completion, referring to the originating Step/index. The separate lifecycle completion envelope is not imported again.
+- `background`: final completion from `messages[].background_run` or a lifecycle `background.completion` envelope, referring to the originating Step/index. Both delivery modes are supported; repeated observations of the same originating Step/index are imported once, using the first completion's timestamp and source line.
 
 Full background execution can overlap other Steps. Do not add background Run durations to Step wall time. A failed Run is not necessarily a failed Step, and `tool_calls.ok` indicates tool settlement, not a bash command's exit status. Parent/child Sessions remain separate; filter `sessions.parent_session_id IS NULL` for roots or group roots and children separately. Do not add child Step time to parent wall time.
 
