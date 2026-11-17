@@ -1020,9 +1020,9 @@ class BackgroundBashTests:
         mock = self.mock("limit")
         process = self.start()
         wait_for(lambda: len(list(self.cwd.glob("*.started"))) == 1)
-        # One command is reused, so eight jobs start and each appends to the same marker.
-        wait_for(lambda: len([e for e in records(next((self.home / "sessions").glob("?" * 32 + ".jsonl")))
-                              if e.get("background", {}).get("state") == "started"]) == 8)
+        # Keep workers blocked until the ninth admission attempt has completed.
+        log = next((self.home / "sessions").glob("?" * 32 + ".jsonl"))
+        wait_for(lambda: any(row.get("run_results") for row in records(log)))
         self.release()
         events = self.finish(process)
         output = next(e["run_end"]["output"] for e in events if "run_end" in e)
