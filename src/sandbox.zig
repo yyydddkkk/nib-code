@@ -195,8 +195,8 @@ pub fn eval(
         }
     }
     errdefer gpa.free(text);
-    if (!ok and std.mem.startsWith(u8, text, "SyntaxError:")) {
-        const annotated = try syntaxContext(gpa, text, code);
+    if (!ok) {
+        const annotated = try sourceContext(gpa, text, code);
         gpa.free(text);
         text = annotated;
     }
@@ -227,7 +227,7 @@ pub fn eval(
 
 const testing = std.testing;
 
-fn syntaxContext(a: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
+fn sourceContext(a: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
     const marker = "<run>:";
     const start = std.mem.indexOf(u8, message, marker) orelse return a.dupe(u8, message);
     var location = std.mem.tokenizeAny(u8, message[start + marker.len ..], ":\r\n )");
@@ -256,11 +256,35 @@ test "syntax errors include original source location and a bounded UTF-8 line" {
     const code = try testing.allocator.alloc(u8, 900);
     defer testing.allocator.free(code);
     for (0..300) |i| @memcpy(code[i * 3 ..][0..3], "你");
-    const message = "SyntaxError: bad\n    at <run>:1:500";
-    const bounded = try syntaxContext(testing.allocator, message, code);
+    const message = "TypeError: bad\n    at <eval> (<run>:1:500)";
+    const bounded = try sourceContext(testing.allocator, message, code);
     defer testing.allocator.free(bounded);
-    try testing.expect(bounded.len < 300);
+    try testing.expect(std.mem.startsWith(u8, bounded, message));
+    try testing.expect(bounded.len <= message.len + "\nsource line 1: …".len + 200 + "…".len);
     try testing.expect(std.unicode.utf8ValidateSlice(bounded));
+}
+
+test "runtime errors retain async stack and include source context" {
+    const code = "await Promise.resolve();\nconst value = null;\nvalue.missing();";
+    const r = try run(code, .{}, null);
+    defer r.deinit(testing.allocator);
+    try testing.expect(!r.ok);
+    try testing.expect(std.mem.startsWith(u8, r.text, "TypeError:"));
+    try testing.expect(std.mem.indexOf(u8, r.text, "<eval> (<run>:3:") != null);
+    try testing.expect(std.mem.endsWith(u8, r.text, "source line 3: value.missing();"));
+}
+
+test "source context preserves errors without a usable source line" {
+    for ([_][]const u8{
+        "TypeError: bad",
+        "TypeError: bad\n    at <eval> (<run>:invalid:2)",
+        "TypeError: bad\n    at <eval> (<run>:0:2)",
+        "TypeError: bad\n    at <eval> (<run>:99:2)",
+    }) |message| {
+        const result = try sourceContext(testing.allocator, message, "const x = 1;");
+        defer testing.allocator.free(result);
+        try testing.expectEqualStrings(message, result);
+    }
 }
 
 test {

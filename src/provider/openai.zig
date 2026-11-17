@@ -13,6 +13,7 @@ const Reply = @import("../provider.zig").Reply;
 const Sink = @import("../provider.zig").Sink;
 const Chunk = struct {
     choices: []const struct {
+        finish_reason: ?[]const u8 = null,
         delta: struct {
             content: ?[]const u8 = null,
             reasoning_content: ?[]const u8 = null,
@@ -125,6 +126,7 @@ pub fn stream(
 
     var usage: Usage = .{};
     var done = false;
+    var finish_tool_calls: ?bool = null;
     while (true) {
         if (cancel.load(.acquire)) return error.Canceled;
         const line = reader.takeDelimiter('\n') catch |err| switch (err) {
@@ -145,6 +147,7 @@ pub fn stream(
         if (sink.timing) |timing| observeTiming(timing, chunk);
         if (chunk.usage) |u| usage = .{ .prompt_tokens = u.prompt_tokens, .completion_tokens = u.completion_tokens, .prompt_cache_hit_tokens = if (u.prompt_tokens_details) |d| d.cached_tokens else u.prompt_cache_hit_tokens, .prompt_cache_write_tokens = if (u.prompt_tokens_details) |d| d.cache_write_tokens else 0 };
         for (chunk.choices) |choice| {
+            if (choice.finish_reason) |reason| finish_tool_calls = std.mem.eql(u8, reason, "tool_calls");
             const d = choice.delta;
             if (d.content) |value| monitor.content(value.len);
             if (d.reasoning_content) |value| monitor.content(value.len);
@@ -174,6 +177,7 @@ pub fn stream(
     }
 
     if (!done) return error.IncompleteResponse;
+    if (finish_tool_calls == true and calls.items.len == 0) return error.InvalidResponse;
     for (calls.items) |p| {
         if (p.id.items.len == 0 or p.name.items.len == 0) return error.InvalidResponse;
     }
