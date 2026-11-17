@@ -589,6 +589,31 @@ class ReplayTests(unittest.TestCase):
             plain = self.command("replay", session, "--all")
             self.assertIn(f"end={end}", plain.stdout)
 
+    def test_large_result_is_complete_in_js_but_recording_and_replay_stay_bounded(self):
+        payload = "x" * (1024 * 1024 + 64)
+        (self.cwd / "large.txt").write_text(payload)
+        session = self.ask([
+            'for(let i=0;i<2;i++) {'
+            'const r=await tools.read({path:"large.txt"});'
+            f'if(r.text.length!=={len(payload)}) throw new Error("short result");'
+            'await tools.write({path:"copy.txt",content:r.text}); }'
+        ])
+        self.assertEqual((self.cwd / "copy.txt").read_text(), payload)
+        calls = [r for r in jsonl(self.calls_path(session)) if r.get("name") == "read"]
+        self.assertEqual(len(calls), 2)
+        raw = json.dumps({"text": payload, "next_offset": None}, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        for call in calls:
+            self.assertTrue(call["truncated"])
+            self.assertEqual(call["sha256"], digest)
+        self.assertEqual(len(calls[0]["result"].encode()), 1024 * 1024)
+        self.assertEqual(calls[1]["result"], {"same_as": digest})
+        (self.cwd / "copy.txt").write_text("unchanged by replay")
+        report = self.replay(session, "--run", "1:0")
+        self.assertTrue(report["incomplete"], report)
+        self.assertIsNone(report["match"], report)
+        self.assertEqual((self.cwd / "copy.txt").read_text(), "unchanged by replay")
+
     def test_reject_text_is_not_deduplicated(self):
         session = self.ask([
             'for(let i=0;i<2;i++){try{await tools.read({path:"missing"});}'

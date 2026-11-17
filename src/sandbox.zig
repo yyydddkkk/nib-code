@@ -821,3 +821,30 @@ test "eval exit records all creations even on top-level errors" {
         try testing.expectEqual(case.delivered, recorder.seq);
     }
 }
+
+test "recording allocation failure does not change native result delivered to JS" {
+    const Echo = struct {
+        fn call(_: *anyopaque, gpa: std.mem.Allocator, _: []const u8, args: []const u8) ToolResult {
+            return .{ .ok = gpa.dupe(u8, args) catch unreachable };
+        }
+    };
+    var context: u8 = 0;
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    var recorder = Recorder.init(failing.allocator(), testing.io, "unused-record-test-path", true);
+    defer recorder.deinit();
+    recorder.begin(1, 0);
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const result = try run("const r=await tools.echo({text:'中'.repeat(400000)}); [r.text.length,r.text.slice(-1)]", .{}, .{
+        .ctx = &context,
+        .names = &.{"echo"},
+        .call = Echo.call,
+        .record = &recorder,
+    });
+    defer result.deinit(testing.allocator);
+    try testing.expect(result.ok);
+    try testing.expectEqualStrings("[400000,\"中\"]", result.text);
+    try testing.expect(!recorder.enabled and recorder.warned);
+    try testing.expectEqual(@as(usize, 0), recorder.seq);
+    try testing.expectEqual(@as(usize, 0), recorder.buffer.items.len);
+}

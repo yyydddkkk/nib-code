@@ -78,10 +78,12 @@ pub const Recorder = struct {
     }
 
     fn line(r: *Recorder, value: anytype) !void {
-        const bytes = try std.json.Stringify.valueAlloc(r.gpa, value, .{ .emit_null_optional_fields = false });
-        defer r.gpa.free(bytes);
-        try r.buffer.appendSlice(r.gpa, bytes);
-        try r.buffer.append(r.gpa, '\n');
+        const start = r.buffer.items.len;
+        var out: std.Io.Writer.Allocating = .fromArrayList(r.gpa, &r.buffer);
+        defer r.buffer = out.toArrayList();
+        errdefer out.writer.end = start;
+        std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &out.writer) catch return error.OutOfMemory;
+        out.writer.writeByte('\n') catch return error.OutOfMemory;
     }
 
     pub fn begin(r: *Recorder, step: usize, run: usize) void {
@@ -473,6 +475,9 @@ test "eval end counts creations including missing highest index and is allocatio
     failing.fail_index = failing.alloc_index;
     r.evalEnd(2);
     try t.expect(r.enabled and r.incomplete);
+    @memset(r.buffer.unusedCapacitySlice(), ' ');
+    r.buffer.items.len = r.buffer.capacity;
+    failing.resize_fail_index = failing.resize_index;
     r.finish(.@"error");
     try t.expect(r.warned and !r.enabled);
     r.evalEnd(2);
@@ -507,4 +512,102 @@ test "concurrent Run recorders flush in completion order and restore retains ear
     try t.expect(std.mem.indexOf(u8, bytes, "\"step\":3") == null);
     try t.expect(std.mem.indexOf(u8, bytes, "\"step\":1") != null);
     try t.expect(std.mem.indexOf(u8, bytes, "\"same_as\":") != null);
+}
+
+test "direct recording lines match valueAlloc bytes including optional fields and escaping" {
+    var r: Recorder = .{ .gpa = t.allocator, .io = t.io, .path = &.{}, .enabled = true };
+    defer r.deinit();
+    inline for (.{
+        .{ .result = "\"quoted\"\n\t\\中", .@"error" = @as(?[]const u8, null), .truncated = false },
+        .{ .result = @as(?[]const u8, null), .@"error" = "denied\x00\r", .truncated = true },
+        .{ .result = .{ .same_as = "0123456789abcdef" }, .args = .{ .path = "a\nb", .limit = 12 } },
+        .{ .step = 7, .run = 2, .meta = .{ .end = "cancelled", .incomplete = @as(?bool, true) } },
+    }) |value| {
+        const expected = try std.json.Stringify.valueAlloc(t.allocator, value, .{ .emit_null_optional_fields = false });
+        defer t.allocator.free(expected);
+        const start = r.buffer.items.len;
+        try r.line(value);
+        try t.expectEqualStrings(expected, r.buffer.items[start .. r.buffer.items.len - 1]);
+        try t.expectEqual('\n', r.buffer.items[r.buffer.items.len - 1]);
+    }
+}
+
+fn lineAllocationFailures(gpa: std.mem.Allocator) !void {
+    var r: Recorder = .{ .gpa = gpa, .io = t.io, .path = &.{}, .enabled = true };
+    defer r.deinit();
+    try r.line(.{ .prefix = true });
+    r.line(.{ .result = &@as([4096]u8, @splat('\n')) }) catch |err| {
+        try t.expectEqualStrings("{\"prefix\":true}\n", r.buffer.items);
+        return err;
+    };
+    try t.expect(std.mem.endsWith(u8, r.buffer.items, "\"}\n"));
+}
+
+test "line allocation failures preserve earlier records and buffer ownership" {
+    try t.checkAllAllocationFailures(t.allocator, lineAllocationFailures, .{});
+}
+
+test "line encoding and newline failures roll back even after growth" {
+    const Broken = struct {
+        pub fn jsonStringify(_: @This(), jw: *std.json.Stringify) !void {
+            try jw.write(&@as([4096]u8, @splat('x')));
+            return error.WriteFailed;
+        }
+    };
+    var failing = t.FailingAllocator.init(t.allocator, .{});
+    var r: Recorder = .{ .gpa = failing.allocator(), .io = t.io, .path = &.{}, .enabled = true };
+    defer r.deinit();
+    try r.line(.{ .prefix = true });
+    try t.expectError(error.OutOfMemory, r.line(Broken{}));
+    try t.expectEqualStrings("{\"prefix\":true}\n", r.buffer.items);
+    const start = r.buffer.items.len;
+    const room = r.buffer.capacity - start;
+    const exact = try t.allocator.alloc(u8, room - 2);
+    defer t.allocator.free(exact);
+    @memset(exact, 'x');
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    try t.expectError(error.OutOfMemory, r.line(exact));
+    try t.expectEqualStrings("{\"prefix\":true}\n", r.buffer.items);
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+    try r.line(.{ .after = true });
+    try t.expectEqualStrings("{\"prefix\":true}\n{\"after\":true}\n", r.buffer.items);
+}
+
+test "capture encoding failure disables child and parent without committing partial record" {
+    var failing = t.FailingAllocator.init(t.allocator, .{});
+    var root: Recorder = .{ .gpa = failing.allocator(), .io = t.io, .path = &.{}, .enabled = true, .loaded = true };
+    defer root.deinit();
+    var child = try root.fork(1, 0);
+    defer child.deinit();
+    child.capture(0, "read", "{}", true, "1");
+    const prefix = try t.allocator.dupe(u8, child.buffer.items);
+    defer t.allocator.free(prefix);
+    // Parsing arguments must succeed before the writer's next growth fails.
+    failing.resize_fail_index = failing.resize_index;
+    failing.fail_index = failing.alloc_index + 1;
+    child.capture(1, "bash", "{}", false, &@as([4096]u8, @splat('\n')));
+    try t.expect(!child.enabled and !child.active and child.warned);
+    try t.expect(!root.enabled and root.warned);
+    try t.expectEqual(@as(usize, 1), child.seq);
+    try t.expectEqualStrings(prefix, child.buffer.items);
+    child.finish(.@"error");
+    child.capture(2, "read", "{}", true, "2");
+    try t.expectEqualStrings(prefix, child.buffer.items);
+    try t.expect(root.file == null);
+}
+
+test "disabled recorder does not allocate parse hash or copy results" {
+    var failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
+    var r = Recorder.init(failing.allocator(), t.io, "unused", false);
+    defer r.deinit();
+    r.begin(1, 0);
+    r.capture(0, "read", "not JSON", true, &@as([4096]u8, @splat('x')));
+    r.evalEnd(1);
+    r.finish(.ok);
+    try t.expectEqual(@as(usize, 0), failing.allocations);
+    try t.expectEqual(@as(usize, 0), r.buffer.items.len);
+    try t.expectEqual(@as(usize, 0), r.seq);
+    try t.expect(!r.warned);
 }

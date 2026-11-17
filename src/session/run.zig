@@ -180,9 +180,14 @@ fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(b
     const cwd = try std.process.currentPathAlloc(s.io, s.gpa);
     defer s.gpa.free(cwd);
     const changes = try job.scope.changes.take(s.gpa, s.arena.allocator(), cwd);
+    return try takeJobResult(job, s.arena.allocator(), changes);
+}
+
+fn takeJobResult(job: *@import("run_job.zig").Job, a: std.mem.Allocator, changes: []const Change) !Ran {
+    const images = try @import("../tools.zig").takeImages(&job.scope.images, job.gpa, a);
     const outcome = job.outcome.?;
     job.outcome = null;
-    return .{ .outcome = outcome, .changes = changes, .images = try @import("../tools.zig").takeImages(&job.scope.images, s.gpa, s.arena.allocator()) };
+    return .{ .outcome = outcome, .changes = changes, .images = images };
 }
 
 test "execute emits per-Run actual tool summaries including empty and overflow" {
@@ -276,4 +281,28 @@ test "patch rejects overlapping matches and applies edits to a copy" {
     const resolved = try patch(a, original, &.{ .{ .old_text = "alpha", .new_text = "gamma" }, .{ .old_text = "gamma beta", .new_text = "delta" } });
     try std.testing.expectEqualStrings("delta", resolved);
     try std.testing.expectEqualStrings("alpha beta", original);
+}
+
+test "image handoff allocation failure leaves Outcome owned by Job" {
+    const t = std.testing;
+    var tools: @import("../tools.zig").Tools = .{ .io = t.io, .home = "/unused" };
+    const job = try @import("run_job.zig").Job.create(&tools, t.allocator, "'complete'", 1, 0, null);
+    defer job.destroy();
+    job.join();
+    const original = job.outcome.?.text;
+    const attachment: Image = .{ .path = "image.png", .name = "image", .media_type = "image/png", .bytes = 24, .width = 1, .height = 1 };
+    try job.scope.images.ensureUnusedCapacity(t.allocator, 1);
+    job.scope.images.appendAssumeCapacity(try attachment.clone(t.allocator));
+    var failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0 });
+    var arena: std.heap.ArenaAllocator = .init(failing.allocator());
+    defer arena.deinit();
+    try t.expectError(error.OutOfMemory, takeJobResult(job, arena.allocator(), &.{}));
+    try t.expect(job.outcome != null);
+    try t.expectEqual(original.ptr, job.outcome.?.text.ptr);
+    try t.expectEqualStrings("\"complete\"", job.outcome.?.text);
+    try t.expectEqual(@as(usize, 0), job.scope.images.items.len);
+    failing.fail_index = std.math.maxInt(usize);
+    const result = try takeJobResult(job, arena.allocator(), &.{});
+    defer result.outcome.deinit(t.allocator);
+    try t.expect(job.outcome == null);
 }
