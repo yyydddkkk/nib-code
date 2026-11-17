@@ -24,7 +24,7 @@ With the top-level `open` key in `config.toml` ([config.md](config.md#open)), fi
 
 Recovery notices come only from the TUI, outside model history. `nib ask` (including non-TTY and NDJSON) adds no notices, preserving output channels and exit codes for scripts. `run_end` adds optional `background_id` to associate automatic background Runs; NDJSON event structure otherwise remains unchanged.
 
-The bottom bar shows only the model and context percentage from existing usage reports; initially, only the model. Without usable credentials it shows `Not signed in` instead of a model, an empty transcript shows `No provider · /provider to sign in`. Turn footers show nonzero Run counts, Steps, total time, tokens, and tool data. Detailed model/Run timing and cache data live in `/status` (local, also available while running).
+The bottom bar shows only the model and context percentage from existing usage reports; initially, only the model. Without usable credentials it shows `Not signed in` instead of a model, an empty transcript shows `No provider · /provider to sign in`. Normal-mode Turn footers show only dim, right-aligned elapsed time. When files changed, their expandable summary shares the row on the left, with a two-row fallback on narrow terminals. Run and Step counts, tokens, tool data, detailed model/Run timing and cache data live in `/status` (local, also available while running).
 
 Sent user messages show `▎ text` with a blue accent and subtle terminal-background-derived shading for light/dark themes. During drag selection, hold the left button and scroll across screens; release copies the complete historical range, including offscreen lines. Bottom following pauses during selection. See [undo.md](undo.md) for `/undo` scope and conflict handling.
 

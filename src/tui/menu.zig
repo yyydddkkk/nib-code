@@ -205,7 +205,8 @@ pub const Menu = struct {
                 const active = std.mem.eql(u8, entry.provider, session.cfg.name()) and std.mem.eql(u8, entry.model, session.cfg.model);
                 choice.* = .{
                     .value = try std.fmt.allocPrint(a, "{s}/{s}", .{ entry.provider, entry.model }),
-                    .label = try std.fmt.allocPrint(a, "{s} · {s}", .{ entry.provider, entry.model }),
+                    .label = entry.model,
+                    .service = entry.provider,
                     .detail = if (active) "current" else "",
                 };
             }
@@ -314,10 +315,12 @@ test "model menu qualifies choices and marks only the active service model" {
     const rows = m.items("/model gpt-6.1-sol");
     try testing.expectEqual(@as(usize, 2), rows.len);
     try testing.expectEqualStrings("openai/gpt-6.1-sol", rows[0].value.?);
-    try testing.expectEqualStrings("openai · gpt-6.1-sol", rows[0].label);
+    try testing.expectEqualStrings("gpt-6.1-sol", rows[0].label);
+    try testing.expectEqualStrings("openai", rows[0].service.?);
     try testing.expectEqualStrings("current", rows[0].detail);
     try testing.expectEqualStrings("local/gpt-6.1-sol", rows[1].value.?);
-    try testing.expectEqualStrings("local · gpt-6.1-sol", rows[1].label);
+    try testing.expectEqualStrings("gpt-6.1-sol", rows[1].label);
+    try testing.expectEqualStrings("local", rows[1].service.?);
     try testing.expectEqualStrings("", rows[1].detail);
 }
 

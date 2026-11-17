@@ -273,6 +273,7 @@ pub const App = struct {
     // turn_end precedes done/failed; append only after their terminal content.
     pending_bill: ?TurnSummary = null,
     last_summary: ?TurnSummary = null,
+    last_turn_runs: usize = 0,
     turn_runs: usize = 0,
     flow: provider_flow.Flow = .{ .gpa = undefined },
     prediction: prediction.State = .{},
@@ -764,9 +765,10 @@ pub const App = struct {
     fn appendBill(app: *App) !void {
         const summary = app.pending_bill orelse return;
         var text: bill.Text = .{};
-        const footer = text.format(summary, app.turn_runs, std.math.maxInt(u16));
+        const footer = text.format(summary, std.math.maxInt(u16));
         if (footer.len > 0) try app.transcript.add(app.gpa, .bill, footer);
         app.last_summary = summary;
+        app.last_turn_runs = app.turn_runs;
         app.pending_bill = null;
     }
 
@@ -1839,7 +1841,7 @@ test "hover changes only between toggleable entries and summary clicks exclude d
     try std.testing.expect(app.transcript.entries.items[0].open);
     app.clickEntry(0, rows);
     try std.testing.expect(app.transcript.entries.items[0].open);
-    _ = try app.handle(.{ .mouse = .{ .col = 3, .row = 7, .type = .motion, .button = .none, .mods = .{} } });
+    _ = try app.handle(.{ .mouse = .{ .col = 3, .row = 8, .type = .motion, .button = .none, .mods = .{} } });
     try std.testing.expectEqual(@as(?usize, null), app.hovered);
 }
 
@@ -1939,19 +1941,20 @@ test "scrolled nested Run headings toggle without collapsing the Run or its sibl
     try app.transcript.endRun(a, true, "result-body", 1, .{});
     const e = &app.transcript.entries.items[0];
     e.open = true;
+    e.details.open = true;
     _ = e.print(app.body.?.window.child(.{ .y_off = -2 }), true);
-    _ = try app.handle(mouseEvent(5, 3, .motion));
+    _ = try app.handle(mouseEvent(5, 2, .motion));
     try std.testing.expectEqual(@as(?usize, 0), app.hovered);
-    try std.testing.expectEqual(@as(?u16, 5), app.hovered_row);
-    _ = try app.handle(mouseEvent(5, 3, .press));
-    _ = try app.handle(mouseEvent(5, 3, .release));
+    try std.testing.expectEqual(@as(?u16, 4), app.hovered_row);
+    _ = try app.handle(mouseEvent(5, 2, .press));
+    _ = try app.handle(mouseEvent(5, 2, .release));
     try std.testing.expect(e.open and e.details.script_open);
     try std.testing.expect(e.details.result_open == null);
     try std.testing.expectEqual(@as(u16, 2), app.scroll.top.?.row);
-    app.clickEntry(0, 6);
+    app.clickEntry(0, 5);
     try std.testing.expect(e.open and e.details.script_open);
-    _ = try app.handle(mouseEvent(5, 3, .press));
-    _ = try app.handle(mouseEvent(9, 3, .drag));
+    _ = try app.handle(mouseEvent(5, 2, .press));
+    _ = try app.handle(mouseEvent(9, 2, .drag));
     try std.testing.expect(app.selection.dragged);
     try std.testing.expect(app.selection.takeClick() == null);
     try std.testing.expect(e.details.script_open);

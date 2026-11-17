@@ -1,4 +1,5 @@
 const std = @import("std");
+const vaxis = @import("vaxis");
 const Change = @import("../../tools/diff.zig").Change;
 const max_diff_lines = @import("entry.zig").max_diff_lines;
 const File = @import("../../tools/changes.zig").Recovery.File;
@@ -34,7 +35,7 @@ pub fn turnChanges(gpa: std.mem.Allocator, files: []const File) !?TurnChanges {
     for (files) |f| {
         added += f.added;
         removed += f.removed;
-        path_width = @max(path_width, std.unicode.utf8CountCodepoints(f.path) catch f.path.len);
+        path_width = @max(path_width, vaxis.gwidth.gwidth(f.path, .unicode));
         if (f.added > 0) added_width = @max(added_width, 1 + digits(f.added));
     }
     var head: std.Io.Writer.Allocating = .init(gpa);
@@ -48,7 +49,7 @@ pub fn turnChanges(gpa: std.mem.Allocator, files: []const File) !?TurnChanges {
     errdefer rows.deinit();
     for (files, 0..) |f, i| {
         if (i > 0) try rows.writer.writeByte('\n');
-        const shown = std.unicode.utf8CountCodepoints(f.path) catch f.path.len;
+        const shown = vaxis.gwidth.gwidth(f.path, .unicode);
         try rows.writer.print("  {s}", .{f.path});
         if (f.added == 0 and f.removed == 0) continue;
         try rows.writer.splatByteAll(' ', path_width - shown + 2);
@@ -101,6 +102,12 @@ pub const ChangeText = struct {
 
     pub const FileDiff = struct {
         header: []u8,
+        path_len: usize,
+        added: usize,
+        removed: usize,
+        created: bool,
+        added_label: [32]u8 = undefined,
+        removed_label: [32]u8 = undefined,
         diff: []u8,
         open: ?bool = null,
 
@@ -123,7 +130,7 @@ pub const ChangeText = struct {
         for (changes, files) |c, *f| {
             const header = try std.fmt.allocPrint(gpa, "{s}{s} +{d} −{d}", .{ c.path, if (c.created) " (new)" else "", c.added, c.removed });
             errdefer gpa.free(header);
-            f.* = .{ .header = header, .diff = try gpa.dupe(u8, c.diff) };
+            f.* = .{ .header = header, .path_len = c.path.len, .added = c.added, .removed = c.removed, .created = c.created, .diff = try gpa.dupe(u8, c.diff) };
             initialized += 1;
         }
         var summary: std.ArrayList(u8) = .empty;
@@ -176,7 +183,7 @@ pub const ChangeText = struct {
         for (c.files, files) |f, *copy| {
             const header = try gpa.dupe(u8, f.header);
             errdefer gpa.free(header);
-            copy.* = .{ .header = header, .diff = try gpa.dupe(u8, f.diff), .open = f.open };
+            copy.* = .{ .header = header, .path_len = f.path_len, .added = f.added, .removed = f.removed, .created = f.created, .diff = try gpa.dupe(u8, f.diff), .open = f.open };
             initialized += 1;
         }
         return .{ .summary = summary, .file_count = c.file_count, .diff = diff, .preview = preview, .files = files };

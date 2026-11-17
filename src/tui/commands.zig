@@ -87,6 +87,7 @@ pub const Choice = struct {
     value: []const u8,
     label: []const u8,
     detail: []const u8,
+    service: ?[]const u8 = null,
 };
 
 pub const Candidate = struct {
@@ -95,6 +96,7 @@ pub const Candidate = struct {
     value: ?[]const u8 = null,
     label: []const u8,
     detail: []const u8,
+    service: ?[]const u8 = null,
     /// An `@` file completion: `value` is the text that replaces the mention.
     is_path: bool = false,
 
@@ -161,7 +163,7 @@ pub fn candidates(input: []const u8, sessions: []const Choice, tasks: []const Ch
         if (n == out.len) break;
         const model = if (command == .model) choice.value[(if (std.mem.indexOfScalar(u8, choice.value, '/')) |slash| slash + 1 else 0)..] else "";
         if (!std.mem.startsWith(u8, choice.value, arg) and !(command == .model and std.mem.startsWith(u8, model, arg))) continue;
-        out[n] = .{ .command = command, .value = choice.value, .label = choice.label, .detail = choice.detail };
+        out[n] = .{ .command = command, .value = choice.value, .label = choice.label, .detail = choice.detail, .service = choice.service };
         n += 1;
     }
     return out[0..n];
@@ -269,7 +271,7 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             var credential_arena: std.heap.ArenaAllocator = .init(gpa);
             defer credential_arena.deinit();
             const arena_a = credential_arena.allocator();
-            try app.report(.info, "Provider {s} · {s} · {s} · effort {s} · context {d}%\n{s}", .{ app.cfg.name(), app.cfg.model, auth.describe(arena_a, app.io, app.cfg), app.cfg.effectiveEffort(), app.context * 100 / @max(app.cfg.context_window, 1), if (app.last_summary) |summary| text.details(summary) else "No completed turn yet." });
+            try app.report(.info, "Provider {s} · {s} · {s} · effort {s} · context {d}%\n{s}", .{ app.cfg.name(), app.cfg.model, auth.describe(arena_a, app.io, app.cfg), app.cfg.effectiveEffort(), app.context * 100 / @max(app.cfg.context_window, 1), if (app.last_summary) |summary| text.details(summary, app.last_turn_runs) else "No completed turn yet." });
         },
         .plugins => {
             var arena: std.heap.ArenaAllocator = .init(gpa);

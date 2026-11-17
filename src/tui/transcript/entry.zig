@@ -35,6 +35,7 @@ pub const Entry = struct {
     text: std.ArrayList(u8) = .empty,
     /// For `.run`: the complete result delivered by Session.
     output: std.ArrayList(u8) = .empty,
+    turn_time: std.ArrayList(u8) = .empty,
     hook_notice: std.ArrayList(u8) = .empty,
     /// For `.run`: see `ChangeText`.
     changes: ChangeText = .{},
@@ -78,6 +79,7 @@ pub const Entry = struct {
         if (e.tool_summary) |summary| summary.deinit(gpa);
         e.text.deinit(gpa);
         e.output.deinit(gpa);
+        e.turn_time.deinit(gpa);
         e.hook_notice.deinit(gpa);
         e.label.deinit(gpa);
         e.files.deinit(gpa);
@@ -186,7 +188,8 @@ pub const Entry = struct {
         }
         if (e.kind == .user and win.width >= 4) return e.printUser(win, commit);
         if (e.kind == .bill) {
-            _ = win.print(&.{.{ .text = bill.fit(e.text.items, win.width), .style = .{ .dim = true } }}, .{ .wrap = .none, .commit = commit });
+            const time = bill.fit(e.text.items, win.width);
+            _ = win.child(.{ .x_off = win.width -| win.gwidth(time) }).printSegment(.{ .text = time, .style = .{ .dim = true } }, .{ .wrap = .none, .commit = commit });
             return 1;
         }
         var segs: [max_segments]vaxis.Segment = undefined;
@@ -265,11 +268,29 @@ pub const Entry = struct {
     fn printChanges(e: *const Entry, win: vaxis.Window, commit: bool) u16 {
         const dim: vaxis.Style = .{ .dim = true };
         _ = win.print(&.{.{ .text = e.label.items, .style = dim }}, .{ .wrap = .none, .commit = commit });
-        if (!e.open) return 1;
         var rows: u16 = 1;
+        const time = bill.fit(e.turn_time.items, win.width);
+        if (time.len > 0) {
+            const fits = @as(u32, win.gwidth(e.label.items)) + win.gwidth(time) + 2 <= win.width;
+            _ = win.child(.{ .x_off = win.width - win.gwidth(time), .y_off = if (fits) 0 else 1, .height = 1 }).printSegment(.{ .text = time, .style = dim }, .{ .wrap = .none, .commit = commit });
+            if (!fits) rows += 1;
+        }
+        if (!e.open) return rows;
         var lines = std.mem.splitScalar(u8, e.text.items, '\n');
         while (lines.next()) |line| : (rows +|= 1) {
-            _ = win.child(.{ .y_off = rows }).printSegment(.{ .text = line, .style = dim }, .{ .wrap = .none, .commit = commit });
+            const added_at = std.mem.lastIndexOf(u8, line, " +");
+            const removed_at = std.mem.lastIndexOf(u8, line, " −");
+            const counts_at = @min(added_at orelse line.len, removed_at orelse line.len);
+            const path_end = std.mem.trimEnd(u8, line[0..counts_at], " ").len;
+            const leaf = if (std.mem.lastIndexOfScalar(u8, line[0..path_end], '/')) |at| at + 1 else 0;
+            const removed_start = if (removed_at) |at| at + 1 else line.len;
+            _ = win.child(.{ .y_off = rows }).print(&.{
+                .{ .text = line[0..leaf], .style = dim },
+                .{ .text = line[leaf..path_end] },
+                .{ .text = line[path_end..counts_at], .style = dim },
+                .{ .text = line[counts_at..removed_start], .style = .{ .fg = .{ .index = 2 } } },
+                .{ .text = line[removed_start..], .style = .{ .fg = .{ .index = 1 } } },
+            }, .{ .wrap = .none, .commit = commit });
         }
         return rows;
     }
@@ -408,6 +429,7 @@ test "expanded edit and write Runs show only changes without hiding failures or 
             try e.hook_notice.appendSlice(std.testing.allocator, c.notice);
             e.changes = try .init(std.testing.allocator, &.{.{ .path = "a.zig", .added = 1, .removed = 1, .diff = "-before\n+after\n" }});
             try std.testing.expectEqual(c.changes_only, e.changesOnly());
+            e.details.open = true;
             e.details.result_open = true;
             e.details.script_open = true;
             var screen = try vaxis.Screen.init(std.testing.allocator, .{ .cols = 120, .rows = 40, .x_pixel = 0, .y_pixel = 0 });

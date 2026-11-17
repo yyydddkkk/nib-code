@@ -132,7 +132,8 @@ class Terminal:
                 visible = "\n".join(screen(self.output, 120, 32))
                 start = visible.rfind(text)
                 return (start >= 0 and
-                        re.search(r"\d+ steps?.*?tokens", visible[start + len(text):], re.S))
+                        re.search(r"(?m)^ *(?:\d+ files? changed(?: · [^\n]*?)? +)?(?:<1s|(?:\d+h)?(?:\d+m)?\d+s) *$",
+                                  visible[start + len(text):]))
             if not self.output_changed.wait_for(rendered, timeout=10):
                 raise AssertionError((text, self.child.poll(), screen(self.output, 120, 32)))
 

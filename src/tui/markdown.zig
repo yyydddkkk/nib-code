@@ -506,7 +506,7 @@ fn printLine(win: vaxis.Window, line: Line, theme: Theme, commit: bool) u16 {
     const row = win.child(.{ .y_off = top });
     const used = switch (line.kind) {
         .code => printCode(row, line.text, .{ .lang = line.lang, .lex = line.lex }, theme, commit),
-        .heading => printProse(row, line.text, .{ .bold = true, .fg = .{ .index = 4 } }, theme, commit),
+        .heading => printProse(row, line.text, .{ .bold = true }, theme, commit),
         .quote => printQuote(row, line.text, theme, commit),
         .table => printTable(row, line.text, theme, commit),
         .prose, .list, .other => printProse(row, line.text, .{}, theme, commit),
@@ -681,7 +681,7 @@ test "no paragraph gap around lists, quotes, headings, code and tables" {
     });
 }
 
-test "headings keep bold blue and get one blank row above except first" {
+test "headings keep bold default foreground and get one blank row above except first" {
     const a = testing.allocator;
     var shot: Shot = undefined;
     try shot.init(a, 20);
@@ -689,7 +689,7 @@ test "headings keep bold blue and get one blank row above except first" {
     try testing.expectEqual(@as(u16, 5), drawText(&shot, "# Top\nintro\n## Title\nbody", .{}));
     try shot.expect(a, &.{ "Top", "intro", "", "Title", "body" });
     try testing.expect(shot.cell(0, 0).style.bold);
-    try testing.expectEqual(vaxis.Color{ .index = 4 }, shot.cell(0, 3).style.fg);
+    try testing.expectEqual(vaxis.Color.default, shot.cell(0, 3).style.fg);
     try testing.expect(!shot.cell(0, 1).style.bold);
 }
 
