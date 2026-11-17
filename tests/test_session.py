@@ -291,8 +291,8 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         summary_home = tmp / "summary-home"
         (cwd / "summary.txt").write_text("old")
         for prompt, expected in [
-                ("run_summary_test", {"counts": [{"name": "edit", "count": 1}, {"name": "bash", "count": 1}], "omitted": 0, "files": []}),
-                ("run_summary_overflow", {"counts": [{"name": "read", "count": 200}], "omitted": 3, "files": [{"tool": "read", "path": "summary.txt"}]})]:
+                ("run_summary_test", {"counts": [{"name": "edit", "count": 1}, {"name": "bash", "count": 1}], "omitted": 0, "failures": 0, "files": []}),
+                ("run_summary_overflow", {"counts": [{"name": "read", "count": 200}], "omitted": 3, "failures": 0, "files": [{"tool": "read", "path": "summary.txt"}]})]:
             summary_events = events(ask("--json", prompt, overrides={"NIB_HOME": str(summary_home)}))
             run_end = next(event["run_end"] for event in summary_events if "run_end" in event)
             assert run_end["tool_summary"] == expected, run_end

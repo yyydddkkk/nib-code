@@ -154,6 +154,18 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(any("source" in r for r in foreign_records))
         self.assertTrue(any(s.get("base") == "3:0" and 'console.log("fixed")' in s["code"] for s in sources))
 
+    def test_patch_rerun_with_hook_records(self):
+        (self.home / "config.toml").write_text('[hooks]\nafter_edit = ["true"]\nturn_end = ["true"]\n')
+        code = 'await tools.write({path: "edited", content: "before"}); throw new Error("hook repair")'
+        session = self.ask([code])
+        self.ask([{"base": "1:0", "edits": [{"old_text": 'throw new Error("hook repair")',
+                                              "new_text": 'await tools.write({path: "edited", content: "after"})'}]}],
+                 resume=session)
+        self.assertEqual((self.cwd / "edited").read_text(), "after")
+        report = self.replay(session, "--all")
+        self.assertEqual(report["matched"], 2, report)
+        self.assertEqual(report["divergences"], 0, report)
+
     def test_pending_source_rejected_then_background_failure_repaired(self):
         (self.home / "config.toml").write_text("[limits]\nrun_background_after_ms = 50\n")
         code = 'await tools.sleep(300); throw new Error("background failure")'

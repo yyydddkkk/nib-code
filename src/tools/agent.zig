@@ -124,6 +124,11 @@ pub fn execute(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *con
     for (cfg.mcp_servers) |server| {
         if (!server.enabled) continue;
         try mcp_env.appendSlice(gpa, server.env);
+        for (server.env_bindings) |binding| {
+            const names = try @import("../mcp/templates.zig").references(gpa, binding.value);
+            defer gpa.free(names);
+            try mcp_env.appendSlice(gpa, names);
+        }
         if (server.header_env) |name| try mcp_env.append(gpa, name);
     }
     const result = process.run(gpa, t.io, .{

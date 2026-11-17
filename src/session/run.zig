@@ -260,10 +260,20 @@ fn patch(a: std.mem.Allocator, original: []const u8, edits: []const Edit) ![]con
     var code = original;
     for (edits) |edit| {
         if (edit.old_text.len == 0) return error.EmptyOldText;
-        const count = std.mem.count(u8, code, edit.old_text);
-        if (count == 0) return error.OldTextNotFound;
-        if (count != 1) return error.AmbiguousOldText;
+        const first = std.mem.indexOf(u8, code, edit.old_text) orelse return error.OldTextNotFound;
+        if (std.mem.indexOfPos(u8, code, first + 1, edit.old_text) != null) return error.AmbiguousOldText;
         code = try std.mem.replaceOwned(u8, a, code, edit.old_text, edit.new_text);
     }
     return code;
+}
+
+test "patch rejects overlapping matches and applies edits to a copy" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.AmbiguousOldText, patch(a, "aaa", &.{.{ .old_text = "aa", .new_text = "b" }}));
+    const original = "alpha beta";
+    const resolved = try patch(a, original, &.{ .{ .old_text = "alpha", .new_text = "gamma" }, .{ .old_text = "gamma beta", .new_text = "delta" } });
+    try std.testing.expectEqualStrings("delta", resolved);
+    try std.testing.expectEqualStrings("alpha beta", original);
 }

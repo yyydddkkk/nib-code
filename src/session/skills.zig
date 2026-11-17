@@ -1,6 +1,25 @@
 const std = @import("std");
 const trim = std.mem.trim;
-pub const Skill = struct { name: []const u8, description: []const u8, location: []const u8, disabled: bool = false };
+pub const Skill = struct { name: []const u8, description: []const u8, location: []const u8, disabled: bool = false, plugin_root: ?[]const u8 = null, command: bool = false };
+
+pub fn copy(a: std.mem.Allocator, entries: []const Skill) ![]Skill {
+    const out = try a.alloc(Skill, entries.len);
+    for (entries, out) |skill, *item| {
+        item.* = skill;
+        item.name = try a.dupe(u8, skill.name);
+        item.description = try a.dupe(u8, skill.description);
+        item.location = try a.dupe(u8, skill.location);
+        if (skill.plugin_root) |root| item.plugin_root = try a.dupe(u8, root);
+    }
+    return out;
+}
+
+pub fn commandSkill(text: []const u8, found: []const Skill) ?Skill {
+    if (text.len < 2 or text[0] != '/') return null;
+    const end = std.mem.indexOfAny(u8, text, " \t\n") orelse text.len;
+    for (found) |skill| if (skill.plugin_root != null and std.mem.eql(u8, skill.name, text[1..end])) return skill;
+    return null;
+}
 pub const Diagnostic = struct { path: []const u8, reason: []const u8 };
 pub const Summary = struct { count: usize = 0, found: usize = 0, missing: usize = 0, skipped: []const Diagnostic = &.{} };
 pub const Result = struct { skills: []Skill, summary: Summary };
@@ -154,7 +173,7 @@ pub fn select(a: std.mem.Allocator, found: Result, settings: []const []const u8)
     var selected: std.ArrayList(Skill) = .empty;
     var summary = found.summary;
     for (found.skills) |skill| {
-        if (!skill.disabled and enabled(settings, skill.name)) try selected.append(a, skill);
+        if (!skill.disabled and (skill.plugin_root != null or enabled(settings, skill.name))) try selected.append(a, skill);
     }
     for (settings) |name| {
         const exists = for (found.skills) |skill| {
@@ -188,7 +207,13 @@ pub fn append(a: std.mem.Allocator, base: []const u8, skills: []const Skill) ![]
         try escape(a, &out, skill.description);
         try out.appendSlice(a, "</description>\n    <location>");
         try escape(a, &out, skill.location);
-        try out.appendSlice(a, "</location>\n  </skill>\n");
+        try out.appendSlice(a, "</location>");
+        if (skill.plugin_root) |root| {
+            try out.appendSlice(a, "\n    <plugin_root>");
+            try escape(a, &out, root);
+            try out.appendSlice(a, "</plugin_root>");
+        }
+        try out.appendSlice(a, "\n  </skill>\n");
     }
     try out.appendSlice(a, "</available_skills>");
     return out.items;
@@ -252,7 +277,7 @@ test "discovery overrides, symlinks and empty prompt" {
 }
 
 fn isNameChar(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == ':';
 }
 
 /// A `$name` word ending at `cursor`: `$` at the start or after whitespace, then name characters.
@@ -289,6 +314,7 @@ pub fn mentioned(a: std.mem.Allocator, text: []const u8, found: []const Skill) !
 }
 
 fn body(text: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, text, "---\n") and !std.mem.startsWith(u8, text, "---\r\n")) return text;
     var offset: usize = 0;
     var fences: u8 = 0;
     while (offset < text.len) {
@@ -312,17 +338,36 @@ pub fn typed(content: []const u8) []const u8 {
 }
 
 pub fn expand(io: std.Io, a: std.mem.Allocator, text: []const u8, found: []const Skill) ![]const u8 {
-    const used = try mentioned(a, text, found);
+    var used = try mentioned(a, text, found);
+    const invoked = commandSkill(text, found);
+    if (invoked) |skill| {
+        const already = for (used) |item| {
+            if (std.mem.eql(u8, item.name, skill.name)) break true;
+        } else false;
+        if (!already) used = try std.mem.concat(a, Skill, &.{ &.{skill}, used });
+    }
     if (used.len == 0) return text;
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a, text);
     var first = true;
     for (used) |skill| {
         const raw = std.Io.Dir.cwd().readFileAlloc(io, skill.location, a, .limited(64 * 1024)) catch continue;
-        _ = parse(a, raw, skill.name, skill.location) catch continue;
+        if (!skill.command) _ = parse(a, raw, skill.name, skill.location) catch continue;
+        var content = body(raw);
+        if (skill.plugin_root) |root| content = try std.mem.replaceOwned(u8, a, content, "${CLAUDE_PLUGIN_ROOT}", root);
+        if (invoked) |command| {
+            if (std.mem.eql(u8, command.name, skill.name)) {
+                const end = std.mem.indexOfAny(u8, text, " \t\n") orelse text.len;
+                content = try std.mem.replaceOwned(u8, a, content, "$ARGUMENTS", trim(u8, text[end..], " \t\n"));
+            }
+        }
         if (first) try out.appendSlice(a, mention_intro);
         first = false;
-        try out.print(a, "\n\n<skill name=\"{s}\" location=\"{s}\">\n{s}\n</skill>", .{ skill.name, skill.location, body(raw) });
+        try out.appendSlice(a, "\n\n<skill name=\"");
+        try escape(a, &out, skill.name);
+        try out.appendSlice(a, "\" location=\"");
+        try escape(a, &out, skill.location);
+        try out.print(a, "\">\n{s}\n</skill>", .{content});
     }
     return out.items;
 }
@@ -384,4 +429,24 @@ pub fn source(a: std.mem.Allocator, path: []const u8, home: []const u8, user_hom
         if (std.mem.startsWith(u8, path, dir) and path.len > dir.len and path[dir.len] == '/') return label;
     }
     return path;
+}
+
+test "plugin namespaced mentions and commands share exact matching" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const entries = [_]Skill{
+        .{ .name = "example:review", .description = "review", .location = "/review", .plugin_root = "/plugin" },
+        .{ .name = "example:check", .description = "check", .location = "/check", .plugin_root = "/plugin", .disabled = true, .command = true },
+    };
+    const hits = try mentioned(a, "$example:review $example:review $example:check $example:other", &entries);
+    try t.expectEqual(@as(usize, 2), hits.len);
+    try t.expectEqualStrings("example:review", mentionAt("$example:review", 15).?.query);
+    try t.expectEqualStrings("example:check", commandSkill("/example:check file", &entries).?.name);
+    try t.expect(commandSkill("/example:check-other", &entries) == null);
+    const found = try select(a, .{ .skills = try a.dupe(Skill, &entries), .summary = .{ .found = 2 } }, &.{});
+    try t.expectEqual(@as(usize, 1), found.skills.len);
+    const duplicated = try copy(a, &entries);
+    try t.expectEqualDeep(entries[0], duplicated[0]);
 }

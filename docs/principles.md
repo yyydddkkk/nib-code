@@ -43,7 +43,7 @@ Skills are off until you enable them. Interface text never asks the model to wri
 
 Speed is judged against other agents under the same model, effort, and service tier — never by tuning for benchmark tasks. Changes that trade speed for quality are fine when the data says the trade is worth it. Prefer observed state over guessed thresholds, and mechanisms over prompt rules: rules tend to make models think and write more.
 
-Extension is through skills, command-line tools, MCP servers, and hooks, all off until the user enables them. There is no plugin API.
+Extension is through skills, command-line tools, MCP servers, and hooks, all off until the user enables them. Opt-in [plugin packages](plugins.md) install related skills, commands and MCP definitions together; they reuse existing execution paths, not a plugin runtime API.
 
 ## Not planned
 

@@ -55,6 +55,7 @@ pub const Transport = struct {
             // Explicitly allowlisted server credentials are intentionally passed through.
             for (t.config.env) |name| if (source.get(name)) |v| try env.put(name, v);
         }
+        for (t.config.env_bindings) |binding| try env.put(binding.name, try @import("templates.zig").expand(a, binding.value, t.env));
         const directory = try std.fs.path.join(a, &.{ t.home, "mcp", t.config.id });
         try std.Io.Dir.cwd().createDirPath(t.io, directory);
         var argv: std.ArrayList([]const u8) = .empty;

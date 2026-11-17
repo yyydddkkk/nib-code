@@ -170,6 +170,8 @@ const File = struct {
     skills_end: ?usize = null,
     mcp: std.ArrayList(SkillSetting) = .empty,
     mcp_end: ?usize = null,
+    plugins: std.ArrayList(SkillSetting) = .empty,
+    plugins_end: ?usize = null,
     mcp_servers: std.ArrayList(@import("mcp/config.zig").Server) = .empty,
     top_end: usize = 0,
     limits: provider.Limits = .{},
@@ -302,9 +304,9 @@ fn secretKey(key: []const u8) bool {
 fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u8, detail: *?[]u8) !File {
     var p: Parser = .{ .a = a, .diagnostics = diagnostics, .path = path, .detail = detail };
     var file: File = .{};
-    const Section = enum { chat_completions, codex, limits, skills, sandbox, hooks, provider_dynamic, mcp, mcp_dynamic };
+    const Section = enum { chat_completions, codex, limits, skills, sandbox, hooks, provider_dynamic, mcp, mcp_dynamic, plugins };
     var section: ?Section = null;
-    var seen_sections: [9]bool = @splat(false);
+    var seen_sections: [10]bool = @splat(false);
     var hooks_seen: [2]bool = @splat(false);
     var sandbox_seen: [2]bool = @splat(false);
     var seen: [10][11]bool = @splat(@splat(false));
@@ -329,6 +331,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
             if (!std.mem.startsWith(u8, name, "providers.") and !std.mem.startsWith(u8, name, "mcp.") and secretKey(name)) return p.bad("secrets are not allowed; use NIB_API_KEY or DEEPSEEK_API_KEY (Codex uses CODEX_HOME/auth.json)", .{});
             if (section == .skills) file.skills_end = start;
             if (section == .mcp) file.mcp_end = start;
+            if (section == .plugins) file.plugins_end = start;
             if (section == null) file.top_end = start;
             if (std.mem.startsWith(u8, name, "mcp.")) {
                 const id = name[4..];
@@ -364,11 +367,11 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
         }
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse return p.bad("expected key = value", .{});
         const key = std.mem.trimEnd(u8, line[0..eq], " \t");
-        if (section != .skills and section != .mcp and section != .mcp_dynamic and !std.mem.eql(u8, key, "api_key_env") and secretKey(key)) return p.bad("secrets are not allowed; use NIB_API_KEY or DEEPSEEK_API_KEY (Codex uses CODEX_HOME/auth.json)", .{});
+        if (section != .skills and section != .mcp and section != .plugins and section != .mcp_dynamic and !std.mem.eql(u8, key, "api_key_env") and secretKey(key)) return p.bad("secrets are not allowed; use NIB_API_KEY or DEEPSEEK_API_KEY (Codex uses CODEX_HOME/auth.json)", .{});
         if (key.len == 0) return p.bad("empty key", .{});
         for (key) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return p.bad("expected a bare key (dotted and quoted keys are unsupported)", .{});
-        if (section == .skills or section == .mcp) {
-            const switches = if (section == .skills) &file.skills else &file.mcp;
+        if (section == .skills or section == .mcp or section == .plugins) {
+            const switches = if (section == .skills) &file.skills else if (section == .mcp) &file.mcp else &file.plugins;
             for (switches.items) |setting| if (std.mem.eql(u8, setting.name, key)) return p.bad("duplicate key '{s}'", .{key});
             const value = std.mem.trimStart(u8, line[eq + 1 ..], " \t");
             var consumed: usize = 0;
@@ -539,6 +542,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
     }
     if (section == .skills) file.skills_end = text.len;
     if (section == .mcp) file.mcp_end = text.len;
+    if (section == .plugins) file.plugins_end = text.len;
     for (file.mcp_servers.items) |*server| {
         if ((server.command == null) == (server.url == null)) return fail(diagnostics, detail, path, server.line, "MCP server requires exactly one of command or url", .{});
         if (server.url != null and (server.args.len > 0 or server.env.len > 0)) return fail(diagnostics, detail, path, server.line, "args and env require command", .{});
@@ -670,6 +674,7 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
     cfg.auth_issuer = if (env.get("NIB_AUTH_ISSUER")) |v| try a.dupe(u8, v) else null;
     cfg.codex_home = if (env.get("CODEX_HOME")) |v| try a.dupe(u8, v) else try std.fs.path.join(a, &.{ env.get("HOME") orelse "", ".codex" });
     cfg.enabled_skills = try enabledSkills(a, file.skills.items);
+    cfg.enabled_plugins = try enabledSkills(a, file.plugins.items);
     inline for (.{ "after_edit", "turn_end" }) |event| {
         const commands = try a.alloc([]const u8, @field(file.hooks, event).len);
         for (@field(file.hooks, event), commands) |command, *copy| copy.* = try a.dupe(u8, command);
@@ -1299,15 +1304,26 @@ pub fn loadMcp(a: Allocator, io: std.Io, home_path: []const u8) ![]const @import
     return (try parse(a, a, text, path, &detail)).mcp_servers.items;
 }
 
+pub fn loadPlugins(a: Allocator, io: std.Io, home_path: []const u8) ![]const SkillSetting {
+    const path = try std.fs.path.join(a, &.{ home_path, "config.toml" });
+    const text = try read(a, io, path);
+    var detail: ?[]u8 = null;
+    return (try parse(a, a, text, path, &detail)).plugins.items;
+}
+
+pub fn savePlugin(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool) !void {
+    return saveSwitch(a, io, home_path, name, enabled, .plugins);
+}
+
 pub fn saveMcp(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool) !void {
-    return saveSwitch(a, io, home_path, name, enabled, true);
+    return saveSwitch(a, io, home_path, name, enabled, .mcp);
 }
 
 pub fn saveSkill(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool) !void {
-    return saveSwitch(a, io, home_path, name, enabled, false);
+    return saveSwitch(a, io, home_path, name, enabled, .skills);
 }
 
-fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool, mcp: bool) !void {
+fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool, section: enum { skills, mcp, plugins }) !void {
     if (name.len == 0) return error.InvalidSkillName;
     for (name) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return error.InvalidSkillName;
     var arena: std.heap.ArenaAllocator = .init(a);
@@ -1320,7 +1336,11 @@ fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8,
     const value = if (enabled) "true" else "false";
     const newline = if (std.mem.indexOf(u8, text, "\r\n") != null) "\r\n" else "\n";
     var out: std.ArrayList(u8) = .empty;
-    const span: ?Span = for (if (mcp) file.mcp.items else file.skills.items) |setting| {
+    const span: ?Span = for (switch (section) {
+        .mcp => file.mcp.items,
+        .skills => file.skills.items,
+        .plugins => file.plugins.items,
+    }) |setting| {
         if (std.mem.eql(u8, name, setting.name)) break setting.span;
     } else null;
     if (span) |range| {
@@ -1328,11 +1348,15 @@ fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8,
         try out.appendSlice(scratch, value);
         try out.appendSlice(scratch, text[range.end..]);
     } else {
-        const section_end = if (mcp) file.mcp_end else file.skills_end;
+        const section_end = switch (section) {
+            .mcp => file.mcp_end,
+            .skills => file.skills_end,
+            .plugins => file.plugins_end,
+        };
         const end = section_end orelse text.len;
         try out.appendSlice(scratch, text[0..end]);
         if (end > 0 and text[end - 1] != '\n') try out.appendSlice(scratch, newline);
-        if (section_end == null) try out.print(scratch, "[{s}]{s}", .{ if (mcp) "mcp" else "skills", newline });
+        if (section_end == null) try out.print(scratch, "[{s}]{s}", .{ @tagName(section), newline });
         try out.print(scratch, "{s} = {s}{s}", .{ name, value, newline });
         try out.appendSlice(scratch, text[end..]);
     }
@@ -1724,4 +1748,25 @@ test "open command template is an optional non-empty top-level string" {
     try t.expect((try resolve(a, &env, "", "test", &detail)).open == null);
     try t.expectEqualStrings("zed {path}:{line}", (try resolve(a, &env, "open = \"zed {path}:{line}\"\n[codex]\n", "test", &detail)).open.?);
     for ([_][]const u8{ "open = \"\"", "open = \"  \"", "open = 3", "open = \"a\"\nopen = \"b\"" }) |text| try t.expectError(error.InvalidConfig, parse(a, a, text, "test", &detail));
+}
+
+test "plugin switches default off and preserve independent skill and MCP settings" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "config.toml", .data = "# retained\n[skills]\nexample = true\n[mcp]\nlocal = false\n" });
+    try t.expectEqual(@as(usize, 0), (try loadPlugins(a, t.io, path)).len);
+    try savePlugin(a, t.io, path, "example", true);
+    try savePlugin(a, t.io, path, "other", false);
+    try t.expect(skillEnabled(try loadPlugins(a, t.io, path), "example"));
+    try t.expect(skillEnabled(try loadSkills(a, t.io, path), "example"));
+    try savePlugin(a, t.io, path, "example", false);
+    try t.expect(!skillEnabled(try loadPlugins(a, t.io, path), "example"));
+    try t.expectError(error.InvalidSkillName, savePlugin(a, t.io, path, "../bad", true));
+    const text = try tmp.dir.readFileAlloc(t.io, "config.toml", a, .limited(4096));
+    try t.expect(std.mem.startsWith(u8, text, "# retained\n[skills]\nexample = true\n[mcp]\nlocal = false\n"));
 }
