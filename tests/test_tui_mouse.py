@@ -112,6 +112,49 @@ def test_click_and_ctrl_o_open_single_runs(tmp):
         assert terminal.child.poll() is None
 
 
+def test_edit_run_shows_only_diff(tmp):
+    code = ('/* edit-script-marker */ console.log(await tools.edit('
+            '{path: "sample.txt", old_text: "before-edit", new_text: "after-edit"}));')
+    replies = [Reply("editing", code=code), Reply("edit-done")]
+    with fixture(tmp, replies) as (terminal, _, __):
+        (tmp / "sample.txt").write_text("before-edit\n")
+        terminal.send("edit the file\r")
+        terminal.wait_turn("edit-done")
+
+        def view():
+            return "\n".join(screen(terminal.read(), 120, 32))
+
+        row = next(i for i, line in enumerate(view().split("\n")) if "Run · edit" in line)
+        terminal.send(mouse(0, 10, row) + mouse(0, 10, row, release=True))
+        wait_for(lambda: "Changes" in view() and "after-edit" in view(), "edit diff opened")
+        for simple in (False, True):
+            if simple:
+                terminal.send("\x13")
+                wait_for(lambda: "context " not in view(), "simple mode")
+            shown = view()
+            assert "before-edit" in shown and "after-edit" in shown, shown
+            assert "Result" not in shown and "Script" not in shown, shown
+            assert "replaced" not in shown and "edit-script-marker" not in shown, shown
+        assert (tmp / "sample.txt").read_text() == "after-edit\n"
+
+
+def test_caught_edit_failure_keeps_result_and_script(tmp):
+    code = ('await tools.edit({path:"sample.txt",old_text:"before",new_text:"after"});'
+            'try { await tools.edit({path:"sample.txt",old_text:"missing",new_text:"unused"}); }'
+            'catch (e) { console.log("caught-edit-error", e.message); }')
+    with fixture(tmp, [Reply("editing", code=code), Reply("caught-edit-done")]) as (terminal, _, __):
+        (tmp / "sample.txt").write_text("before\n")
+        terminal.send("edit the file\r")
+        terminal.wait_turn("caught-edit-done")
+        def view():
+            return "\n".join(screen(terminal.read(), 120, 32))
+        row = next(i for i, line in enumerate(view().split("\n")) if "Run · edit" in line)
+        terminal.send(mouse(0, 10, row) + mouse(0, 10, row, release=True))
+        wait_for(lambda: "Changes" in view(), "caught edit opened")
+        shown = view()
+        assert "Result" in shown and "Script" in shown and "caught-edit-error" in shown, shown
+
+
 def test_simple_mode(tmp):
     replies = [Reply("working", code="/* simple-script */ await tools.bash({command: 'echo done'}); 'done'"), Reply("simple-done"), Reply("second-done")]
     with fixture(tmp, replies) as (terminal, home, env):
@@ -157,6 +200,6 @@ def test_simple_mode(tmp):
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-tui-mouse-") as directory:
-        for test in (test_history_ignores_incomplete_record, test_cross_screen_selection, test_background_report_and_user_card, test_click_and_ctrl_o_open_single_runs, test_simple_mode):
+        for test in (test_history_ignores_incomplete_record, test_cross_screen_selection, test_background_report_and_user_card, test_click_and_ctrl_o_open_single_runs, test_edit_run_shows_only_diff, test_caught_edit_failure_keeps_result_and_script, test_simple_mode):
             test(Path(directory) / test.__name__)
             print(test.__name__ + ": ok")

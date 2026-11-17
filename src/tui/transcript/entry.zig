@@ -143,6 +143,17 @@ pub const Entry = struct {
         return false;
     }
 
+    fn changesOnly(e: *const Entry) bool {
+        if (e.run != .ok or e.hasWarning()) return false;
+        const summary = e.tool_summary orelse return false;
+        if (summary.counts.len == 0 or summary.omitted > 0 or summary.failures == null or summary.failures.? > 0) return false;
+        for (summary.counts) |call| {
+            if (!std.mem.eql(u8, call.name, "edit") and !std.mem.eql(u8, call.name, "write")) return false;
+        }
+        for (summary.files) |file| if (file.failed) return false;
+        return true;
+    }
+
     /// Rows keep their last state; a row is live while its Run runs or its background result is undelivered.
     pub fn isLive(e: *const Entry, p: Progress) bool {
         return e.run == .running or p.background;
@@ -340,6 +351,7 @@ pub const Entry = struct {
                         n += 1;
                     }
                 }
+                if (e.changesOnly()) return segs[0..n];
                 segs[n] = .{ .text = "Result\n", .style = .{ .bold = true, .dim = true } };
                 segs[n + 1] = .{ .text = if (e.output.items.len == 0) "No result" else std.mem.trimEnd(u8, e.output.items, "\n"), .style = if (e.run == .failed) .{ .fg = .{ .index = 1 }, .dim = true } else dim };
                 segs[n + 2] = .{ .text = "\nScript\n", .style = .{ .bold = true, .dim = true } };
@@ -369,3 +381,64 @@ pub const Entry = struct {
         return segs[0..1];
     }
 };
+
+test "expanded edit and write Runs show only changes without hiding failures or other tools" {
+    const edit: ToolSummary = .{ .counts = &.{.{ .name = "edit", .count = 2 }}, .failures = 0 };
+    const cases = [_]struct {
+        summary: ?ToolSummary = edit,
+        run: @FieldType(Entry, "run") = .ok,
+        notice: []const u8 = "",
+        changes_only: bool = false,
+    }{
+        .{ .changes_only = true },
+        .{ .summary = .{ .counts = &.{.{ .name = "write", .count = 1 }}, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 2 }, .{ .name = "write", .count = 1 } }, .failures = 0 }, .changes_only = true },
+        .{ .summary = .{ .counts = edit.counts, .failures = 1 } },
+        .{ .summary = .{ .counts = edit.counts } },
+        .{ .run = .failed },
+        .{ .run = .running },
+        .{ .run = .warning },
+        .{ .notice = "after-edit hook failed" },
+        .{ .summary = .{ .counts = edit.counts, .files = &.{.{ .tool = "edit", .path = "a.zig", .failed = true }} } },
+        .{ .summary = .{ .counts = &.{ .{ .name = "edit", .count = 1 }, .{ .name = "bash", .count = 1 } } } },
+        .{ .summary = .{ .counts = &.{ .{ .name = "read", .count = 1 }, .{ .name = "edit", .count = 1 } } } },
+        .{ .summary = .{ .counts = edit.counts, .omitted = 1 } },
+        .{ .summary = .{} },
+        .{ .summary = null },
+    };
+    for (cases) |c| {
+        for ([_]bool{ false, true }) |simple| {
+            var e: Entry = .{ .kind = .run, .open = true, .simple = simple, .run = c.run, .tool_summary = c.summary };
+            defer {
+                e.tool_summary = null;
+                e.deinit(std.testing.allocator);
+            }
+            try e.text.appendSlice(std.testing.allocator, "edit-script");
+            try e.output.appendSlice(std.testing.allocator, "edit-result");
+            try e.hook_notice.appendSlice(std.testing.allocator, c.notice);
+            e.changes = try .init(std.testing.allocator, &.{.{ .path = "a.zig", .added = 1, .removed = 1, .diff = "-before\n+after\n" }});
+            var segs: [max_segments]vaxis.Segment = undefined;
+            const shown = e.segments(&segs);
+            try std.testing.expectEqualStrings("Changes\n", shown[4].text);
+            var has_diff = false;
+            for (shown) |seg| {
+                if (std.mem.indexOf(u8, seg.text, "+after") != null) has_diff = true;
+                if (c.changes_only) {
+                    try std.testing.expect(!std.mem.eql(u8, seg.text, "Result\n"));
+                    try std.testing.expect(!std.mem.eql(u8, seg.text, "\nScript\n"));
+                    try std.testing.expect(!std.mem.eql(u8, seg.text, "edit-result"));
+                    try std.testing.expect(!std.mem.eql(u8, seg.text, "edit-script"));
+                }
+            }
+            try std.testing.expect(has_diff);
+            if (!c.changes_only) {
+                try std.testing.expectEqualStrings("Result\n", shown[shown.len - 4].text);
+                try std.testing.expectEqualStrings("edit-result", shown[shown.len - 3].text);
+                try std.testing.expectEqualStrings("\nScript\n", shown[shown.len - 2].text);
+                try std.testing.expectEqualStrings("edit-script", shown[shown.len - 1].text);
+            }
+            try std.testing.expectEqualStrings("edit-result", e.output.items);
+            try std.testing.expectEqualStrings("edit-script", e.text.items);
+        }
+    }
+}
