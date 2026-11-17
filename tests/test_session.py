@@ -30,7 +30,7 @@ def replay(path):
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if record.get("repair") or record.get("agent_session") or record.get("bash") or record.get("task_stop"):
+        if record.get("source") or record.get("repair") or record.get("agent_session") or record.get("bash") or record.get("task_stop"):
             continue
         messages = [dict(message) for message in record["messages"]]
         for message in messages:
