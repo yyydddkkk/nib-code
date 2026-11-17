@@ -129,13 +129,15 @@ class Terminal:
         # The bill is appended only after the TUI consumes Turn completion.
         with self.output_changed:
             def rendered():
-                visible = "\n".join(screen(self.output, 120, 32))
+                rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.master, termios.TIOCGWINSZ, b"\0" * 8))
+                visible = "\n".join(screen(self.output, cols, rows))
                 start = visible.rfind(text)
                 return (start >= 0 and
                         re.search(r"(?m)^ *(?:\d+ files? changed(?: · [^\n]*?)? +)?(?:<1s|(?:\d+h)?(?:\d+m)?\d+s) *$",
                                   visible[start + len(text):]))
             if not self.output_changed.wait_for(rendered, timeout=10):
-                raise AssertionError((text, self.child.poll(), screen(self.output, 120, 32)))
+                rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.master, termios.TIOCGWINSZ, b"\0" * 8))
+                raise AssertionError((text, self.child.poll(), screen(self.output, cols, rows)))
 
     def send(self, text):
         os.write(self.master, text.encode())
@@ -371,8 +373,11 @@ def test_tool_bytes_bill(tmp):
         (tmp / "a.txt").write_text("你" * 16000)
         (tmp / "b.txt").write_text("x" * 48000)
         terminal.send("measure tool bytes\r")
-        wait_for(lambda: finished(home, "bytes-final"), "byte measurement final Step")
-        terminal.until("tool data 96kB → 12B".encode())
+        terminal.wait_turn("bytes-final")
+        assert "Tool data" not in "\n".join(screen(terminal.read(), 120, 32))
+        terminal.send("/status\r")
+        terminal.until("Tool data 96kB → 12B".encode())
+        wait_for(lambda: "1 Run · 2 steps" in "\n".join(screen(terminal.read(), 120, 32)), "status Run and Step counts")
         assert terminal.child.poll() is None
         records = [json.loads(line) for path in (home / "sessions").glob("*.jsonl")
                    for line in path.read_text().splitlines()]
