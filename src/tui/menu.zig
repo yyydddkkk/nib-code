@@ -197,11 +197,17 @@ pub const Menu = struct {
         if (std.mem.startsWith(u8, input, "/model ")) {
             _ = m.arena.reset(.retain_capacity);
             const a = m.arena.allocator();
-            const entries = try @import("../config.zig").modelEntries(a, io, session.options.home, session.cfg);
+            var empty_env: std.process.Environ.Map = .init(a);
+            const env = session.options.environ orelse &empty_env;
+            const entries = try @import("../config.zig").modelEntries(a, io, env, session.options.home, session.cfg);
             const choices = try a.alloc(commands.Choice, entries.len);
             for (entries, choices) |entry, *choice| {
-                const active = std.mem.eql(u8, entry.model, session.cfg.model);
-                choice.* = .{ .value = entry.model, .label = entry.model, .detail = if (active) "current" else "" };
+                const active = std.mem.eql(u8, entry.provider, session.cfg.name()) and std.mem.eql(u8, entry.model, session.cfg.model);
+                choice.* = .{
+                    .value = try std.fmt.allocPrint(a, "{s}/{s}", .{ entry.provider, entry.model }),
+                    .label = try std.fmt.allocPrint(a, "{s} · {s}", .{ entry.provider, entry.model }),
+                    .detail = if (active) "current" else "",
+                };
             }
             m.models = choices;
             return;
@@ -287,6 +293,32 @@ test "selection wraps, closing hides the list and editing reopens it" {
     try testing.expect(m.selected("/co") == null);
     m.inputChanged("/c");
     try testing.expectEqualStrings("/copy", m.selected("/c").?.label);
+}
+
+test "model menu qualifies choices and marks only the active service model" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "config.toml", .data = "[providers.local]\nprotocol = \"responses\"\nbase_url = \"http://localhost\"\nmodel = \"gpt-6.1-sol\"\ncontext_window = 1000\n" });
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("HOME", root);
+    try env.put("CODEX_HOME", root);
+    var session: Session = undefined;
+    session.options = .{ .home = root, .user_home = root, .environ = &env };
+    session.cfg = .{ .provider = .openai, .base_url = "", .api_key = "", .model = "gpt-6.1-sol" };
+    var m: Menu = .init(testing.allocator);
+    defer m.deinit();
+    try m.load(testing.io, "/model ", &session);
+    const rows = m.items("/model gpt-6.1-sol");
+    try testing.expectEqual(@as(usize, 2), rows.len);
+    try testing.expectEqualStrings("openai/gpt-6.1-sol", rows[0].value.?);
+    try testing.expectEqualStrings("openai · gpt-6.1-sol", rows[0].label);
+    try testing.expectEqualStrings("current", rows[0].detail);
+    try testing.expectEqualStrings("local/gpt-6.1-sol", rows[1].value.?);
+    try testing.expectEqualStrings("local · gpt-6.1-sol", rows[1].label);
+    try testing.expectEqualStrings("", rows[1].detail);
 }
 
 test "reflection is hidden unless enabled" {

@@ -6,7 +6,7 @@ import tempfile
 import subprocess
 
 from mock_providers import Mock
-from test_interjections import Terminal, wait_for
+from test_interjections import Terminal, wait_for, screen
 
 
 def test_model(tmp):
@@ -29,7 +29,11 @@ def test_model(tmp):
         original = logs()[0].stem
         terminal.send("/model\r")
         terminal.until(b"current")
-        terminal.send("\x15/model openai/gpt-6.1-terra\r")
+        terminal.until(b"gpt-6.1-terra")
+        terminal.until(b"claude-sonnet-5-5")
+        terminal.send("\x15/model gpt-6.1-t")
+        wait_for(lambda: "/model gpt-6.1-t" in "\n".join(screen(terminal.read(), 120, 32)), "model filter")
+        terminal.send("\t\r")
         terminal.until(b"NIB_PROVIDER overrides at startup")
         wait_for(lambda: 'model = "gpt-6.1-terra"' in config.read_text(), "saved model")
         assert [p.stem for p in logs()] == [original]
@@ -37,7 +41,7 @@ def test_model(tmp):
         wait_for(lambda: completed(1), "first committed step")
         terminal.wait_turn("mock answer")
         assert first.requests[-1][2]["model"] == "gpt-6.1-terra"
-        terminal.send("/model anthropic/claude-sonnet-5-5\r")
+        terminal.send("/model anthropic/claude-sonnet-5-5\t\r")
         terminal.until(b"new session")
         wait_for(lambda: len(logs()) == 2, "new session")
         terminal.send("again second\r")

@@ -788,22 +788,41 @@ pub fn saveModel(a: Allocator, io: std.Io, env: *const Env, home_path: []const u
 
 pub const ModelEntry = struct { provider: []const u8, model: []const u8 };
 
-/// Models of the service `cfg` selects: its catalog, or a custom service's configured model.
-pub fn modelEntries(a: Allocator, io: std.Io, home_path: []const u8, cfg: provider.Config) ![]const ModelEntry {
+/// Catalog and configured models of configured or signed-in services, plus the active model.
+pub fn modelEntries(a: Allocator, io: std.Io, env: *const Env, home_path: []const u8, cfg: provider.Config) ![]const ModelEntry {
+    const path = try std.fs.path.join(a, &.{ home_path, "config.toml" });
+    const text = try read(a, io, path);
+    var detail: ?[]u8 = null;
+    const file = try parse(a, a, text, path, &detail);
+    const services = try @import("auth.zig").services(a, io, env, home_path);
     var entries: std.ArrayList(ModelEntry) = .empty;
-    if (cfg.provider == .custom) {
-        const name = cfg.name();
-        for (try customProviders(a, io, home_path)) |item| {
-            if (std.mem.eql(u8, item.id, name)) try entries.append(a, .{ .provider = name, .model = item.model });
-        }
-    } else {
-        const entry = provider.definition(cfg.provider);
-        if (entry.models.len == 0) try entries.append(a, .{ .provider = entry.id, .model = entry.default_model });
-        for (entry.models) |model| try entries.append(a, .{ .provider = entry.id, .model = model.id });
+    for (provider.definitions) |entry| {
+        const configured = for (file.providers.items) |item| {
+            if (std.mem.eql(u8, item.name, entry.id)) break true;
+        } else false;
+        const signed_in = if (@import("auth.zig").find(services, entry.id)) |svc| svc.signed_in else false;
+        const selected = if (file.provider_name) |name| std.mem.eql(u8, name, entry.id) else false;
+        if (!configured and !selected and !signed_in and !std.mem.eql(u8, entry.id, cfg.name())) continue;
+        if (entry.models.len == 0) try appendModel(a, &entries, entry.id, entry.default_model);
+        for (entry.models) |model| try appendModel(a, &entries, entry.id, model.id);
     }
-    for (entries.items) |item| if (std.mem.eql(u8, item.model, cfg.model)) return entries.toOwnedSlice(a);
-    try entries.append(a, .{ .provider = cfg.name(), .model = cfg.model });
+    for (file.providers.items) |item| {
+        if (item.settings.model) |model| try appendModel(a, &entries, item.name, model);
+    }
+    try appendModel(a, &entries, cfg.name(), cfg.model);
+    std.mem.sort(ModelEntry, entries.items, cfg.name(), struct {
+        fn before(current: []const u8, lhs: ModelEntry, rhs: ModelEntry) bool {
+            return std.mem.eql(u8, lhs.provider, current) and !std.mem.eql(u8, rhs.provider, current);
+        }
+    }.before);
     return entries.toOwnedSlice(a);
+}
+
+fn appendModel(a: Allocator, entries: *std.ArrayList(ModelEntry), service: []const u8, model: []const u8) !void {
+    for (entries.items) |item| {
+        if (std.mem.eql(u8, item.provider, service) and std.mem.eql(u8, item.model, model)) return;
+    }
+    try entries.append(a, .{ .provider = service, .model = model });
 }
 
 pub fn saveEffort(a: Allocator, io: std.Io, home_path: []const u8, value: []const u8) !void {
@@ -1495,7 +1514,7 @@ test "model arguments and configuration preserve comments and sections" {
     try t.expect(std.mem.indexOf(u8, changed, "[providers.local]") != null);
 }
 
-test "model entries list only the current service and saving is atomic" {
+test "model entries include configured services and saving is atomic" {
     const t = std.testing;
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
@@ -1512,14 +1531,15 @@ test "model entries list only the current service and saving is atomic" {
     var anthropic_env = try env.clone(a);
     try anthropic_env.put("NIB_PROVIDER", "anthropic");
     const anthropic = try resolve(a, &anthropic_env, custom, "config.toml", &detail);
-    const own = try modelEntries(a, t.io, root, anthropic);
-    try t.expectEqual(@as(usize, 4), own.len);
-    for (own) |entry| try t.expectEqualStrings("anthropic", entry.provider);
+    const own = try modelEntries(a, t.io, &env, root, anthropic);
+    try t.expectEqual(@as(usize, 6), own.len);
+    try t.expectEqualStrings("local", own[4].provider);
+    try t.expectEqualStrings("locked", own[5].provider);
     var local_env = try env.clone(a);
     try local_env.put("NIB_PROVIDER", "local");
     const local = try resolve(a, &local_env, custom, "config.toml", &detail);
-    const listed = try modelEntries(a, t.io, root, local);
-    try t.expectEqual(@as(usize, 1), listed.len);
+    const listed = try modelEntries(a, t.io, &env, root, local);
+    try t.expectEqual(@as(usize, 2), listed.len);
     try t.expectEqualStrings("old", listed[0].model);
     _ = try saveModel(a, t.io, &env, root, .{ .provider = "local", .model = "new" });
     const saved = try tmp.dir.readFileAlloc(t.io, "config.toml", a, .unlimited);
@@ -1532,6 +1552,44 @@ test "model entries list only the current service and saving is atomic" {
     const new_home = try std.fs.path.join(a, &.{ root, "new" });
     _ = try saveModel(a, t.io, &env, new_home, .{ .provider = "openai", .model = null });
     try t.expectEqualStrings("provider = \"openai\"\n[openai]\nmodel = \"gpt-6.1-sol\"\n", try tmp.dir.readFileAlloc(t.io, "new/config.toml", a, .unlimited));
+}
+
+test "model entries merge environment login store and configured models by service" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var env = try envWithHome(a, root);
+    try env.put("OPENAI_API_KEY", "fake");
+    try tmp.dir.createDirPath(t.io, "codex");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "codex/auth.json", .data = "{\"tokens\":{\"access_token\":\"a\",\"account_id\":\"b\"}}" });
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "auth.json", .data = "{\"keys\":{\"xai\":\"stored-fake\"}}" });
+    const text = "[anthropic]\nmodel = \"claude-private\"\ncontext_window = 1000\n[providers.local]\nprotocol = \"responses\"\nbase_url = \"http://localhost\"\nmodel = \"gpt-6.1-sol\"\ncontext_window = 1000\n";
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "config.toml", .data = text });
+    const cfg: provider.Config = .{ .provider = .openai, .base_url = "", .api_key = "", .model = "gpt-6.1-sol" };
+    const entries = try modelEntries(a, t.io, &env, root, cfg);
+    var openai_count: usize = 0;
+    var local_count: usize = 0;
+    var codex_count: usize = 0;
+    var xai_count: usize = 0;
+    var private_count: usize = 0;
+    for (entries) |entry| {
+        try t.expect(!std.mem.eql(u8, entry.provider, "deepseek"));
+        try t.expect(!std.mem.eql(u8, entry.provider, "chat_completions"));
+        if (std.mem.eql(u8, entry.provider, "openai")) openai_count += 1;
+        if (std.mem.eql(u8, entry.provider, "local")) local_count += 1;
+        if (std.mem.eql(u8, entry.provider, "codex")) codex_count += 1;
+        if (std.mem.eql(u8, entry.provider, "xai")) xai_count += 1;
+        if (std.mem.eql(u8, entry.model, "claude-private")) private_count += 1;
+    }
+    try t.expectEqual(provider.definition(.openai).models.len, openai_count);
+    try t.expectEqual(@as(usize, 1), local_count);
+    try t.expectEqual(provider.definition(.codex).models.len, codex_count);
+    try t.expectEqual(provider.definition(.xai).models.len, xai_count);
+    try t.expectEqual(@as(usize, 1), private_count);
 }
 
 fn envWithHome(a: Allocator, root: []const u8) !Env {

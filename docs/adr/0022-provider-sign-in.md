@@ -5,11 +5,11 @@ date: 2026-11-06
 
 # Provider sign-in: `/provider`, a credential store, nib-owned Codex OAuth
 
-**Decision:** Choosing a service and signing in move to `/provider`; `/model` lists only the current service's models. nib keeps its own credentials in `$NIB_HOME/auth.json` and signs in to ChatGPT itself, instead of borrowing the Codex CLI's login. Claude subscriptions are not supported; Anthropic uses API keys only.
+**Decision:** Choosing a service and signing in move to `/provider`; `/model` lists configured or signed-in services' models with their service names, and selecting a row switches both service and model. nib keeps its own credentials in `$NIB_HOME/auth.json` and signs in to ChatGPT itself, instead of borrowing the Codex CLI's login. Claude subscriptions are not supported; Anthropic uses API keys only.
 
 ## Why
 
-Users do not edit config files, and a fresh install showed a Codex model it could not use. Interaction has to cover everything: pick a service, give a key or sign in, add an endpoint, pick a model. `/model` mixed two questions (which service, which model), so the menu listed every credentialed service's models together.
+Users do not edit config files, and a fresh install showed a Codex model it could not use. Interaction has to cover everything: pick a service, give a key or sign in, add an endpoint, pick a model. `/provider` handles service setup and credentials; `/model` provides quick model selection across services already configured or signed in, without requiring a separate service switch.
 
 ## Provider and model split
 

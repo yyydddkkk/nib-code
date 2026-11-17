@@ -40,7 +40,7 @@ pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .undo = .{ .help = "undo last edited Turn; edit/write only", .while_busy = true },
     .compact = .{ .help = "compact earlier history" },
     .provider = .{ .args = "[service]", .help = "sign in and switch service", .choices = .services, .needs_arg = true },
-    .model = .{ .args = "<model>", .help = "switch model of this service", .choices = .models, .needs_arg = true },
+    .model = .{ .args = "<model>", .help = "switch model and service", .choices = .models, .needs_arg = true },
     .effort = .{ .group = .send, .args = "[level]", .help = "reasoning effort", .choices = .efforts },
     .copy = .{ .group = .view, .help = "copy last answer", .while_busy = true },
     .reflect = .{ .args = "[focus]", .help = "publish issue drafts" },
@@ -159,7 +159,8 @@ pub fn candidates(input: []const u8, sessions: []const Choice, tasks: []const Ch
     };
     for (choices) |choice| {
         if (n == out.len) break;
-        if (!std.mem.startsWith(u8, choice.value, arg)) continue;
+        const model = if (command == .model) choice.value[(if (std.mem.indexOfScalar(u8, choice.value, '/')) |slash| slash + 1 else 0)..] else "";
+        if (!std.mem.startsWith(u8, choice.value, arg) and !(command == .model and std.mem.startsWith(u8, model, arg))) continue;
         out[n] = .{ .command = command, .value = choice.value, .label = choice.label, .detail = choice.detail };
         n += 1;
     }
@@ -204,6 +205,9 @@ fn modelSelection(app: *App, arg: []const u8) !config.ModelSelection {
     const second = words.next();
     if (second != null) return config.parseModel(arg);
     if (std.mem.indexOfScalar(u8, first, '/')) |slash| {
+        for (provider.definitions) |entry| {
+            if (std.mem.eql(u8, first[0..slash], entry.id)) return config.parseModel(arg);
+        }
         var arena: std.heap.ArenaAllocator = .init(app.gpa);
         defer arena.deinit();
         const list = auth.services(arena.allocator(), app.io, app.environ, app.session.options.home) catch &.{};
@@ -557,17 +561,27 @@ test "help groups commands and states the real issue destination or disabled sta
     try testing.expect(std.mem.indexOf(u8, off, "owner/repo") == null);
 }
 
+test "qualified model choices recognize all built-in services" {
+    var app: App = undefined;
+    const selection = try modelSelection(&app, "chat_completions/org/model");
+    try testing.expectEqualStrings("chat_completions", selection.provider);
+    try testing.expectEqualStrings("org/model", selection.model.?);
+}
+
 test "model choices filter and complete without running the bare command" {
     var buf: [32]Candidate = undefined;
-    const models = [_]Choice{ .{ .value = "gpt-6.1-sol", .label = "gpt-6.1-sol", .detail = "current" }, .{ .value = "gpt-6.1-terra", .label = "gpt-6.1-terra", .detail = "" } };
+    const models = [_]Choice{ .{ .value = "openai/gpt-6.1-sol", .label = "openai · gpt-6.1-sol", .detail = "current" }, .{ .value = "openai/gpt-6.1-terra", .label = "gpt-6.1-terra", .detail = "openai" }, .{ .value = "local/gpt-6.1-sol", .label = "gpt-6.1-sol", .detail = "local" } };
     try testing.expect(!allowedWhileBusy("/model gpt-6.1-sol"));
     try testing.expect(!candidates("/model", &.{}, &.{}, &models, &.{}, &buf)[0].runs());
     const selected = candidates("/model gpt-6.1-s", &.{}, &.{}, &models, &.{}, &buf);
-    try testing.expectEqual(@as(usize, 1), selected.len);
+    try testing.expectEqual(@as(usize, 2), selected.len);
     try testing.expectEqualStrings("current", selected[0].detail);
     const line = try selected[0].line(testing.allocator);
     defer testing.allocator.free(line);
-    try testing.expectEqualStrings("/model gpt-6.1-sol", line);
+    try testing.expectEqualStrings("/model openai/gpt-6.1-sol", line);
+    const qualified = candidates("/model local/gpt-6.1-s", &.{}, &.{}, &models, &.{}, &buf);
+    try testing.expectEqual(@as(usize, 1), qualified.len);
+    try testing.expectEqualStrings("local/gpt-6.1-sol", qualified[0].value.?);
 }
 
 test "service choices complete /provider and run on Enter" {
