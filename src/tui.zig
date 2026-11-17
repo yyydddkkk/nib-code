@@ -615,13 +615,13 @@ pub const App = struct {
         } else if (isNewline(k, app.pasting)) {
             try input.insert(gpa, "\n");
         } else if (k.matches(vaxis.Key.enter, .{})) {
-            if (input.text().len > 0 and commands.parse(input.text()) == null and !app.credentialed()) {
+            if (input.text().len > 0 and (commands.parse(input.text()) == null or app.session.isPluginCommand(input.text())) and !app.credentialed()) {
                 try providers.openMenu(app);
             } else if (input.imageCount() > 0 and !app.cfg.vision()) {
                 app.notice = std.fmt.bufPrint(&app.notice_buf, "{s} has no image input · remove the [Image] blocks", .{app.cfg.model}) catch null;
             } else if (input.imageCount() > 0 and app.turn != null) {
                 app.notice = "Turn running · images send with the next message";
-            } else if (app.turn == null or commands.parse(input.text()) == null or commands.allowedWhileBusy(input.text())) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
+            } else if (app.turn == null or (commands.parse(input.text()) == null or app.session.isPluginCommand(input.text())) or commands.allowedWhileBusy(input.text())) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
         } else {
             _ = try input.key(gpa, k);
         }
@@ -683,13 +683,13 @@ pub const App = struct {
         app.scroll = .{};
         app.menu.forgetSessions();
         if (line.len == 0) return gpa.free(line);
-        if (commands.parse(line)) |parsed| {
+        if (!app.session.isPluginCommand(line)) if (commands.parse(line)) |parsed| {
             defer gpa.free(line);
             return switch (parsed) {
                 .unknown => |name| app.report(.err, "unknown command /{s} · /help lists commands", .{name}),
                 .known => |c| app.command(c.command, c.arg, line),
             };
-        }
+        };
         if (!app.credentialed()) {
             gpa.free(line);
             return app.transcript.add(gpa, .err, "No provider · /provider to sign in");

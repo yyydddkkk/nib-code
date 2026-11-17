@@ -10,6 +10,8 @@ New systems concatenate base instructions, global `$NIB_HOME/AGENTS.md` (default
 
 Codex custom `tool_calls` carry `type:"custom"`; `function.arguments` remains JSON {code}, complete raw JS including optional effort line. Old entries default function. Resume/replay require no migration. Raw Responses outputs/types/argument-byte definitions: [custom Run](codex.md#custom-run-tool).
 
+Plugin-enabled Sessions record an optional `plugin_skills` catalog (names, descriptions, locations, invocation policy and installed roots) alongside `mcp_servers`. Resume restores this catalog; child Sessions inherit it through configuration. Installed roots are retained after uninstall, so reinstalling a package does not change old Session references. Environment templates remain unresolved in MCP snapshots. Old logs without a catalog default to no plugin entries. See [plugins](plugins.md).
+
 ## Tool recording and offline replay
 
 Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent `<session_id>.calls.jsonl` stores actual returns/rejections, mode 0600. Sidecars default on, disableable, independent of main format/resume. nib replay executes saved JS in fresh sandboxes with recorded tools, no models/bash/file writes.

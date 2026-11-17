@@ -37,6 +37,7 @@ pub const TaskStop = struct { id: []const u8, reason: []const u8, stopped: bool 
 pub const Record = struct {
     hook: ?struct { event: []const u8, command: []const u8, exit_code: i32, duration_ms: u64 } = null,
     mcp_servers: ?[]const @import("../mcp/config.zig").Server = null,
+    plugin_skills: ?[]const @import("skills.zig").Skill = null,
     skills: ?@import("skills.zig").Summary = null,
     task_stop: ?TaskStop = null,
     sandbox_unavailable: ?[]const u8 = null,
@@ -93,6 +94,7 @@ pub const Record = struct {
 pub const Log = struct {
     tuning: Tuning = .{},
     mcp_servers: []const @import("../mcp/config.zig").Server = &.{},
+    plugin_skills: []const @import("skills.zig").Skill = &.{},
     skills: @import("skills.zig").Summary = .{},
     file: std.Io.File,
     mutex: std.Io.Mutex = .init,
@@ -131,7 +133,7 @@ pub const Log = struct {
         if (expected_parent) |parent| {
             if (!std.mem.eql(u8, parent, restored.parent_session_id orelse "")) return error.AgentSessionParentMismatch;
         }
-        var log: Log = .{ .tuning = restored.tuning, .file = file, .mcp_servers = restored.mcp_servers, .skills = restored.skills, .offset = data.len, .parent_session_id = restored.parent_session_id, .cache_key = restored.cache_key, .forked_from = restored.forked_from, .provider = restored.provider, .custom_provider = restored.custom_provider, .model = restored.model, .steps = restored.steps, .next_agent_id = restored.next_agent_id, .next_bash_id = restored.next_bash_id, .next_run_id = restored.next_run_id, .agent_sessions = restored.agent_sessions, .lost_background = restored.lost_background, .pending_background_bytes = restored.pending_background_bytes };
+        var log: Log = .{ .tuning = restored.tuning, .file = file, .mcp_servers = restored.mcp_servers, .plugin_skills = restored.plugin_skills, .skills = restored.skills, .offset = data.len, .parent_session_id = restored.parent_session_id, .cache_key = restored.cache_key, .forked_from = restored.forked_from, .provider = restored.provider, .custom_provider = restored.custom_provider, .model = restored.model, .steps = restored.steps, .next_agent_id = restored.next_agent_id, .next_bash_id = restored.next_bash_id, .next_run_id = restored.next_run_id, .agent_sessions = restored.agent_sessions, .lost_background = restored.lost_background, .pending_background_bytes = restored.pending_background_bytes };
         if (restored.needs_repair) try log.append(io, a, .{ .repair = true });
         for (restored.background_repairs) |event| try log.append(io, a, .{ .background = event });
         if (restored.needs_repair or restored.background_repairs.len != 0) try log.file.sync(io);
@@ -300,10 +302,11 @@ fn restoreToolSummaries(a: std.mem.Allocator, history: []provider.Message, recor
     }
 }
 
-pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { tuning: Tuning, mcp_servers: []const @import("../mcp/config.zig").Server, skills: @import("skills.zig").Summary, needs_repair: bool, steps: usize, parent_session_id: ?[]const u8, cache_key: ?[]const u8, forked_from: ?ForkedFrom, provider: provider.Id, custom_provider: ?[]const u8, model: ?[]const u8, next_agent_id: u64, next_bash_id: u64, next_run_id: u64, agent_sessions: []const AgentSession, lost_background: []const @import("events.zig").Background, background_repairs: []const @import("events.zig").Background, pending_background_bytes: u64 } {
+pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { plugin_skills: []const @import("skills.zig").Skill, tuning: Tuning, mcp_servers: []const @import("../mcp/config.zig").Server, skills: @import("skills.zig").Summary, needs_repair: bool, steps: usize, parent_session_id: ?[]const u8, cache_key: ?[]const u8, forked_from: ?ForkedFrom, provider: provider.Id, custom_provider: ?[]const u8, model: ?[]const u8, next_agent_id: u64, next_bash_id: u64, next_run_id: u64, agent_sessions: []const AgentSession, lost_background: []const @import("events.zig").Background, background_repairs: []const @import("events.zig").Background, pending_background_bytes: u64 } {
     var parent_session_id: ?[]const u8 = null;
     var mcp_servers: []const @import("../mcp/config.zig").Server = &.{};
     var skills: @import("skills.zig").Summary = .{};
+    var plugin_skills: []const @import("skills.zig").Skill = &.{};
     var cache_key: ?[]const u8 = null;
     var tuning: Tuning = .{};
     var forked_from: ?ForkedFrom = null;
@@ -337,6 +340,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             parent_session_id = r.parent_session_id;
             skills = r.skills orelse .{};
             mcp_servers = r.mcp_servers orelse &.{};
+            plugin_skills = r.plugin_skills orelse &.{};
             cache_key = r.cache_key;
             tuning = if (r.tuning) |record| Tuning.fromLog(record) else .{};
             forked_from = r.forked_from;
@@ -419,7 +423,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             try background_repairs.append(a, pending.event);
         } else try lost_background.append(a, pending.event);
     }
-    return .{ .tuning = tuning, .mcp_servers = mcp_servers, .skills = skills, .steps = steps, .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .cache_key = cache_key, .forked_from = forked_from, .provider = id, .custom_provider = custom_provider, .model = model, .next_agent_id = next_agent_id, .next_bash_id = next_bash_id, .next_run_id = next_run_id, .agent_sessions = try agent_sessions.toOwnedSlice(a), .lost_background = try lost_background.toOwnedSlice(a), .background_repairs = try background_repairs.toOwnedSlice(a), .pending_background_bytes = pending_background_bytes };
+    return .{ .tuning = tuning, .mcp_servers = mcp_servers, .plugin_skills = plugin_skills, .skills = skills, .steps = steps, .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .cache_key = cache_key, .forked_from = forked_from, .provider = id, .custom_provider = custom_provider, .model = model, .next_agent_id = next_agent_id, .next_bash_id = next_bash_id, .next_run_id = next_run_id, .agent_sessions = try agent_sessions.toOwnedSlice(a), .lost_background = try lost_background.toOwnedSlice(a), .background_repairs = try background_repairs.toOwnedSlice(a), .pending_background_bytes = pending_background_bytes };
 }
 
 fn restoreId(id: []const u8, next_agent: *u64, next_bash: *u64, next_run: *u64) !void {

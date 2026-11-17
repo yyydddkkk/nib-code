@@ -1,5 +1,7 @@
 # Skills
 
+[Plugin packages](plugins.md) can also supply skills and manual commands. They use `<plugin>:<name>` namespaces and are available only when their package is enabled; package switches are separate from the native skill switches below.
+
 New Sessions scan in this order, looking only one level deep for `<name>/SKILL.md` in each directory; later skills override earlier skills with the same name:
 
 1. `~/.agents/skills`

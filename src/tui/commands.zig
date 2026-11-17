@@ -9,7 +9,7 @@ const provider = @import("../provider.zig");
 const auth = @import("../auth.zig");
 const providers = @import("providers.zig");
 
-pub const Command = enum { simple, help, new, @"resume", compact, undo, provider, model, effort, copy, reflect, js, tasks, stop, status, skills, mcp };
+pub const Command = enum { simple, help, new, @"resume", compact, undo, provider, model, effort, copy, reflect, js, tasks, stop, status, skills, mcp, plugins };
 
 pub const Choices = enum { none, models, efforts, sessions, tasks, services };
 
@@ -29,6 +29,7 @@ pub const Spec = struct {
 pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .simple = .{ .group = .view, .help = "toggle " ++ mode.name ++ " mode", .while_busy = true },
     .mcp = .{ .group = .view, .args = "[on|off <id>]", .help = "list or enable MCP servers for new sessions" },
+    .plugins = .{ .group = .view, .args = "[on|off <name>]", .help = "list or enable plugins for new sessions" },
     .skills = .{ .group = .view, .args = "[on|off <name>]", .help = "list or enable skills for new sessions" },
     .status = .{ .group = .view, .help = "timing and cache details", .while_busy = true },
     .tasks = .{ .group = .view, .help = "background tasks", .while_busy = true },
@@ -265,6 +266,23 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             defer credential_arena.deinit();
             const arena_a = credential_arena.allocator();
             try app.report(.info, "Provider {s} · {s} · {s} · effort {s} · context {d}%\n{s}", .{ app.cfg.name(), app.cfg.model, auth.describe(arena_a, app.io, app.cfg), app.cfg.effectiveEffort(), app.context * 100 / @max(app.cfg.context_window, 1), if (app.last_summary) |summary| text.details(summary) else "No completed turn yet." });
+        },
+        .plugins => {
+            var arena: std.heap.ArenaAllocator = .init(gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const plugin = @import("../plugin.zig");
+            if (arg.len == 0) return app.report(.info, "{s}", .{try plugin.list(a, app.io, session.options.home)});
+            var words = std.mem.tokenizeAny(u8, arg, " \t");
+            const action = words.next().?;
+            const name = words.next() orelse return app.report(.err, "usage: /plugins [on|off <name>]", .{});
+            if (words.next() != null or (!std.mem.eql(u8, action, "on") and !std.mem.eql(u8, action, "off"))) return app.report(.err, "usage: /plugins [on|off <name>]", .{});
+            const package = plugin.setEnabled(a, app.io, session.options.home, name, std.mem.eql(u8, action, "on")) catch |err| return app.report(.err, "{s}: {s}", .{ name, @errorName(err) });
+            var text: std.ArrayList(u8) = .empty;
+            try text.print(a, "{s} · {s}\n", .{ name, action });
+            for (package.unsupported) |item| try text.print(a, "Unsupported: {s}\n", .{item});
+            try text.appendSlice(a, "Applies to new sessions.");
+            return app.report(.info, "{s}", .{text.items});
         },
         .mcp => {
             var arena: std.heap.ArenaAllocator = .init(gpa);

@@ -62,11 +62,13 @@ Tool descriptions and system prompts state facts and costs for models to weigh, 
   - [0021 Images: attach by path or clipboard, store by reference, view separate from read](adr/0021-images.md)
   - [0022 Provider sign-in: /provider, credential store, nib-owned Codex OAuth](adr/0022-provider-sign-in.md)
   - [0024 Opt-in MCP tools](adr/0024-mcp-tools.md)
+  - [0027 Opt-in plugin packages](adr/0027-plugin-packages.md)
 - [ask-json.md](ask-json.md): ask --json NDJSON events, progress, usage
 - [session-log.md](session-log.md): logs, resume/cancellation, timing, measurement definitions
 - [undo.md](undo.md): per-Turn TUI edit/write undo, conflict rejection, quotas, recovery boundaries
 - [replay.md](replay.md): recording, offline Run replay, diagnostic scripts, privacy boundaries
 - [reflect.md](reflect.md): read-only reflection, saved answers, automatic issue publication
+- [plugins.md](plugins.md): default-off installable skills, commands and MCP packages; compatibility subset and Session snapshots
 - [mcp.md](mcp.md): opt-in servers, context index, transports, protocol detection, lifecycle, sandbox, and limits
 - [config.md](config.md): `NIB_HOME`, files, environment, precedence, effort persistence
 - [codex.md](codex.md): local Codex login, configuration, credential boundaries

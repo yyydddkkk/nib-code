@@ -66,7 +66,7 @@ Run `nib`, then `/provider` to sign in; `/model` picks a model. Codex, Claude, O
 
 Enter sends, Shift+Enter adds a line, Esc cancels. Type `/` for commands: `/provider`, `/model`, `/effort`, `/undo`, `/tasks`, `/skills`, `/status`. `@` completes file paths.
 
-`/mcp` turns on MCP servers from config.toml.
+`/mcp` turns on MCP servers from config.toml. [Plugins](docs/plugins.md) bundle skills, commands and MCP servers: `nib plugin install <path-or-git-url>`, then `/plugins on <name>`. Installed plugins are off by default.
 
 Project conventions go in `AGENTS.md`; personal ones in `~/.nib/AGENTS.md`.
 
