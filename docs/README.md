@@ -75,7 +75,7 @@ Tool descriptions and system prompts state facts and costs for models to weigh, 
 - [run-output.md](run-output.md): data integrity, explicit limits, Run display budgets, execution timeouts
 - [tool-delegation.md](tool-delegation.md): read / llm / agent choices, interfaces, delegation implementation
 - [compromises.md](compromises.md): model patches, implementation compromises, hardcoded policies
-- [developing.md](developing.md): feature worktrees and daily `nib-dev` installs from local `main`
+- [developing.md](developing.md): feature worktrees and daily `nib-dev` installs from local `dev`
 - [ci.md](ci.md): PR gate, full validation, and release-metadata fast path
 - [releasing.md](releasing.md): stable release preparation and publication
 - [releases/](releases/): release notes ([0.4.0](releases/0.4.0.md), [0.3.0](releases/0.3.0.md), [0.2.0](releases/0.2.0.md))

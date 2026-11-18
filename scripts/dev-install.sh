@@ -3,6 +3,7 @@ set -euo pipefail
 
 usage() {
     echo 'Usage: dev-install.sh [--release-fast] [--bin-dir directory]'
+    echo 'Build and install nib-dev from committed local dev.'
 }
 
 fail() {
@@ -27,14 +28,14 @@ done
 for var in $(git rev-parse --local-env-vars); do unset "$var"; done
 export GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-commit=$(git -C "$script_dir" rev-parse --verify --quiet 'refs/heads/main^{commit}') ||
-    fail 'cannot resolve local refs/heads/main in the script repository (no remote fallback)'
+commit=$(git -C "$script_dir" rev-parse --verify --quiet 'refs/heads/dev^{commit}') ||
+    fail 'cannot resolve local refs/heads/dev in the script repository (no fallback)'
 objects=$(git -C "$script_dir" rev-parse --path-format=absolute --git-path objects)
 object_format=$(git -C "$script_dir" rev-parse --show-object-format)
 
 bin_dir=${bin_dir:-$HOME/.local/bin}
 case $bin_dir in /*) ;; *) bin_dir=$PWD/$bin_dir ;; esac
-printf 'Source: local main (%s)\nBuild:  %s\nTarget: %s/nib-dev\n' "$commit" "$mode" "${bin_dir%/}"
+printf 'Source: local dev (%s)\nBuild:  %s\nTarget: %s/nib-dev\n' "$commit" "$mode" "${bin_dir%/}"
 
 staged=
 tmp_parent=$(cd -- "${TMPDIR:-/tmp}" && pwd -P)
