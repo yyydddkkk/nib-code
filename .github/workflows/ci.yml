@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -17,35 +18,16 @@ jobs:
     timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.tests.outputs.matrix }}
+      linux: ${{ steps.tests.outputs.linux }}
+      macos: ${{ steps.tests.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
       - id: tests
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re
-          tests = list(dict.fromkeys(re.findall(r'tests/test_\w+\.py', pathlib.Path('AGENTS.md').read_text())))
-          assert tests, 'No e2e tests found in AGENTS.md'
-          # These tests inspect /proc directly or share the agent process-liveness fixtures.
-          linux_only = {'session', 'agent', 'agent_reuse', 'agent_fork', 'background_agent',
-                        'background_bash', 'background_run', 'limits'}
-          # Debug PTY latency limits (50/150 ms) are calibrated for Linux, not shared macOS runners.
-          linux_only.add('tui_stream')
-          matrix = [{'os': 'ubuntu-latest', 'test': test, 'name': pathlib.Path(test).stem} for test in tests]
-          portable = [test for test in tests if pathlib.Path(test).stem.removeprefix('test_') not in linux_only]
-          matrix += [{'os': 'macos-latest', 'test': ' '.join(portable[i::4]), 'name': f'group-{i}'} for i in range(4)]
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('matrix=' + json.dumps({'include': matrix}) + '\n')
-          PY
+        run: python3 scripts/ci_matrix.py >> "$GITHUB_OUTPUT"
 
-  build:
+  build-linux:
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -55,7 +37,22 @@ jobs:
       - run: zig build -Dcpu=baseline
       - uses: actions/upload-artifact@v4
         with:
-          name: nib-${{ matrix.os }}
+          name: nib-ubuntu-latest
+          path: zig-out/bin/nib
+
+  build-macos:
+    timeout-minutes: 15
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: true
+      - run: zig build -Dcpu=baseline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nib-macos-latest
           path: zig-out/bin/nib
 
   unit:
@@ -75,38 +72,16 @@ jobs:
       - run: zig build test-bench-scheduler -Doptimize=ReleaseFast --summary all
       - run: python3 tests/test_bench_scheduler.py
 
-  e2e:
-    timeout-minutes: 8
-    needs: [list, build]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.list.outputs.matrix) }}
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: nib-${{ matrix.os }}
-          path: zig-out/bin
-      - run: chmod +x zig-out/bin/nib
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Run mock e2e test
-        shell: bash
-        env:
-          TEST: ${{ matrix.test }}
-          LANG: en_US.UTF-8
-        run: |
-          mkdir -p e2e-logs
-          failed=0
-          for test in $TEST; do
-            python3 -u "$test" 2>&1 | tee "e2e-logs/$(basename "$test").log" || failed=1
-          done
-          exit "$failed"
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: e2e-${{ matrix.os }}-${{ matrix.name }}
-          path: e2e-logs/*.log
-          if-no-files-found: ignore
+  e2e-linux:
+    needs: [list, build-linux]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      os: ubuntu-latest
+      matrix: ${{ needs.list.outputs.linux }}
+
+  e2e-macos:
+    needs: [list, build-macos]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      os: macos-latest
+      matrix: ${{ needs.list.outputs.macos }}

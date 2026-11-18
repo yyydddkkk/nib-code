@@ -1,0 +1,53 @@
+name: E2E
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nib-${{ inputs.os }}
+          path: zig-out/bin
+      - run: chmod +x zig-out/bin/nib
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run mock e2e test
+        shell: bash
+        env:
+          TEST: ${{ matrix.test }}
+          LANG: en_US.UTF-8
+        run: |
+          mkdir -p e2e-logs
+          failed=0
+          for test in $TEST; do
+            echo "Running $test"
+            started=$SECONDS
+            python3 -u "$test" 2>&1 | tee "e2e-logs/$(basename "$test").log" || failed=1
+            echo "Duration: $test $((SECONDS - started))s"
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-${{ inputs.os }}-${{ matrix.name }}
+          path: e2e-logs/*.log
+          if-no-files-found: ignore
