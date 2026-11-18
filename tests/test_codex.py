@@ -462,11 +462,32 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
             assert len(requests()) == before + expected, failed
             assert records[-1]["diagnostic"]["message"] == failed[-1]["error"]["message"]
             assert records[-1]["diagnostic"]["attempts"] == expected
-        before = len(requests())
-        changed_model = ask("plain text", "--resume", session, ok=False, overrides={"NIB_MODEL": "gpt-6-sol"})
-        assert "different model" in changed_model[-1]["error"]["message"]
-        assert len(requests()) == before
         print("Codex 401 reread, repeated-401 login guidance, credentials and tool isolation passed")
+
+        changed_cfg = {"NIB_MODEL": "gpt-6-sol"}
+        changed_model = ask("plain text", "--resume", tool_id, overrides=changed_cfg)
+        assert changed_model[0]["start"]["session_id"] == tool_id
+        body = requests()[-1]["body"]
+        assert body["model"] == "gpt-6-sol"
+        assert not any(item.get("type") == "reasoning" for item in body["input"])
+        assert any(item.get("role") == "assistant" and "hello from codex mock" in item.get("content", "") for item in body["input"])
+        for item in (call, result):
+            restored = next(i for i in body["input"] if i.get("type") == item["type"])
+            assert restored["call_id"] == item["call_id"]
+            field = "input" if item is call else "output"
+            assert restored[field] == item[field]
+
+        mixed_history, _ = replay(tmp / f"nib/sessions/{tool_id}.jsonl")
+        original_items = [i for m in mixed_history[:-1] if m.get("reasoning") for i in json.loads(m["reasoning"]["data"]) if i["type"] == "reasoning"]
+        changed_items = [i for i in json.loads(mixed_history[-1]["reasoning"]["data"]) if i["type"] == "reasoning"]
+        assert original_items and changed_items
+        ask("plain text", "--resume", tool_id, overrides=changed_cfg)
+        replayed = [i for i in requests()[-1]["body"]["input"] if i.get("type") == "reasoning"]
+        assert replayed == changed_items
+        ask("plain text", "--resume", tool_id)
+        replayed = [i for i in requests()[-1]["body"]["input"] if i.get("type") == "reasoning"]
+        assert replayed == original_items
+        print("Codex cross-model resume preserves messages and sends only matching encrypted reasoning")
 
         config_path = tmp / "nib/config.toml"
         config_text = ('# Keep this comment and both provider sections.\n'

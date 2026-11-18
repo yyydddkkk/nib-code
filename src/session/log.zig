@@ -275,8 +275,11 @@ fn assistantCount(messages: []const provider.Message) usize {
 fn apply(history: *std.ArrayList(provider.Message), record: Record) void {
     history.shrinkRetainingCapacity(record.from);
     history.appendSliceAssumeCapacity(record.messages);
-    if (record.effort) |effort| {
-        for (history.items[record.from..]) |*message| {
+    for (history.items[record.from..]) |*message| {
+        if (message.reasoning) |*reasoning| {
+            if (reasoning.model == null and reasoning.tracksModel()) reasoning.model = record.model orelse "";
+        }
+        if (record.effort) |effort| {
             if (std.mem.eql(u8, message.role, "assistant")) message.step_effort = .{ .effort = effort };
         }
     }
@@ -914,6 +917,32 @@ test "replay restores independent ID maxima from every background state and fore
     defer progress.deinit(t.allocator);
     try t.expectEqualStrings("a11", try progress.add(t.allocator, t.io, .agent, "resumed", 1, false));
     try t.expectEqualStrings("b22", try progress.add(t.allocator, t.io, .bash, "resumed", 1, true));
+}
+
+test "reasoning provenance survives legacy replay and compaction under a different model" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const data =
+        \\{"provider":"codex","model":"old","messages":[{"role":"system","content":"base"}]}
+        \\{"from":1,"model":"old","messages":[{"role":"assistant","content":"old reply","reasoning":{"provider":"codex","data":"[]"}}]}
+        \\{"from":2,"messages":[{"role":"assistant","reasoning":{"provider":"codex","data":"[]"}}]}
+        \\
+    ;
+    var history: std.ArrayList(provider.Message) = .empty;
+    var tokens: u64 = 0;
+    _ = try replay(a, a, data, &history, &tokens);
+    try t.expectEqualStrings("old", history.items[1].reasoning.?.model.?);
+    try t.expectEqualStrings("", history.items[2].reasoning.?.model.?);
+    const snapshot: Record = .{ .from = 1, .model = "new", .messages = history.items[1..] };
+    const compacted = try std.fmt.allocPrint(a, "{s}{f}\n", .{ data, std.json.fmt(snapshot, .{}) });
+    history.clearRetainingCapacity();
+    _ = try replay(a, a, compacted, &history, &tokens);
+    const cfg: provider.Config = .{ .provider = .codex, .model = "new", .base_url = "", .api_key = "" };
+    try t.expectEqualStrings("old", history.items[1].reasoning.?.model.?);
+    try t.expect(!history.items[1].reasoning.?.compatible(cfg));
+    try t.expect(!history.items[2].reasoning.?.compatible(cfg));
 }
 
 test "ID restoration rejects overflow rather than wrapping the session counter" {

@@ -292,7 +292,7 @@ fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key: []c
             instructions = m.content orelse instructions;
             continue;
         }
-        if (m.reasoning) |r| if (r.provider == cfg.provider) {
+        if (m.reasoning) |r| if (r.compatible(cfg)) {
             const items = try std.json.parseFromSliceLeaky([]const std.json.Value, a, r.data, .{});
             for (items) |raw| {
                 const item = if (r.includes_output) (try ws_state.normalize(a, raw) orelse return error.InvalidResponse) else raw;
@@ -752,7 +752,7 @@ test "Codex custom and legacy history retain their wire types across tool config
         const messages = [_]p.Message{
             .{ .role = "assistant", .tool_calls = &.{.{ .id = "old", .function = .{ .name = "run", .arguments = old_args } }} },
             .{ .role = "tool", .tool_call_id = "old", .content = "42" },
-            .{ .role = "assistant", .tool_calls = &.{custom}, .reasoning = if (includes_output) .{ .provider = .codex, .data = raw, .includes_output = true } else null },
+            .{ .role = "assistant", .tool_calls = &.{custom}, .reasoning = if (includes_output) .{ .provider = .codex, .data = raw, .includes_output = true, .model = default_model } else null },
             .{ .role = "tool", .tool_call_id = "new", .content = "result" },
         };
         const cfg: p.Config = .{ .provider = .codex, .model = default_model, .api_key = "", .base_url = "", .codex_run_tool = mode };

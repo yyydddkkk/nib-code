@@ -95,7 +95,7 @@ Two real comparisons on 2026-11-04 with gpt-6.1-sol/default effort: same task, p
 
 Tiny samples show first requests can hit parent prefixes with shared keys, not server guarantees. Observe larger-context benefits through `stats.py` child_costs.by_creation. Reconsider shared keys if fork first-hit rates cease materially exceeding new children.
 
-Model/effort inherit by default with overrides, but differing values lose parent-prefix benefits regardless of shared keys. Codex fork enforces resume model consistency; overrides cannot reuse encrypted parent reasoning across models. Future same-model/effort/prefix comparisons of parent/independent keys should measure first cache/prompt, uncached input, and time; reconsider keys absent benefits. Semantics/confidence: [delegation](tool-delegation.md), [ADR 0015](adr/0015-agent-fork.md).
+Model/effort inherit by default with overrides, but differing values lose parent-prefix benefits regardless of shared keys. Codex fork requires the parent model; overrides cannot reuse encrypted parent reasoning across models. Future same-model/effort/prefix comparisons of parent/independent keys should measure first cache/prompt, uncached input, and time; reconsider keys absent benefits. Semantics/confidence: [delegation](tool-delegation.md), [ADR 0015](adr/0015-agent-fork.md).
 
 ## Summaries and Session resume
 

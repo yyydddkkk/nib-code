@@ -59,6 +59,18 @@ def test_model(tmp):
         resumed = subprocess.run([str(Path(__file__).resolve().parents[1] / "zig-out/bin/nib"), "ask", "--resume", original, "again resumed"], cwd=tmp, env={**env, "NIB_PROVIDER": "openai", "NIB_MODEL": "gpt-6.1-terra"}, capture_output=True, text=True, timeout=15)
         assert resumed.returncode == 0, resumed.stderr
         assert "mock answer" in resumed.stdout
+        terminal.send("/model openai/gpt-6.1-sol\r")
+        terminal.until("openai · gpt-6.1-sol · new session".encode())
+        terminal.send("/resume " + original + "\r")
+        terminal.until(("resumed session " + original[:8]).encode())
+        terminal.send("again switched\r")
+        wait_for(lambda: len(first.requests) == 3, "cross-model resume request")
+        terminal.wait_turn("mock answer")
+        switched = first.requests[-1][2]
+        assert switched["model"] == "gpt-6.1-sol"
+        assert "again first" in json.dumps(switched["input"])
+        assert "again switched" in json.dumps(switched["input"])
+        assert not any(item.get("type") == "reasoning" for item in switched["input"])
         assert not first.errors and not second.errors, (first.errors, second.errors)
     finally:
         if terminal:

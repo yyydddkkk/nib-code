@@ -38,7 +38,7 @@ context_window = 128000
 api_key_env = "MYSITE_API_KEY"
 ```
 
-Legacy `provider = "chat_completions"`, `[chat_completions]`, and NIB_API_KEY precedence over DEEPSEEK_API_KEY remain unchanged as a separate compatibility identity using DeepSeek defaults. Old codex/chat_completions logs stay resumable; never automatically relabel old identities as deepseek. Cross-service-id resume rejects even with matching protocols. Log/compare custom ids too. Models carrying encrypted/signed continuation require model consistency on resume.
+Legacy `provider = "chat_completions"`, `[chat_completions]`, and NIB_API_KEY precedence over DEEPSEEK_API_KEY remain unchanged as a separate compatibility identity using DeepSeek defaults. Old codex/chat_completions logs stay resumable; never automatically relabel old identities as deepseek. Cross-service-id resume rejects even with matching protocols. Log/compare custom ids too. On resume, encrypted or signed continuation data is replayed only for its original model.
 
 Effective configuration reaches children through existing anonymous stdin pipes: provider id, protocol, nonsecret fields, secret environment names; each process reads environment keys independently. No credentials in argv, config files, or logs. tools.llm/summaries reuse effective configuration.
 

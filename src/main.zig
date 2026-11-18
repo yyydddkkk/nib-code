@@ -269,7 +269,7 @@ fn errorMessage(err: anyerror) []const u8 {
         error.UnknownService => "Unknown service · run nib login to list services",
         error.EmptyKey => "API key cannot be empty",
         error.SessionProviderMismatch => "Cannot resume this session with a different provider; use its original NIB_PROVIDER or start a new session.",
-        error.SessionModelMismatch => "Cannot resume this Codex session with a different model; set NIB_MODEL to its original model or start a new session.",
+        error.SessionModelMismatch => "Cannot fork this session with a different model; use the parent session's model.",
         error.UnknownCodexModelContextWindow => "Unknown Codex model context window; set NIB_CONTEXT_WINDOW explicitly (see pi model catalog).",
         else => @errorName(err),
     };
