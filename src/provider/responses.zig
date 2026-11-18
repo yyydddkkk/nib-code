@@ -142,7 +142,8 @@ fn streamWebSocket(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.
     const bearer = try std.fmt.allocPrint(gpa, "Bearer {s}", .{auth.access_token});
     defer gpa.free(bearer);
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    for ([_][]const u8{ cfg.base_url, cfg.model, cache_key, bearer, auth.account_id }) |part| {
+    const tier = cfg.codexServiceTier();
+    for ([_][]const u8{ cfg.base_url, cfg.model, cache_key, bearer, auth.account_id, tier orelse "" }) |part| {
         hash.update(part);
         hash.update(&.{0});
     }
@@ -163,7 +164,7 @@ fn streamWebSocket(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.
         const url = try std.fmt.allocPrint(gpa, "{s}/codex/responses", .{std.mem.trimEnd(u8, cfg.base_url, "/")});
         defer gpa.free(url);
         if (std.mem.indexOfAny(u8, cfg.model, "\r\n") != null) return error.WebSocketHandshake;
-        const routing = try std.fmt.allocPrint(gpa, "model={s}", .{cfg.model});
+        const routing = try routingHint(gpa, cfg.model, tier);
         defer gpa.free(routing);
         state.socket = try websocket.Connection.open(gpa, client, url, &.{
             .{ .name = "authorization", .value = bearer },
@@ -203,6 +204,13 @@ fn streamWebSocket(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.
     unreachable;
 }
 
+fn routingHint(gpa: std.mem.Allocator, model: []const u8, tier: ?[]const u8) ![]u8 {
+    return if (tier) |value|
+        std.fmt.allocPrint(gpa, "model={s};tier={s}", .{ model, value })
+    else
+        std.fmt.allocPrint(gpa, "model={s}", .{model});
+}
+
 fn streamSse(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.http.Client, cfg: p.Config, cache_key: []const u8, messages: []const p.Message, tools_json: []const u8, max_tokens: ?u32, sink: p.Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8, monitor: *idle.Monitor) !p.Reply {
     const body = try requestBody(gpa, client.io, cfg, cache_key, messages, tools_json, max_tokens);
     defer gpa.free(body);
@@ -215,17 +223,22 @@ fn streamSse(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.http.C
         defer if (auth) |*value| value.deinit();
         const bearer = try std.fmt.allocPrint(gpa, "Bearer {s}", .{if (auth) |value| value.access_token else cfg.api_key});
         defer gpa.free(bearer);
+        const routing = if (cfg.codexServiceTier()) |tier| try routingHint(gpa, cfg.model, tier) else null;
+        defer if (routing) |value| gpa.free(value);
+        const codex_headers = [_]std.http.Header{
+            .{ .name = "accept", .value = "text/event-stream" },
+            .{ .name = "chatgpt-account-id", .value = if (auth) |value| value.account_id else "" },
+            .{ .name = "OpenAI-Beta", .value = "responses=experimental" },
+            .{ .name = "originator", .value = "nib" },
+            .{ .name = "session-id", .value = cache_key },
+            .{ .name = "x-client-request-id", .value = cache_key },
+            .{ .name = "x-codex-routing-hint", .value = routing orelse "" },
+        };
+        const header_count: usize = if (auth == null) 1 else if (routing == null) codex_headers.len - 1 else codex_headers.len;
         var req = try client.request(.POST, try std.Uri.parse(url), .{
             .redirect_behavior = .not_allowed,
             .headers = .{ .authorization = if (auth != null or cfg.api_key.len > 0) .{ .override = bearer } else .omit, .content_type = .{ .override = "application/json" }, .accept_encoding = .omit },
-            .extra_headers = if (auth != null) &.{
-                .{ .name = "accept", .value = "text/event-stream" },
-                .{ .name = "chatgpt-account-id", .value = auth.?.account_id },
-                .{ .name = "OpenAI-Beta", .value = "responses=experimental" },
-                .{ .name = "originator", .value = "nib" },
-                .{ .name = "session-id", .value = cache_key },
-                .{ .name = "x-client-request-id", .value = cache_key },
-            } else &.{.{ .name = "accept", .value = "text/event-stream" }},
+            .extra_headers = codex_headers[0..header_count],
         });
         defer req.deinit();
         req.transfer_encoding = .{ .content_length = body.len };
@@ -376,9 +389,31 @@ pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key:
         try std.fmt.allocPrint(a, ",\"text\":{f}", .{std.json.fmt(.{ .format = .{ .type = "json_schema", .name = "result", .strict = true, .schema = schema } }, .{})})
     else
         "";
+    const service_tier = if (cfg.codexServiceTier()) |tier| try std.fmt.allocPrint(a, ",\"service_tier\":{f}", .{std.json.fmt(tier, .{})}) else "";
     return std.fmt.allocPrint(gpa,
-        \\{{"model":{f},"prompt_cache_key":{f},"store":false,"stream":true,"instructions":{f},"input":{s},"include":["reasoning.encrypted_content"]{s}{s}{s}}}
-    , .{ std.json.fmt(cfg.model, .{}), std.json.fmt(cache_key, .{}), std.json.fmt(instructions, .{}), input.written(), if (tools.len == 0) "" else try std.fmt.allocPrint(a, ",\"tools\":{s}", .{tool_writer.written()}), reasoning, format });
+        \\{{"model":{f},"prompt_cache_key":{f},"store":false,"stream":true,"instructions":{f},"input":{s},"include":["reasoning.encrypted_content"]{s}{s}{s}{s}}}
+    , .{ std.json.fmt(cfg.model, .{}), std.json.fmt(cache_key, .{}), std.json.fmt(instructions, .{}), input.written(), if (tools.len == 0) "" else try std.fmt.allocPrint(a, ",\"tools\":{s}", .{tool_writer.written()}), reasoning, format, service_tier });
+}
+
+test "Responses only requests Fast for supported Codex GPT models when enabled" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { id: p.Id, model: []const u8, enabled: bool, priority: bool }{
+        .{ .id = .codex, .model = "gpt-6.2-sol", .enabled = true, .priority = true },
+        .{ .id = .codex, .model = "gpt-6.1-sol", .enabled = false, .priority = false },
+        .{ .id = .codex, .model = "unknown-model", .enabled = true, .priority = false },
+        .{ .id = .openai, .model = "gpt-6.1-sol", .enabled = true, .priority = false },
+        .{ .id = .xai, .model = "grok-4.7", .enabled = true, .priority = false },
+    };
+    for (cases) |case| {
+        const cfg: p.Config = .{ .provider = case.id, .model = case.model, .base_url = "", .api_key = "", .codex_fast = case.enabled };
+        const body = try requestBody(a, t.io, cfg, "key", &.{}, "[]", null);
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{});
+        const tier = value.object.get("service_tier");
+        if (case.priority) try t.expectEqualStrings("priority", tier.?.string) else try t.expect(tier == null);
+    }
 }
 
 const custom_run_description = "Run JavaScript in a fresh sandbox using the tools API described in the system prompt. Send raw JavaScript, not JSON, a quoted string or markdown fences. Top-level await is allowed; the last expression's value is returned.";

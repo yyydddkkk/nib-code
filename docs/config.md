@@ -36,6 +36,7 @@ open = "zed {path}:{line}" # optional: command run when a file path is clicked
 model = "gpt-6.2-sol"
 base_url = "https://chatgpt.com/backend-api"
 context_window = 500000
+fast = false # opt in to the priority tier on supported Codex GPT models
 reasoning_summary = "off" # auto enables readable reasoning summaries
 run_tool = "custom" # function falls back to JSON code
 transport = "websocket" # Session falls back to SSE after handshake/protocol failure; sse forces HTTP
