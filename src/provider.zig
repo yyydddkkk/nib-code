@@ -199,8 +199,12 @@ pub const Config = struct {
         return cfg.provider != .codex and cfg.api_key.len == 0 and (cfg.provider != .custom or cfg.api_key_env != null);
     }
 
-    pub fn checkSession(cfg: Config, id: Id, model: ?[]const u8) !void {
+    pub fn checkSession(cfg: Config, id: Id) !void {
         if (cfg.provider != id) return error.SessionProviderMismatch;
+    }
+
+    pub fn checkFork(cfg: Config, id: Id, model: ?[]const u8) !void {
+        try cfg.checkSession(id);
         if (cfg.protocol() != .chat_completions) if (model) |original| {
             if (!std.mem.eql(u8, original, cfg.model)) return error.SessionModelMismatch;
         };
@@ -220,6 +224,19 @@ pub const Reasoning = struct {
     provider: Id,
     data: []const u8,
     includes_output: bool = false,
+    /// Null in legacy records; an empty model means the origin is unknown.
+    model: ?[]const u8 = null,
+
+    pub fn tracksModel(r: Reasoning) bool {
+        return r.provider == .custom or definition(r.provider).protocol != .chat_completions;
+    }
+
+    pub fn compatible(r: Reasoning, cfg: Config) bool {
+        if (r.provider != cfg.provider) return false;
+        if (cfg.protocol() == .chat_completions) return true;
+        const model = r.model orelse return false;
+        return model.len != 0 and std.mem.eql(u8, model, cfg.model);
+    }
 };
 
 pub const StepEffort = struct {
@@ -332,7 +349,7 @@ pub fn stream(
     monitor.request_duration.raw = .fromSeconds(@intCast(cfg.limits.request_timeout_s));
     var observed_sink = sink;
     observed_sink.monitor = &monitor;
-    return switch (cfg.protocol()) {
+    var reply = switch (cfg.protocol()) {
         .chat_completions => cancelable.run(client.io, cancel, monitor.started.addDuration(monitor.request_duration), chat.stream, .{ gpa, out, client, cfg, messages, tools_json, max_tokens, observed_sink, cancel, detail, &monitor }),
         .responses => cancelable.run(client.io, cancel, monitor.started.addDuration(monitor.request_duration), codex.stream, .{ gpa, out, client, cfg, cache_key, messages, tools_json, max_tokens, observed_sink, cancel, detail, &monitor }),
         .anthropic_messages => cancelable.run(client.io, cancel, monitor.started.addDuration(monitor.request_duration), @import("provider/anthropic.zig").stream, .{ gpa, out, client, cfg, messages, tools_json, max_tokens, observed_sink, cancel, detail, &monitor }),
@@ -348,6 +365,10 @@ pub fn stream(
         }
         return monitor.failure(gpa, detail, err);
     };
+    if (reply.reasoning) |*reasoning| {
+        if (reasoning.tracksModel()) reasoning.model = try out.dupe(u8, cfg.model);
+    }
+    return reply;
 }
 
 test "explicit effort overrides thinking and stores stable names" {

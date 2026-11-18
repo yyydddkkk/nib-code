@@ -6,6 +6,8 @@ TUI `/undo` uses independent local snapshots for edit/write effects. Main logs r
 
 Resume current-directory latest root Session (skip children) with nib -c / --continue, or nib --resume <32-character-lowercase-hex-ID>. ask supports options before/after prompt.
 
+Within the same service, resume uses the currently selected model, including after TUI `/model`. The Session keeps its ID, messages and tool history; encrypted or signed continuation data is only sent back to the model that produced it. Changing services still requires selecting the old service to resume.
+
 New systems concatenate base instructions, global `$NIB_HOME/AGENTS.md` (default `~/.nib/AGENTS.md`), project `AGENTS.md`, later taking precedence. Project root: first cwd ancestor with .git, otherwise cwd. Read only AGENTS.md. Resume keeps original logged system; changes affect new Sessions only.
 
 Codex custom `tool_calls` carry `type:"custom"`; `function.arguments` remains JSON {code}, complete raw JS including optional effort line. Old entries default function. Resume/replay require no migration. Raw Responses outputs/types/argument-byte definitions: [custom Run](codex.md#custom-run-tool).

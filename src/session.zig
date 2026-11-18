@@ -92,7 +92,7 @@ pub const Session = struct {
     pub fn init(gpa: std.mem.Allocator, io: std.Io, client: *std.http.Client, cfg: provider.Config, options: Options) !Session {
         if (options.fork) |fork| {
             if (options.resume_id != null or options.continue_latest) return error.ConflictingForkOptions;
-            try cfg.checkSession(fork.provider, fork.model);
+            try cfg.checkFork(fork.provider, fork.model);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", fork.custom_provider orelse "")) return error.SessionProviderMismatch;
         }
         var s: Session = .{
@@ -142,8 +142,11 @@ pub const Session = struct {
             s.tools.cfg = s.cfg;
             s.tools.mcp_client = try @import("mcp.zig").Client.create(gpa, io, s.cfg.mcp_servers, options.environ, options.home, options.user_home, s.cfg.sandbox.writable, s.cfg.sandbox.mode != .off);
             s.setTuning(s.log.tuning);
-            try cfg.checkSession(s.log.provider, s.log.model);
+            try cfg.checkSession(s.log.provider);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", s.log.custom_provider orelse "")) return error.SessionProviderMismatch;
+            if (cfg.protocol() != .chat_completions and !std.mem.eql(u8, s.log.model orelse "", cfg.model)) {
+                s.context_tokens = compaction.estimateTokens(s.history.items, cfg);
+            }
             s.cache_key = s.log.cache_key orelse s.id;
             s.tools.forked = s.log.forked_from != null;
             s.parent_session_id = s.log.parent_session_id;
@@ -168,7 +171,7 @@ pub const Session = struct {
                     .mcp_servers = s.cfg.mcp_servers,
                     .plugin_skills = s.cfg.plugin_skills,
                     .messages = messages,
-                    .context_tokens = compaction.estimateTokens(messages),
+                    .context_tokens = compaction.estimateTokens(messages, cfg),
                     .cwd = cwd,
                     .provider = cfg.provider,
                     .custom_provider = cfg.custom_provider,
@@ -364,10 +367,10 @@ pub const Session = struct {
     pub fn undo(s: *Session) ![]u8 {
         const a = s.arena.allocator();
         const intent = "[undo requested] File restoration may follow. Re-read affected files before continuing.";
-        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = intent, .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = intent }}), null);
+        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = intent, .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = intent }}, s.cfg), null);
         const text = try s.undo_history.undo(&s.tools, s.gpa);
         errdefer s.gpa.free(text);
-        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = try a.dupe(u8, text), .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = text }}), null);
+        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = try a.dupe(u8, text), .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = text }}, s.cfg), null);
         return text;
     }
 
@@ -494,7 +497,7 @@ pub const Session = struct {
             try messages.append(s.gpa, m);
         }
         try messages.append(s.gpa, .{ .role = "assistant", .content = text, .reasoning = reasoning });
-        try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items), null);
+        try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items, s.cfg), null);
     }
 
     fn announceDelivered(s: *Session, item: inbox.Item, sink: Sink) !void {
@@ -571,7 +574,7 @@ pub const Session = struct {
             var waited = try s.commitDelivery(.{
                 .from = s.history.items.len,
                 .messages = pending.items,
-                .context_tokens = s.context_tokens + compaction.estimateTokens(pending.items),
+                .context_tokens = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg),
                 .task_ids = s.tools.progress.highWater(s.io),
                 .model = s.cfg.model,
             }, inserted, .insert, &.{});
@@ -614,7 +617,7 @@ pub const Session = struct {
             if (s.cfg.limits.max_steps) |max_steps| {
                 if (step_index >= max_steps) return s.finishStepLimit(pending, sink, cancel, detail, max_steps);
             }
-            const size = s.context_tokens + compaction.estimateTokens(pending.items);
+            const size = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg);
             // The first fork request must send the inherited cache prefix before compaction can rewrite it.
             if (!(s.tools.forked and s.log.steps == 0) and size >= s.cfg.context_window - s.cfg.context_window / 4 and size >= s.compact_backoff)
                 try s.autoCompact(sink, cancel, detail);

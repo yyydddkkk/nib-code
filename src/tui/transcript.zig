@@ -1885,6 +1885,7 @@ test "Run detail controls preserve siblings and mode state at narrow and wide wi
         }));
         const e = &t.entries.items[0];
         e.open = true;
+        _ = e.height(win);
         const file_hit = e.control(win, 3).?;
         try testing.expectEqual(@as(usize, 0), file_hit.action.?.file);
         if (width == 60) {
@@ -1919,8 +1920,10 @@ test "Run detail controls preserve siblings and mode state at narrow and wide wi
         defer a.free(simple);
         try testing.expectEqualStrings(normal, simple);
         e.simple = false;
+        _ = e.height(win);
         e.toggleControl(e.control(win, 0).?);
         try testing.expect(!e.open);
+        _ = e.height(win);
         e.toggleControl(e.control(win, 0).?);
         try testing.expect(e.details.script_open and e.changes.files[0].open.?);
         const restored = try entryText(a, e, width);

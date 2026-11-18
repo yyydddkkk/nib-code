@@ -1128,8 +1128,8 @@ test "environment validation and model-dependent defaults" {
     try env.put("NIB_MODEL", "gpt-6-sol");
     cfg = try resolve(a, &env, "", "config.toml", &detail);
     try t.expectEqual(@as(u64, 272000), cfg.context_window);
-    try cfg.checkSession(.codex, "gpt-6-sol");
-    try t.expectError(error.SessionProviderMismatch, cfg.checkSession(.chat_completions, null));
+    try cfg.checkSession(.codex);
+    try t.expectError(error.SessionProviderMismatch, cfg.checkSession(.chat_completions));
     try env.put("NIB_MODEL", "unknown");
     try t.expectError(error.UnknownCodexModelContextWindow, resolve(a, &env, "", "config.toml", &detail));
     try env.put("NIB_CONTEXT_WINDOW", "10000");
