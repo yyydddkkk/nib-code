@@ -22,14 +22,14 @@ pub const Menu = struct {
     pinned: []commands.Candidate = &.{},
     pin_arena: std.heap.ArenaAllocator,
     gpa: std.mem.Allocator,
-    /// `@` completions: set while the cursor ends an `@` mention.
+    /// Completion source at the cursor.
     mention: enum { none, file, skill } = .none,
     index: ?*paths.Index = null,
     wake: ?paths.Index.Wake = null,
-    /// Owns the strings of `file_buf`; reset when the matches are recomputed.
-    file_arena: std.heap.ArenaAllocator,
+    /// Owns completion strings and skill rows until the next match pass.
+    mention_arena: std.heap.ArenaAllocator,
+    mention_rows: []commands.Candidate = &.{},
     file_buf: [paths.max_hits]commands.Candidate = undefined,
-    file_len: usize = 0,
     file_query: [256]u8 = undefined,
     file_query_len: usize = 0,
     file_generation: u64 = 0,
@@ -40,7 +40,7 @@ pub const Menu = struct {
     skill_list: []const @import("../session/skills.zig").Skill = &.{},
 
     pub fn init(gpa: std.mem.Allocator) Menu {
-        return .{ .arena = .init(gpa), .gpa = gpa, .file_arena = .init(gpa), .pin_arena = .init(gpa), .skill_arena = .init(gpa) };
+        return .{ .arena = .init(gpa), .gpa = gpa, .mention_arena = .init(gpa), .pin_arena = .init(gpa), .skill_arena = .init(gpa) };
     }
 
     pub fn deinit(m: *Menu) void {
@@ -48,7 +48,7 @@ pub const Menu = struct {
             ix.deinit();
             m.gpa.destroy(ix);
         }
-        m.file_arena.deinit();
+        m.mention_arena.deinit();
         m.skill_arena.deinit();
         m.pin_arena.deinit();
         m.arena.deinit();
@@ -92,7 +92,7 @@ pub const Menu = struct {
             slash = slash[0..n];
         }
         if (slash.len > 0 or m.mention == .none) return slash;
-        return m.file_buf[0..m.file_len];
+        return m.mention_rows;
     }
 
     /// Follows the editor's `@` mention: starts or refreshes the path listing and ranks it.
@@ -101,7 +101,7 @@ pub const Menu = struct {
             if (e.skillMention()) |skill| return m.syncSkills(@constCast(session), skill.query);
             m.mention = .none;
             m.file_fresh = false;
-            m.file_len = 0;
+            m.mention_rows = &.{};
             return;
         };
         if (m.index == null) {
@@ -120,7 +120,6 @@ pub const Menu = struct {
         ix.withEntries(Rank{ .m = m, .query = query, .same = same, .generation = &ix.generation }, Rank.run);
     }
 
-    /// Lists discovered skills whose names start with `query`; they reuse the `@` rows.
     fn syncSkills(m: *Menu, session: *Session, query: []const u8) void {
         if (m.mention != .skill) {
             m.mention = .skill;
@@ -128,18 +127,17 @@ pub const Menu = struct {
             m.skill_list = session.discoverSkills(m.skill_arena.allocator()) catch &.{};
         }
         m.file_fresh = false;
-        _ = m.file_arena.reset(.retain_capacity);
-        const a = m.file_arena.allocator();
-        m.file_len = 0;
+        _ = m.mention_arena.reset(.retain_capacity);
+        const a = m.mention_arena.allocator();
+        var rows: std.ArrayList(commands.Candidate) = .empty;
         for (m.skill_list) |skill| {
-            if (m.file_len == m.file_buf.len) break;
             if (query.len > skill.name.len or !std.ascii.eqlIgnoreCase(skill.name[0..query.len], query)) continue;
             const value = std.fmt.allocPrint(a, "${s} ", .{skill.name}) catch break;
             const line = std.mem.sliceTo(skill.description, '\n');
-            m.file_buf[m.file_len] = .{ .command = .help, .value = value, .label = skill.name, .detail = line, .is_path = true };
-            m.file_len += 1;
+            rows.append(a, .{ .command = .help, .value = value, .label = skill.name, .detail = line, .is_path = true }) catch break;
         }
-        if (m.sel >= m.file_len) m.sel = 0;
+        m.mention_rows = rows.items;
+        if (m.sel >= rows.items.len) m.sel = 0;
     }
 
     const Rank = struct {
@@ -155,18 +153,19 @@ pub const Menu = struct {
             m.file_fresh = true;
             @memcpy(m.file_query[0..r.query.len], r.query);
             m.file_query_len = r.query.len;
-            _ = m.file_arena.reset(.retain_capacity);
-            const a = m.file_arena.allocator();
+            _ = m.mention_arena.reset(.retain_capacity);
+            const a = m.mention_arena.allocator();
             var hits: [paths.max_hits]paths.Hit = undefined;
-            m.file_len = 0;
+            var len: usize = 0;
             for (paths.top(entries, r.query, &hits)) |h| {
                 const entry = entries[h.index];
                 const value = paths.insertion(a, entry.path, entry.dir) catch break;
                 const label = if (entry.dir) std.fmt.allocPrint(a, "{s}/", .{entry.path}) catch break else entry.path;
-                m.file_buf[m.file_len] = .{ .command = .help, .value = value, .label = label, .detail = "", .is_path = true };
-                m.file_len += 1;
+                m.file_buf[len] = .{ .command = .help, .value = value, .label = label, .detail = "", .is_path = true };
+                len += 1;
             }
-            if (m.sel >= m.file_len) m.sel = 0;
+            m.mention_rows = m.file_buf[0..len];
+            if (m.sel >= len) m.sel = 0;
         }
     };
 

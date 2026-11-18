@@ -81,8 +81,28 @@ def tui_menu(tmp):
         assert users(reply.messages)[-1].startswith("check this $review now"), reply.messages
 
 
+def tui_scroll_skills(tmp):
+    with fixture(tmp, []) as (terminal, _, _):
+        for i in range(14):
+            skill = tmp / f".nib/skills/task-{i:02}/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(f"---\ndescription: Task number {i:02}\n---\n")
+
+        def visible():
+            return "\n".join(screen(terminal.read(), 120, 32))
+
+        terminal.send("$")
+        wait_for(lambda: "Task number 00" in visible(), "first skill candidate")
+        assert "Task number 13" not in visible(), "the list should scroll, not resize the menu"
+        terminal.send("\x1b[B" * 13)
+        wait_for(lambda: "Task number 13" in visible(), "last skill after scrolling")
+        terminal.send("\t")
+        wait_for(lambda: "$task-13 " in visible(), "accepted last skill")
+
+
 if __name__ == "__main__":
     ask_expansion()
     with tempfile.TemporaryDirectory(prefix="nib-skill-mentions-") as directory:
         tui_menu(Path(directory) / "menu")
+        tui_scroll_skills(Path(directory) / "scroll")
     print("skill mentions: ok")
