@@ -27,6 +27,8 @@ fn startsWithFold(text: []const u8, prefix: []const u8) bool {
 test "profiles follow the model name, not the provider" {
     const t = std.testing;
     const cases = [_]struct { model: []const u8, expected: Profile }{
+        .{ .model = "gpt-6.2-sol", .expected = .codex },
+        .{ .model = "gpt-6.2-astra", .expected = .codex },
         .{ .model = "gpt-6.1-sol", .expected = .codex },
         .{ .model = "gpt-6-luna", .expected = .codex },
         .{ .model = "GPT-6.1-Terra", .expected = .codex },

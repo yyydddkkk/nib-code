@@ -6,13 +6,13 @@ Service identity is separate from wire protocol: codex, openai, anthropic, deeps
 
 | id | Protocol | Default `base_url` | Credentials | Default model / window |
 | --- | --- | --- | --- | --- |
-| codex | responses, Codex login/WS extensions | `https://chatgpt.com/backend-api` | ChatGPT sign-in (`/provider`, `nib login codex`) or `CODEX_HOME/auth.json` | `gpt-6.1-sol` / 500000 |
-| openai | responses, SSE | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.1-sol` / 1050000 |
+| codex | responses, Codex login/WS extensions | `https://chatgpt.com/backend-api` | ChatGPT sign-in (`/provider`, `nib login codex`) or `CODEX_HOME/auth.json` | `gpt-6.2-sol` / 500000 |
+| openai | responses, SSE | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.2-sol` / 1050000 |
 | anthropic | `anthropic_messages`, SSE | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` / 1000000 |
 | deepseek | `chat_completions`, SSE | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `deepseek-flash` / 1000000 |
 | xai | responses, SSE | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-4.7` / 500000 |
 
-Snapshot: user-provided models.dev `api.json`, fetched **2026-11-06**. OpenAI lists gpt-6.1-sol/terra, both window 1050000/output 128000. Anthropic lists claude-opus-5-5, `claude-sonnet-5-5`, claude-haiku-5-5, claude-fable-5-1, all window 1000000/output 128000. xAI lists grok-4.7/4.6, both window 500000. DeepSeek retains deepseek-flash/deepseek-v4-pro, both window 1000000. Codex retains its list/windows/defaults; see [codex.md](codex.md). This short catalog neither guarantees account access nor calls discovery endpoints.
+Snapshot: user-provided models.dev `api.json`, fetched **2026-11-06**. OpenAI additionally lists GPT-6.2 [Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol)/[Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), both window 1050000/output 128000, alongside gpt-6.1-sol/terra. Both GPT-6.2 models reject reasoning effort `none`; `off` uses `low`. Anthropic lists claude-opus-5-5, `claude-sonnet-5-5`, claude-haiku-5-5, claude-fable-5-1, all window 1000000/output 128000. xAI lists grok-4.7/4.6, both window 500000. DeepSeek retains deepseek-flash/deepseek-v4-pro, both window 1000000. Codex also lists GPT-6.2 Sol/Astra with backend-specific windows; see [codex.md](codex.md). This short catalog neither guarantees account access nor calls discovery endpoints.
 
 ## Small model
 

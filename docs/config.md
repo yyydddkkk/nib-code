@@ -33,7 +33,7 @@ ui = "normal" # normal (default) or simple
 open = "zed {path}:{line}" # optional: command run when a file path is clicked
 
 [codex]
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 base_url = "https://chatgpt.com/backend-api"
 context_window = 500000
 reasoning_summary = "off" # auto enables readable reasoning summaries
@@ -61,7 +61,7 @@ run_output_bytes = 16384
 hallmark = true # All disabled by default; enable individually by name
 ```
 
-Only the selected provider section applies; switching need not rewrite others. Without environment/file settings the service is codex (`gpt-6.1-sol`, window 500000 tokens) when signed in; otherwise startup uses the first credentialed service without saving it ([providers.md](providers.md#signing-in-and-choosing)). Codex windows depend on model; unknown models require `context_window` or NIB_CONTEXT_WINDOW. Models/resume/credentials: [codex.md](codex.md), [ADR 0011](adr/0011-provider-wire-protocols.md).
+Only the selected provider section applies; switching need not rewrite others. Without environment/file settings the service is codex (`gpt-6.2-sol`, window 500000 tokens) when signed in; otherwise startup uses the first credentialed service without saving it ([providers.md](providers.md#signing-in-and-choosing)). Codex windows depend on model; unknown models require `context_window` or NIB_CONTEXT_WINDOW. Models/resume/credentials: [codex.md](codex.md), [ADR 0011](adr/0011-provider-wire-protocols.md).
 
 Built-ins: codex (default), openai, anthropic, deepseek, xai. Legacy chat_completions is a DeepSeek-compatible entry retaining independent Session identity. Tables/windows/authentication/effort/custom examples: [providers.md](providers.md).
 
@@ -69,7 +69,7 @@ Built-ins: codex (default), openai, anthropic, deepseek, xai. Legacy chat_comple
 provider = "openai"
 
 [openai]
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 
 # For your OpenAI-compatible endpoint, set top-level provider to mysite
 [providers.mysite]

@@ -966,7 +966,7 @@ test "provider defaults file environment and command effort precedence" {
     var detail: ?[]u8 = null;
     var cfg = try resolve(a, &env, "", "test/config.toml", &detail);
     try t.expectEqual(provider.Id.codex, cfg.provider);
-    try t.expectEqualStrings("gpt-6.1-sol", cfg.model);
+    try t.expectEqualStrings("gpt-6.2-sol", cfg.model);
     try t.expectEqual(@as(u64, 500000), cfg.context_window);
     try t.expectEqualStrings("/fictional/.codex", cfg.codex_home.?);
     const text =
@@ -1044,7 +1044,7 @@ test "NIB_HOME alone locates global data and absent configuration is empty" {
     const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/absent", .{tmp.sub_path});
     var detail: ?[]u8 = null;
     const cfg = try load(a, t.io, &env, root, &detail);
-    try t.expectEqualStrings("gpt-6.1-sol", cfg.model);
+    try t.expectEqualStrings("gpt-6.2-sol", cfg.model);
     try t.expectError(error.FileNotFound, tmp.dir.access(t.io, "absent", .{}));
 }
 
@@ -1570,7 +1570,7 @@ test "model entries include configured services and saving is atomic" {
     try t.expectEqualStrings(saved, try tmp.dir.readFileAlloc(t.io, "config.toml", a, .unlimited));
     const new_home = try std.fs.path.join(a, &.{ root, "new" });
     _ = try saveModel(a, t.io, &env, new_home, .{ .provider = "openai", .model = null });
-    try t.expectEqualStrings("provider = \"openai\"\n[openai]\nmodel = \"gpt-6.1-sol\"\n", try tmp.dir.readFileAlloc(t.io, "new/config.toml", a, .unlimited));
+    try t.expectEqualStrings("provider = \"openai\"\n[openai]\nmodel = \"gpt-6.2-sol\"\n", try tmp.dir.readFileAlloc(t.io, "new/config.toml", a, .unlimited));
 }
 
 test "model entries merge environment login store and configured models by service" {

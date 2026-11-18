@@ -57,7 +57,7 @@ def test_fresh_install(tmp):
     try:
         until_visible(terminal, "Not signed in")
         until_visible(terminal, "No provider · /provider to sign in")
-        assert "gpt-6.1" not in visible(terminal)
+        assert "gpt-" not in visible(terminal)
         terminal.send("hello world\r")
         until_visible(terminal, "Add endpoint…")
         until_visible(terminal, "Choose a service")
@@ -88,7 +88,7 @@ def test_key_entry_and_model_list(tmp):
         until_visible(terminal, "•" * len(mock.key))
         assert mock.key not in visible(terminal)
         terminal.send("\r")
-        until_visible(terminal, "openai · gpt-6.1-sol")
+        until_visible(terminal, "openai · gpt-6.2-sol")
         assert mock.key.encode() not in terminal.read()
         auth = home / "nib" / "auth.json"
         assert store(home) == {"keys": {"openai": mock.key}} and mode(auth) == 0o600
@@ -99,7 +99,8 @@ def test_key_entry_and_model_list(tmp):
         terminal.send("/model ")
         until_visible(terminal, "gpt-6.1-terra")
         shown = visible(terminal)
-        assert "gpt-6.1-sol" in shown and "current" in shown and "claude" not in shown and "deepseek" not in shown
+        assert "gpt-6.2-sol" in shown and "gpt-6.2-astra" in shown and "current" in shown
+        assert "claude" not in shown and "deepseek" not in shown
         terminal.send("\x15/status\r")
         until_visible(terminal, "key stored by nib")
         terminal.send("/provider logout openai\r")

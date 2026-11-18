@@ -9,6 +9,8 @@ const image = @import("../image.zig");
 
 const Model = p.Model;
 pub const models = [_]Model{
+    .{ .id = "gpt-6.2-sol", .context_window = 500_000, .can_disable_reasoning = false },
+    .{ .id = "gpt-6.2-astra", .context_window = 272_000, .can_disable_reasoning = false },
     .{ .id = "gpt-6.1-terra", .context_window = 500_000 },
     .{ .id = "gpt-6.1-sol", .context_window = 500_000, .can_disable_reasoning = false },
     .{ .id = "gpt-6-astra", .context_window = 272_000, .can_disable_reasoning = false },
@@ -18,7 +20,7 @@ pub const models = [_]Model{
     .{ .id = "gpt-5.6-sol", .context_window = 272_000 },
     .{ .id = "gpt-5.6-terra", .context_window = 272_000 },
 };
-pub const default_model = models[1].id;
+pub const default_model = models[0].id;
 
 fn modelInfo(id: []const u8) ?Model {
     for (models) |model| if (std.mem.eql(u8, id, model.id)) return model;
@@ -657,6 +659,9 @@ pub fn retryDelayMs(message: []const u8) ?u64 {
 }
 
 test "Codex catalog context windows" {
+    try std.testing.expectEqualStrings("gpt-6.2-sol", default_model);
+    try std.testing.expectEqual(@as(u64, 500_000), try contextWindow("gpt-6.2-sol"));
+    try std.testing.expectEqual(@as(u64, 272_000), try contextWindow("gpt-6.2-astra"));
     try std.testing.expectEqual(@as(u64, 500_000), try contextWindow("gpt-6.1-sol"));
     try std.testing.expectEqual(@as(u64, 272_000), try contextWindow("gpt-6-sol"));
     try std.testing.expectError(error.UnknownCodexModelContextWindow, contextWindow("unknown"));
@@ -689,6 +694,8 @@ test "Codex request body defaults to no summary and supports opt in" {
         .{ .thinking = true, .expected_effort = "medium" },
         .{ .effort = "high", .expected_effort = "high" },
         .{ .thinking = false, .expected_effort = "low" },
+        .{ .model = "gpt-6.2-astra", .thinking = false, .expected_effort = "low" },
+        .{ .model = "gpt-6.1-sol", .thinking = false, .expected_effort = "low" },
         .{ .model = "gpt-6.1-terra", .thinking = false, .expected_effort = "none" },
         .{ .effort = "none", .expected_effort = "none" },
     };

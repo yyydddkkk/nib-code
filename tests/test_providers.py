@@ -29,6 +29,8 @@ class Providers(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
                 return [json.loads(line) for line in result.stdout.splitlines()]
             events = ask("round trip", "--effort", "high")
+            if name == "openai":
+                self.assertTrue(all(body["model"] == "gpt-6.2-sol" for _, _, body in mock.requests))
             self.assertFalse(mock.errors, mock.errors)
             end = events[-1]["end"]
             self.assertEqual(end["steps"], 2)
@@ -110,6 +112,21 @@ class Providers(unittest.TestCase):
         for name, protocol, key in [("openai", "responses", "OPENAI_API_KEY"), ("xai", "responses", "XAI_API_KEY"), ("anthropic", "anthropic_messages", "ANTHROPIC_API_KEY"), ("deepseek", "chat_completions", "DEEPSEEK_API_KEY")]:
             with self.subTest(provider=name):
                 self.exercise(name, protocol, key)
+
+    def test_gpt_62_minimum_reasoning(self):
+        with tempfile.TemporaryDirectory(prefix="nib-gpt-62-") as tmp:
+            mock = Mock("responses", custom_run=True)
+            self.addCleanup(mock.close)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("NIB_", "OPENAI_", "CODEX_"))}
+            env.update(HOME=tmp, NIB_HOME=str(Path(tmp) / "nib"), NIB_PROVIDER="openai", NIB_BASE_URL=mock.url, OPENAI_API_KEY=mock.key)
+            for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+                with self.subTest(model=model):
+                    result = subprocess.run([str(BIN), "ask", "--json", "again", "--effort", "off"], cwd=tmp, env=dict(env, NIB_MODEL=model), capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    body = mock.requests[-1][2]
+                    self.assertEqual(body["model"], model)
+                    self.assertEqual(body["reasoning"], {"effort": "low"})
+            self.assertFalse(mock.errors, mock.errors)
 
     def test_custom_identity_and_no_auth(self):
         with tempfile.TemporaryDirectory(prefix="nib-provider-noauth-") as tmp:

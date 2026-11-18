@@ -17,7 +17,7 @@ nib --continue
 
 No NIB_API_KEY needed. Nonsecret settings go in `$NIB_HOME/config.toml` (default `~/.nib/config.toml`) [codex]; [configuration](config.md). NIB_BASE_URL/NIB_MODEL/NIB_CONTEXT_WINDOW override files; clear obsolete overrides when switching services.
 
-Default `gpt-6.1-sol`, window 500,000 tokens. Explicit model:
+Default `gpt-6.2-sol`, window 500,000 tokens. Explicit model:
 
 ```sh
 NIB_MODEL=gpt-6-sol NIB_REASONING_EFFORT=high nib ask 'Hello'
@@ -30,19 +30,23 @@ provider = "codex"
 effort = "medium"
 
 [codex]
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 context_window = 500000
 ```
 
 These settings apply on subsequent launches; environment overrides temporarily, --effort has highest precedence.
 
-Local pi `catalog/providers/openai-codex.ts` list (2026-11-01, primary source):
+Upstream pi [`catalog/providers/openai-codex.ts`](https://github.com/earendil-works/pi/blob/main/packages/ai/catalog/providers/openai-codex.ts) catalog (November 2026; Codex backend defaults):
 
 | Model | Default window |
 |---|---:|
+| gpt-6.2-sol | 500,000 |
+| gpt-6.2-astra | 272,000 |
 | gpt-6.1-terra、`gpt-6.1-sol` | 500,000 |
 | gpt-6-astra、gpt-6-sol、gpt-6-luna | 272,000 |
 | gpt-5.6-luna、gpt-5.6-sol、gpt-5.6-terra | 272,000 |
+
+GPT-6.2 Sol and Astra both reject reasoning effort `none`; `off` and compaction use `low`. Their OpenAI API windows differ from Codex: both are 1,050,000 tokens with 128,000 maximum output tokens ([Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra)).
 
 Unknown models require `context_window` or NIB_CONTEXT_WINDOW, without guessing. Availability depends on account.
 

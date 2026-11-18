@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert headers["authorization"] == "Bearer fake-access-initial"
         assert headers["chatgpt-account-id"] == "fake-account-initial"
         assert headers["openai-beta"] == "responses=experimental" and headers["originator"] == "nib"
-        assert body["model"] == "gpt-6.1-sol" and body["store"] is False and body["stream"] is True
+        assert body["model"] == "gpt-6.2-sol" and body["store"] is False and body["stream"] is True
         assert "You are nib" in body["instructions"]
         assert "effort-specific" not in body["instructions"] and "run's effort" not in body["instructions"]
         assert "reasoning.encrypted_content" in body["include"]
@@ -177,7 +177,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         session = plain[0]["start"]["session_id"]
         assert_cache_key([request], session)
         history, records = replay(tmp / f"nib/sessions/{session}.jsonl")
-        assert records[0]["provider"] == "codex" and records[0]["model"] == "gpt-6.1-sol"
+        assert records[0]["provider"] == "codex" and records[0]["model"] == "gpt-6.2-sol"
         base = body["instructions"].split("\n\nInstructions below apply in order; later instructions take priority.\n", 1)[0]
         assert records[0]["system_sha"] == hashlib.sha256(base.encode()).hexdigest()[:12]
         reasoning = history[-1]["reasoning"]
@@ -196,8 +196,10 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert not any(e.get("delta", {}).get("kind") == "reasoning" for e in disabled)
 
         before = len(requests())
-        ask("plain text", overrides={"NIB_MODEL": "gpt-6.1-sol", "NIB_THINKING": "off"})
-        assert requests()[-1]["body"]["reasoning"]["effort"] == "low"
+        for model in ("gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol"):
+            ask("plain text", overrides={"NIB_MODEL": model, "NIB_THINKING": "off"})
+            assert requests()[-1]["body"]["model"] == model
+            assert requests()[-1]["body"]["reasoning"]["effort"] == "low"
         large = ask("large reasoning")
         large_id = large[0]["start"]["session_id"]
         large_history, _ = replay(tmp / f"nib/sessions/{large_id}.jsonl")
@@ -401,7 +403,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert compact_id not in (session, tool_id, parent_id, child_id)
         assert_cache_key(requests()[before:], compact_id)
         summaries = [r["body"] for r in requests()[before:] if not r["body"].get("tools")]
-        assert summaries and all(body["reasoning"]["effort"] == "low" and body["model"] == "gpt-6.1-sol" for body in summaries), summaries
+        assert summaries and all(body["reasoning"]["effort"] == "low" and body["model"] == "gpt-6.2-sol" for body in summaries), summaries
         assert all("max_tokens" not in body and "max_output_tokens" not in body for body in summaries)
         assert all("Keep the summary within" in body["input"][-1]["content"] for body in summaries)
         for scenario in ("summary empty", "summary truncated"):

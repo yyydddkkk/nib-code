@@ -63,7 +63,7 @@ pub const Definition = struct {
 pub const definitions = [_]Definition{
     .{ .id = "codex", .models = &codex.models, .name = "Codex", .protocol = .responses, .base_url = "https://chatgpt.com/backend-api", .api_key_env = &.{}, .default_model = codex.default_model },
     .{ .id = "chat_completions", .vision = false, .name = "Chat Completions", .protocol = .chat_completions, .base_url = "https://api.deepseek.com", .api_key_env = &.{ "NIB_API_KEY", "DEEPSEEK_API_KEY" }, .default_model = chat.default_model },
-    .{ .id = "openai", .custom_run = true, .name = "OpenAI", .protocol = .responses, .base_url = "https://api.openai.com/v1", .api_key_env = &.{"OPENAI_API_KEY"}, .default_model = "gpt-6.1-sol", .models = &.{ .{ .id = "gpt-6.1-sol", .context_window = 1050000 }, .{ .id = "gpt-6.1-terra", .context_window = 1050000 } } },
+    .{ .id = "openai", .custom_run = true, .name = "OpenAI", .protocol = .responses, .base_url = "https://api.openai.com/v1", .api_key_env = &.{"OPENAI_API_KEY"}, .default_model = "gpt-6.2-sol", .models = &.{ .{ .id = "gpt-6.2-sol", .context_window = 1050000, .can_disable_reasoning = false }, .{ .id = "gpt-6.2-astra", .context_window = 1050000, .can_disable_reasoning = false }, .{ .id = "gpt-6.1-sol", .context_window = 1050000 }, .{ .id = "gpt-6.1-terra", .context_window = 1050000 } } },
     .{ .id = "anthropic", .name = "Anthropic", .protocol = .anthropic_messages, .base_url = "https://api.anthropic.com", .api_key_env = &.{"ANTHROPIC_API_KEY"}, .default_model = "claude-sonnet-5-5", .models = &.{ .{ .id = "claude-opus-5-5", .context_window = 1000000 }, .{ .id = "claude-sonnet-5-5", .context_window = 1000000 }, .{ .id = "claude-haiku-5-5", .context_window = 1000000 }, .{ .id = "claude-fable-5-1", .context_window = 1000000 } } },
     .{ .id = "deepseek", .vision = false, .name = "DeepSeek", .protocol = .chat_completions, .base_url = "https://api.deepseek.com", .api_key_env = &.{"DEEPSEEK_API_KEY"}, .default_model = "deepseek-flash", .models = &.{ .{ .id = "deepseek-flash", .context_window = 1000000 }, .{ .id = "deepseek-v4-pro", .context_window = 1000000 } } },
     .{ .id = "xai", .name = "xAI", .protocol = .responses, .base_url = "https://api.x.ai/v1", .api_key_env = &.{"XAI_API_KEY"}, .default_model = "grok-4.7", .models = &.{ .{ .id = "grok-4.7", .context_window = 500000 }, .{ .id = "grok-4.6", .context_window = 500000 } } },
@@ -382,6 +382,31 @@ test "provider definitions cover every identity exactly once" {
         try std.testing.expectEqual(@as(usize, 1), count);
         try std.testing.expect(definition(id).base_url.len > 0);
         try std.testing.expect(definition(id).default_model.len > 0);
+    }
+}
+
+test "GPT-6.2 catalogs and reasoning across services" {
+    const t = std.testing;
+    try t.expectEqualStrings("gpt-6.2-sol", definition(.openai).default_model);
+    for ([_]Id{ .codex, .openai }) |id| {
+        for ([_][]const u8{ "gpt-6.2-sol", "gpt-6.2-astra" }) |name| {
+            var cfg: Config = .{ .provider = id, .base_url = "", .api_key = "", .model = name };
+            var found = false;
+            for (definition(id).models) |model| {
+                if (!std.mem.eql(u8, model.id, name)) continue;
+                found = true;
+                try t.expect(!model.can_disable_reasoning);
+                try t.expectEqual(@as(u32, 128000), model.max_output);
+                if (id == .openai) try t.expectEqual(@as(u64, 1050000), model.context_window);
+            }
+            try t.expect(found);
+            try t.expect(cfg.vision());
+            try t.expectEqualStrings("server default", cfg.effectiveEffort());
+            try cfg.setEffort("off");
+            try t.expectEqualStrings("low", cfg.effectiveEffort());
+            try cfg.setEffort("high");
+            try t.expectEqualStrings("high", cfg.effectiveEffort());
+        }
     }
 }
 
