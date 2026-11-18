@@ -115,8 +115,10 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         const data = try input.interface.allocRemaining(init.arena.allocator(), .unlimited);
         const envelope = try std.json.parseFromSliceLeaky(@import("tools/agent/input.zig").Input, init.arena.allocator(), data, .{});
         cfg = envelope.config;
-        if (cfg.api_key_env) |key_env| cfg.api_key = init.environ_map.get(key_env) orelse "";
-        try config.applyStore(init.arena.allocator(), init.io, options.home, &cfg);
+        const a = init.arena.allocator();
+        var credentials = try @import("auth.zig").Lookup.init(a, init.io, init.environ_map, options.home);
+        defer credentials.deinit();
+        try credentials.apply(a, &cfg);
         prompt = envelope.prompt;
         options.fork = envelope.fork;
         options.undo_dir = envelope.undo_dir;
@@ -136,7 +138,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         return;
     }
     if (effort) |value| try cfg.setEffort(value);
-    if (ask and !config.credentialed(init.arena.allocator(), init.io, cfg)) {
+    if (ask and !@import("auth.zig").current(init.arena.allocator(), init.io, cfg).available()) {
         const explicit = init.environ_map.get("NIB_PROVIDER") != null;
         if (!explicit) {
             detail.* = try gpa.dupe(u8, "No provider · run nib login");

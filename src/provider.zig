@@ -195,10 +195,6 @@ pub const Config = struct {
         return if (cfg.key_source == .store) "the key stored by nib (run nib login)" else cfg.api_key_env orelse "API key";
     }
 
-    pub fn missingKey(cfg: Config) bool {
-        return cfg.provider != .codex and cfg.api_key.len == 0 and (cfg.provider != .custom or cfg.api_key_env != null);
-    }
-
     pub fn checkSession(cfg: Config, id: Id, model: ?[]const u8) !void {
         if (cfg.provider != id) return error.SessionProviderMismatch;
         if (cfg.protocol() != .chat_completions) if (model) |original| {

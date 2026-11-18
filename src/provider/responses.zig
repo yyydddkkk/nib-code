@@ -242,7 +242,7 @@ fn streamSse(gpa: std.mem.Allocator, out: std.mem.Allocator, client: *std.http.C
         const status = @backingInt(response.head.status);
         if (status == 401) {
             if (cfg.provider != .codex) {
-                detail.* = try std.fmt.allocPrint(gpa, "{s}: HTTP 401; check {s}.", .{ cfg.name(), cfg.api_key_env orelse "API key" });
+                detail.* = try std.fmt.allocPrint(gpa, "{s}: HTTP 401; check {s}.", .{ cfg.name(), cfg.keyHint() });
                 return error.HttpStatus;
             }
             if (attempt == 0) {

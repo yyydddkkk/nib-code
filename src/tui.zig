@@ -315,7 +315,7 @@ pub const App = struct {
     pub fn refreshCredentials(app: *App) void {
         var arena: std.heap.ArenaAllocator = .init(app.gpa);
         defer arena.deinit();
-        app.signed_out = !config.credentialed(arena.allocator(), app.io, app.cfg);
+        app.signed_out = !@import("auth.zig").current(arena.allocator(), app.io, app.cfg).available();
     }
 
     pub fn credentialed(app: *App) bool {

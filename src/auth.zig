@@ -24,73 +24,149 @@ pub const Service = struct {
     status: []const u8,
 };
 
-pub fn codexLocations(env: *const Env, nib_home: []const u8, a: std.mem.Allocator) !codex.Locations {
+pub fn codexLocations(env: *const Env, nib_home: ?[]const u8, a: std.mem.Allocator) !codex.Locations {
     const codex_home = env.get("CODEX_HOME") orelse try std.fs.path.join(a, &.{ env.get("HOME") orelse "", ".codex" });
     return .{ .nib_home = nib_home, .codex_home = codex_home, .issuer = env.get("NIB_AUTH_ISSUER") };
 }
 
-fn envKey(env: *const Env, names: []const []const u8) ?[]const u8 {
-    for (names) |name| if (env.get(name)) |value| if (value.len > 0) return name;
-    return null;
+/// No key or token values are carried in credential status.
+pub const Source = union(enum) {
+    missing,
+    env: ?[]const u8,
+    store,
+    key,
+    codex: struct { source: codex.Source, plan: ?[]const u8 },
+    no_key,
+
+    pub fn available(source: Source) bool {
+        return source != .missing;
+    }
+};
+
+pub const State = struct {
+    source: Source,
+    /// A saved key can coexist with an effective environment key.
+    stored: bool,
+};
+
+fn codexSource(a: std.mem.Allocator, io: std.Io, locations: codex.Locations) Source {
+    var l = codex.load(a, io, locations) catch return .missing;
+    defer l.deinit();
+    return .{ .codex = .{ .source = l.source, .plan = if (l.plan) |plan| a.dupe(u8, plan) catch null else null } };
 }
 
-fn storedKey(a: std.mem.Allocator, io: std.Io, home: []const u8, id: []const u8) bool {
-    const file = store.path(a, home) catch return false;
-    defer a.free(file);
-    var doc = store.Doc.load(a, io, file) catch return false;
-    defer doc.deinit();
-    return doc.key(id) != null;
+fn keySource(id: provider.Id, env_name: ?[]const u8, has_key: bool, source: provider.KeySource) Source {
+    if (has_key) return switch (source) {
+        .env => .{ .env = env_name },
+        .store => .store,
+        .none => .key,
+    };
+    return if (id == .custom and env_name == null) .no_key else .missing;
+}
+
+const Key = struct {
+    env_name: ?[]const u8,
+    value: ?[]const u8,
+    source: provider.KeySource,
+    stored: bool,
+};
+
+/// A short-lived view of the real environment and nib's store, shared across a selection pass.
+pub const Lookup = struct {
+    env: *const Env,
+    home: ?[]const u8 = null,
+    doc: ?store.Doc = null,
+
+    pub fn init(a: std.mem.Allocator, io: std.Io, env: *const Env, home: []const u8) !Lookup {
+        const file = try store.path(a, home);
+        defer a.free(file);
+        return .{ .env = env, .home = home, .doc = store.Doc.load(a, io, file) catch null };
+    }
+
+    pub fn deinit(lookup: *Lookup) void {
+        if (lookup.doc) |*doc| doc.deinit();
+    }
+
+    fn key(lookup: *Lookup, id: provider.Id, name: []const u8, custom_env: ?[]const u8) Key {
+        const names = if (id != .custom) provider.definition(id).api_key_env else if (custom_env) |variable| &.{variable} else &.{};
+        const saved = if (lookup.doc) |*doc| doc.key(name) else null;
+        for (names) |variable| {
+            const value = lookup.env.get(variable) orelse continue;
+            if (value.len > 0) return .{ .env_name = variable, .value = value, .source = .env, .stored = saved != null };
+        }
+        return .{ .env_name = if (names.len > 0) names[0] else null, .value = saved, .source = if (saved != null) .store else .none, .stored = saved != null };
+    }
+
+    pub fn inspect(lookup: *Lookup, a: std.mem.Allocator, io: std.Io, id: provider.Id, name: []const u8, custom_env: ?[]const u8) !State {
+        if (id == .codex) {
+            var scratch: std.heap.ArenaAllocator = .init(a);
+            defer scratch.deinit();
+            const source = codexSource(a, io, try codexLocations(lookup.env, lookup.home, scratch.allocator()));
+            return .{ .source = source, .stored = source == .codex and source.codex.source == .nib };
+        }
+        const picked = lookup.key(id, name, custom_env);
+        return .{ .source = keySource(id, picked.env_name, picked.value != null, picked.source), .stored = picked.stored };
+    }
+
+    /// Only request configuration gets a credential value. Codex loads tokens on demand.
+    pub fn apply(lookup: *Lookup, a: std.mem.Allocator, cfg: *provider.Config) !void {
+        var scratch: std.heap.ArenaAllocator = .init(a);
+        defer scratch.deinit();
+        const loc = try codexLocations(lookup.env, lookup.home, scratch.allocator());
+        cfg.nib_home = if (loc.nib_home) |dir| try a.dupe(u8, dir) else null;
+        cfg.codex_home = if (loc.codex_home) |dir| try a.dupe(u8, dir) else null;
+        cfg.auth_issuer = if (loc.issuer) |url| try a.dupe(u8, url) else null;
+        if (cfg.provider == .codex) return;
+        // A child can carry a direct key without an environment name.
+        if (cfg.api_key.len > 0 and cfg.api_key_env == null) return;
+        const picked = lookup.key(cfg.provider, cfg.name(), cfg.api_key_env);
+        cfg.api_key_env = if (picked.env_name) |name| try a.dupe(u8, name) else null;
+        cfg.api_key = if (picked.value) |value| try a.dupe(u8, value) else "";
+        cfg.key_source = picked.source;
+    }
+};
+
+/// Availability of the effective request configuration, not a fresh lookup of its API key.
+pub fn current(a: std.mem.Allocator, io: std.Io, cfg: provider.Config) Source {
+    if (cfg.provider == .codex) return codexSource(a, io, .{ .nib_home = cfg.nib_home, .codex_home = cfg.codex_home, .issuer = cfg.auth_issuer });
+    return keySource(cfg.provider, cfg.api_key_env, cfg.api_key.len > 0, cfg.key_source);
 }
 
 fn host(base_url: []const u8) []const u8 {
     const rest = if (std.mem.indexOf(u8, base_url, "://")) |i| base_url[i + 3 ..] else base_url;
-    return rest[0 .. std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len];
+    const authority = rest[0 .. std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len];
+    return if (std.mem.lastIndexOfScalar(u8, authority, '@')) |i| authority[i + 1 ..] else authority;
 }
 
 /// Built-in services in menu order, then custom ones. Everything is allocated with `a`.
 pub fn services(a: std.mem.Allocator, io: std.Io, env: *const Env, home: []const u8) ![]const Service {
+    var lookup = try Lookup.init(a, io, env, home);
+    defer lookup.deinit();
     var out: std.ArrayList(Service) = .empty;
     for (config.startup_order) |id| {
-        const entry = for (provider.definitions) |d| {
-            if (std.mem.eql(u8, d.id, id)) break d;
-        } else unreachable;
-        if (std.mem.eql(u8, id, "codex")) {
-            var status: []const u8 = "—";
-            var signed_in = false;
-            var stored = false;
-            if (codex.load(a, io, try codexLocations(env, home, a))) |loaded| {
-                var l = loaded;
-                defer l.deinit();
+        const kind = std.meta.stringToEnum(provider.Id, id).?;
+        const entry = provider.definition(kind);
+        const state = try lookup.inspect(a, io, kind, id, null);
+        const status = switch (state.source) {
+            .codex => |l| blk: {
                 var buf: [64]u8 = undefined;
-                status = try std.fmt.allocPrint(a, "signed in · {s}", .{oauth.planLabel(&buf, l.plan)});
-                signed_in = true;
-                stored = l.source == .nib;
-            } else |_| {}
-            try out.append(a, .{ .id = id, .name = entry.name, .custom = false, .signed_in = signed_in, .stored = stored, .status = status });
-            continue;
-        }
-        const from_env = envKey(env, entry.api_key_env);
-        const stored = storedKey(a, io, home, id);
-        try out.append(a, .{
-            .id = id,
-            .name = entry.name,
-            .custom = false,
-            .signed_in = from_env != null or stored,
-            .stored = stored,
-            .status = if (from_env) |name| name else if (stored) "key stored" else "—",
-        });
+                break :blk try std.fmt.allocPrint(a, "signed in · {s}", .{oauth.planLabel(&buf, l.plan)});
+            },
+            .env => |name| name orelse "environment",
+            .store => "key stored",
+            else => "—",
+        };
+        try out.append(a, .{ .id = id, .name = entry.name, .custom = false, .signed_in = state.source.available(), .stored = state.stored, .status = status });
     }
     for (try config.customProviders(a, io, home)) |item| {
-        const from_env = if (item.api_key_env) |name| envKey(env, &.{name}) != null else false;
-        const stored = storedKey(a, io, home, item.id);
-        const signed_in = item.api_key_env == null or from_env or stored;
+        const state = try lookup.inspect(a, io, .custom, item.id, item.api_key_env);
         try out.append(a, .{
             .id = item.id,
             .name = item.id,
             .custom = true,
-            .signed_in = signed_in,
-            .stored = stored,
-            .status = if (signed_in) host(item.base_url) else try std.fmt.allocPrint(a, "{s} · no key", .{host(item.base_url)}),
+            .signed_in = state.source.available(),
+            .stored = state.stored,
+            .status = if (state.source.available()) host(item.base_url) else try std.fmt.allocPrint(a, "{s} · no key", .{host(item.base_url)}),
         });
     }
     return out.toOwnedSlice(a);
@@ -103,15 +179,13 @@ pub fn find(list: []const Service, id: []const u8) ?Service {
 
 /// One line for /status; never contains a key.
 pub fn describe(a: std.mem.Allocator, io: std.Io, cfg: provider.Config) []const u8 {
-    if (cfg.provider == .codex) {
-        var l = codex.load(a, io, .{ .nib_home = cfg.nib_home, .codex_home = cfg.codex_home, .issuer = cfg.auth_issuer }) catch return "not signed in";
-        defer l.deinit();
-        return if (l.source == .nib) "ChatGPT login stored by nib" else "ChatGPT login from the Codex CLI";
-    }
-    return switch (cfg.key_source) {
-        .env => std.fmt.allocPrint(a, "key from {s}", .{cfg.api_key_env orelse "environment"}) catch "key from environment",
+    return switch (current(a, io, cfg)) {
+        .codex => |l| if (l.source == .nib) "ChatGPT login stored by nib" else "ChatGPT login from the Codex CLI",
+        .env => |name| std.fmt.allocPrint(a, "key from {s}", .{name orelse "environment"}) catch "key from environment",
         .store => "key stored by nib",
-        .none => if (cfg.missingKey()) "no key" else "no key needed",
+        .key => "API key",
+        .no_key => "no key needed",
+        .missing => if (cfg.provider == .codex) "not signed in" else "no key",
     };
 }
 
@@ -134,11 +208,12 @@ pub const Signout = struct {
 };
 
 pub fn signOut(a: std.mem.Allocator, io: std.Io, env: *const Env, home: []const u8, id: []const u8) !Signout {
-    if (std.mem.eql(u8, id, "codex")) {
+    const kind = std.meta.stringToEnum(provider.Id, id) orelse .custom;
+    var lookup: Lookup = .{ .env = env, .home = home };
+    if (kind == .codex) {
         const removed = try codex.remove(a, io, home);
-        var remaining = codex.load(a, io, try codexLocations(env, home, a)) catch return .{ .removed = removed };
-        remaining.deinit();
-        return .{ .removed = removed, .cli_login = true };
+        const remaining = try lookup.inspect(a, io, kind, id, null);
+        return .{ .removed = removed, .cli_login = remaining.source == .codex and remaining.source.codex.source == .cli };
     }
     const file = try store.path(a, home);
     defer a.free(file);
@@ -146,17 +221,11 @@ pub fn signOut(a: std.mem.Allocator, io: std.Io, env: *const Env, home: []const 
     defer doc.deinit();
     const removed = doc.removeKey(id);
     if (removed) try doc.saveSecret(io, a, file);
-    var names: []const []const u8 = &.{};
-    for (provider.definitions) |d| if (std.mem.eql(u8, d.id, id)) {
-        names = d.api_key_env;
-    };
-    var env_name = envKey(env, names);
-    if (env_name == null) for (config.customProviders(a, io, home) catch &.{}) |item| {
-        if (std.mem.eql(u8, item.id, id)) if (item.api_key_env) |name| {
-            env_name = envKey(env, &.{name});
-        };
-    };
-    return .{ .removed = removed, .env_name = env_name };
+    const custom_env = if (kind == .custom) for (config.customProviders(a, io, home) catch &.{}) |item| {
+        if (std.mem.eql(u8, item.id, id)) break item.api_key_env;
+    } else null else null;
+    const remaining = try lookup.inspect(a, io, kind, id, custom_env);
+    return .{ .removed = removed, .env_name = if (remaining.source == .env) remaining.source.env else null };
 }
 
 /// The confirmation after signing out; `out` says what is left behind.

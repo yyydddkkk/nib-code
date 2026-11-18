@@ -212,8 +212,12 @@ fn modelSelection(app: *App, arg: []const u8) !config.ModelSelection {
         }
         var arena: std.heap.ArenaAllocator = .init(app.gpa);
         defer arena.deinit();
-        const list = auth.services(arena.allocator(), app.io, app.environ, app.session.options.home) catch &.{};
-        if (slash > 0 and slash + 1 < first.len and auth.find(list, first[0..slash]) != null) return config.parseModel(arg);
+        if (slash > 0 and slash + 1 < first.len) {
+            const list = config.customProviders(arena.allocator(), app.io, app.session.options.home) catch &.{};
+            for (list) |item| {
+                if (std.mem.eql(u8, item.id, first[0..slash])) return config.parseModel(arg);
+            }
+        }
     }
     return .{ .provider = app.cfg.name(), .model = first };
 }
