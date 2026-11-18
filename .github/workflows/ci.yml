@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -14,7 +12,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      - name: Test development and CI tooling
+        run: |
+          python3 tests/test_release_metadata.py
+          python3 tests/test_dev_install.py
+      - name: Classify release metadata
+        id: classify
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mode=full
+          if [[ $EVENT == pull_request ]]; then
+            mode=$(python3 scripts/ci_release_metadata.py "$BASE" "$HEAD" "$GITHUB_SHA")
+          fi
+          echo "Validation mode: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
   list:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'metadata' }}
     timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
@@ -26,6 +54,8 @@ jobs:
         run: python3 scripts/ci_matrix.py >> "$GITHUB_OUTPUT"
 
   build-linux:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'metadata' }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +71,8 @@ jobs:
           path: zig-out/bin/nib
 
   build-macos:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'metadata' }}
     timeout-minutes: 15
     runs-on: macos-latest
     steps:
@@ -56,6 +88,8 @@ jobs:
           path: zig-out/bin/nib
 
   unit:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'metadata' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -85,3 +119,33 @@ jobs:
     with:
       os: macos-latest
       matrix: ${{ needs.list.outputs.macos }}
+
+  gate:
+    name: CI gate
+    needs: [plan, list, build-linux, build-macos, unit, e2e-linux, e2e-macos]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the selected validation to pass
+        shell: bash
+        env:
+          PLAN: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          LIST: ${{ needs.list.result }}
+          BUILD_LINUX: ${{ needs.build-linux.result }}
+          BUILD_MACOS: ${{ needs.build-macos.result }}
+          UNIT: ${{ needs.unit.result }}
+          E2E_LINUX: ${{ needs.e2e-linux.result }}
+          E2E_MACOS: ${{ needs.e2e-macos.result }}
+        run: |
+          echo "Plan=$PLAN mode=$MODE list=$LIST build-linux=$BUILD_LINUX build-macos=$BUILD_MACOS unit=$UNIT e2e-linux=$E2E_LINUX e2e-macos=$E2E_MACOS"
+          [[ $PLAN == success ]]
+          case $MODE in
+            metadata) expected=skipped ;;
+            full) expected=success ;;
+            *) exit 1 ;;
+          esac
+          for result in "$LIST" "$BUILD_LINUX" "$BUILD_MACOS" "$UNIT" "$E2E_LINUX" "$E2E_MACOS"; do
+            [[ $result == "$expected" ]] || exit 1
+          done

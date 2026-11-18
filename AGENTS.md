@@ -13,11 +13,12 @@ A coding agent written in Zig 0.17, with command name `nib`.
 - Resume: `nib -c` / `nib --continue`; `nib --resume <32-character-lowercase-hex-ID>`. Also supported by `ask`; options may precede or follow the prompt.
 - Statistics: `python3 scripts/stats.py [log-file-or-directory] [--since YYYY-MM-DD] [--cwd directory] [--group-by version|system|patches|profile] [--json]`. SQL metrics index: `python3 scripts/stats_db.py [log-file-or-directory] [--db path] [--rebuild]`; see [docs/stats-sqlite.md](docs/stats-sqlite.md).
 - Reflection: TUI `/reflect [focus]` (requires `NIB_ISSUE_REPO=owner/name`; publishes issues automatically; see [docs/reflect.md](docs/reflect.md) for the switch and safety boundaries).
-- Release: update the version and release notes, then push a tag; see [docs/releasing.md](docs/releasing.md).
+- Daily local build: `./scripts/dev-install.sh` installs `nib-dev` from the exact committed local `main`, regardless of the invoking worktree. See [docs/developing.md](docs/developing.md).
+- Stable release: batch merged changes, open a version-and-bilingual-notes PR, and tag only with approval; see [docs/releasing.md](docs/releasing.md).
 
 ## Workflow
 
-- Test only the code you change locally: matching unit tests through `zig build test` (use filters if supported) and 1–3 related e2e scripts. GitHub Actions runs unit tests on Linux/macOS and the full e2e suite on Linux (portable scripts also on macOS) on pushes to main, pull requests, or manual dispatches (see [docs/ci.md](docs/ci.md)): push a feature branch (`feat/…`, `fix/…`, `docs/…`, `ci/…`), wait for CI to pass before merging to main, and delete the remote branch after merging. Use the parallel local runner only when CI is unavailable.
+- Edit in a feature worktree and test only what changed locally (matching unit tests and 1–3 related e2e scripts for application changes; tooling checks for workflow/script changes). Push a feature branch (`feat/…`, `fix/…`, `docs/…`, `ci/…`) and open a PR. Wait for `CI gate` before merging to main; delete the remote branch after merging. Normal PRs and manual runs validate Linux/macOS in full, release-metadata-only PRs use a narrow fast path, and pushes to main do not rerun CI. Do not directly push application changes to main outside the approved exception in [docs/ci.md](docs/ci.md). Use the parallel local runner only when CI is unavailable.
 - Pushing feature branches is allowed. Pushing or merging to main, tags/releases, editing GitHub releases, and closing or merging PRs require the maintainer's explicit approval.
 - Everything published on GitHub is English: docs, ADRs, comments, and prompts. Two exceptions: `README.zh-CN.md`, and release notes (`docs/releases/<version>.md`, from 0.9.0), which carry English first, then `---` and the same notes in Chinese.
 - Never tune nib for benchmark tasks. Judge speed against other agents using the same model, effort, and service tier.

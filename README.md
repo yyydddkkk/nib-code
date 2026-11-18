@@ -49,6 +49,8 @@ Installs to `~/.local/bin`. `nib update` upgrades in place. `NIB_VERSION` pins a
 
 From source (Zig 0.17): `zig build -Doptimize=ReleaseFast --prefix ~/.local`
 
+For daily development without replacing stable `nib`, [install `nib-dev` from local `main`](docs/developing.md).
+
 ## Use
 
 `/simple` or Ctrl+S hides everything but the conversation.
