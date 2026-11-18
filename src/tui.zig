@@ -1924,38 +1924,94 @@ test "file paths are links only when open is configured; a click runs the comman
     try std.testing.expectEqualStrings("Could not run open-tool", app.notice.?);
 }
 
-test "scrolled nested Run headings toggle without collapsing the Run or its siblings" {
-    const a = std.testing.allocator;
-    var vx: vaxis.Vaxis = undefined;
-    vx.screen = try vaxis.Screen.init(a, .{ .cols = 120, .rows = 40, .x_pixel = 0, .y_pixel = 0 });
-    defer vx.screen.deinit(a);
-    var app: App = undefined;
-    app.gpa = a;
-    app.io = std.testing.io;
-    app.flow = .{ .gpa = a };
-    clickApp(&app, &vx, .{ .row = 2 }, .{ .row = 2 });
-    app.body.?.window.width = 120;
-    app.body.?.window.height = 40;
-    defer app.transcript.deinit(a);
-    try app.transcript.startRun(a, "script-body");
-    try app.transcript.endRun(a, true, "result-body", 1, .{});
-    const e = &app.transcript.entries.items[0];
-    e.open = true;
-    e.details.open = true;
-    _ = e.print(app.body.?.window.child(.{ .y_off = -2 }), true);
-    _ = try app.handle(mouseEvent(5, 2, .motion));
-    try std.testing.expectEqual(@as(?usize, 0), app.hovered);
-    try std.testing.expectEqual(@as(?u16, 4), app.hovered_row);
-    _ = try app.handle(mouseEvent(5, 2, .press));
-    _ = try app.handle(mouseEvent(5, 2, .release));
-    try std.testing.expect(e.open and e.details.script_open);
-    try std.testing.expect(e.details.result_open == null);
-    try std.testing.expectEqual(@as(u16, 2), app.scroll.top.?.row);
-    app.clickEntry(0, 5);
-    try std.testing.expect(e.open and e.details.script_open);
-    _ = try app.handle(mouseEvent(5, 2, .press));
-    _ = try app.handle(mouseEvent(9, 2, .drag));
-    try std.testing.expect(app.selection.dragged);
-    try std.testing.expect(app.selection.takeClick() == null);
-    try std.testing.expect(e.details.script_open);
+test "scrolled Run layout drives wrapped heading hover and click but leaves bodies selectable" {
+    const t = std.testing;
+    const Frame = struct {
+        const color: vaxis.Color = .{ .rgb = .{ 18, 18, 18 } };
+
+        fn draw(app: *App) void {
+            var input: Editor = .{};
+            app.body = view.drawFrame(app.vx.window(), app.transcript.entries.items, &input, &app.scroll, &.{}, 0, .{
+                .cfg = app.cfg,
+                .hovered = app.hovered,
+                .hovered_row = app.hovered_row,
+                .hover_bg = color,
+            }, &app.status_text);
+        }
+
+        fn click(app: *App, row: i16) !void {
+            _ = try app.handle(mouseEvent(7, row, .press));
+            _ = try app.handle(mouseEvent(7, row, .release));
+        }
+    };
+    for ([_]u16{ 60, 120, 160 }, [_]u16{ 3, 2, 1 }) |width, heading_rows| {
+        var vx: vaxis.Vaxis = undefined;
+        vx.screen = try vaxis.Screen.init(t.allocator, .{ .cols = width, .rows = 24, .x_pixel = 0, .y_pixel = 0 });
+        defer vx.screen.deinit(t.allocator);
+        var app: App = undefined;
+        app.gpa = t.allocator;
+        app.io = t.io;
+        app.flow = .{ .gpa = t.allocator };
+        const top = @import("tui/viewport.zig").Anchor{ .row = 3 + heading_rows - 1 };
+        clickApp(&app, &vx, top, top);
+        app.hovered = null;
+        app.status_text = .{};
+        defer app.transcript.deinit(t.allocator);
+        try app.transcript.startRun(t.allocator, "script-body");
+        try app.transcript.endRun(t.allocator, true, "result-body", 1, try .init(t.allocator, &.{
+            .{ .path = "src/part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-part-界-last-file.zig", .added = 1, .removed = 0, .diff = "+first-body\n" },
+            .{ .path = "b.zig", .added = 1, .removed = 0, .diff = "+second-body\n" },
+        }));
+        const later: [30][6]u8 = @splat("later\n".*);
+        try app.transcript.add(t.allocator, .info, std.mem.asBytes(&later));
+        const e = &app.transcript.entries.items[0];
+        e.open = true;
+
+        Frame.draw(&app);
+        try t.expectEqual(top, app.body.?.top);
+        _ = try app.handle(mouseEvent(7, 0, .motion));
+        try t.expectEqual(@as(?usize, 0), app.hovered);
+        try t.expectEqual(@as(?u16, 3), app.hovered_row);
+        Frame.draw(&app);
+        try t.expectEqualDeep(Frame.color, vx.screen.readCell(width - 2, 0).?.style.bg);
+        try t.expectEqualDeep(vaxis.Color.default, vx.screen.readCell(width - 2, 1).?.style.bg);
+        var heading: std.ArrayList(u8) = .empty;
+        defer heading.deinit(t.allocator);
+        try @import("tui/selection/history.zig").appendRow(&heading, t.allocator, &vx.screen, 0, 0, width - 1);
+        try t.expect(std.mem.indexOf(u8, heading.items, "last-file.zig") != null);
+        try Frame.click(&app, 0);
+        try t.expect(e.open and e.changes.files[0].open.?);
+        try t.expect(e.changes.files[1].open == null);
+
+        Frame.draw(&app);
+        _ = try app.handle(mouseEvent(7, 1, .motion));
+        try t.expect(app.hovered == null);
+        _ = try app.handle(mouseEvent(7, 1, .press));
+        _ = try app.handle(mouseEvent(17, 1, .drag));
+        try t.expect(app.selection.dragged);
+        const copied = try app.selection.textInHistory(t.allocator, &vx.screen, app.body, app.transcript.entries.items);
+        defer t.allocator.free(copied);
+        try t.expectEqualStrings("+first-body", copied);
+        app.selection.clear();
+        try Frame.click(&app, 1);
+        try t.expect(e.changes.files[0].open.?);
+        try Frame.click(&app, 3); // Details
+        Frame.draw(&app);
+        try Frame.click(&app, 4); // Result
+        Frame.draw(&app);
+        try Frame.click(&app, 6); // Script, now after the Result body
+        try t.expect(e.details.open.? and e.details.result_open.? and e.details.script_open);
+
+        app.scroll.top = .{};
+        Frame.draw(&app);
+        try Frame.click(&app, 0);
+        try t.expect(!e.open);
+        app.cfg.simple = true;
+        Frame.draw(&app);
+        try Frame.click(&app, 0);
+        Frame.draw(&app);
+        try t.expect(e.open and e.changes.files[0].open.?);
+        try t.expect(e.details.open.? and e.details.result_open.? and e.details.script_open);
+        try t.expectEqualStrings("s", vx.screen.readCell(7, top.row + 7).?.char.grapheme);
+    }
 }

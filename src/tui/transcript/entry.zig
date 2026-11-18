@@ -58,7 +58,14 @@ pub const Entry = struct {
     /// Collapsible entries share the transcript ctrl+o state.
     open: bool = false,
     details: run_details.State = .{},
-    cached: ?struct { width: u16, len: usize, open: bool, rows: u16 } = null,
+    cached: ?struct {
+        width: u16,
+        len: usize,
+        open: bool,
+        rows: u16,
+        simple: bool = false,
+        width_method: vaxis.gwidth.Method = .wcwidth,
+    } = null,
 
     const Invocation = struct {
         id: []const u8,
@@ -181,6 +188,14 @@ pub const Entry = struct {
 
     pub fn print(e: *Entry, win: vaxis.Window, commit: bool) u16 {
         if (e.simple and (e.kind == .bill or e.kind == .changes)) return 0;
+        if (e.kind == .run) {
+            const rows = e.height(win);
+            if (commit) {
+                const prefix_rows = e.printRunPrefix(win, true);
+                if (e.open) _ = run_details.draw(e, win, true, prefix_rows);
+            }
+            return rows;
+        }
         if (e.kind == .changes) return e.printChanges(win, commit);
         if (e.kind == .assistant) {
             if (e.allocator) |a| return e.markdown_cache.draw(a, win, e.displayText(), .{ .tint = e.code_bg }, commit);
@@ -194,13 +209,8 @@ pub const Entry = struct {
         }
         var segs: [max_segments]vaxis.Segment = undefined;
         const folded = e.collapsible() and !e.open;
-        const wrap: @FieldType(vaxis.Window.PrintOptions, "wrap") = if (folded) .none else if (e.kind == .run or e.kind == .background or e.kind == .failure) .grapheme else .word;
+        const wrap: @FieldType(vaxis.Window.PrintOptions, "wrap") = if (folded) .none else if (e.kind == .background or e.kind == .failure) .grapheme else .word;
         const shown = segments(e, &segs);
-        if (e.kind == .run) {
-            const rows = e.printRunPrefix(win, commit);
-            if (!e.open) return rows;
-            return rows +| run_details.draw(e, win.child(.{ .y_off = rows }), commit, null).rows;
-        }
         if (folded and e.kind == .user) {
             const suffix_width = vaxis.gwidth.gwidth(e.label.items, win.screen.width_method) + @as(u16, if (e.queued != null) 9 else 0);
             const available = win.width -| suffix_width;
@@ -247,16 +257,17 @@ pub const Entry = struct {
     pub const Control = struct { first: u16, rows: u16, action: ?run_details.Action = null };
 
     pub fn control(e: *Entry, win: vaxis.Window, row: u16) ?Control {
+        if (e.kind == .run) {
+            // Viewport layout has already measured the entry at this width.
+            const rows = e.cachedHeight(win) orelse return null;
+            const parent_rows = if (e.open) 1 else rows;
+            if (row < parent_rows) return .{ .first = 0, .rows = parent_rows };
+            if (!e.open or row >= rows) return null;
+            const hit = e.details.hit(e.changes.files, row) orelse return null;
+            return .{ .first = hit.rows.first, .rows = hit.rows.count, .action = hit.action };
+        }
         const parent_rows = e.toggleRows(win);
-        if (row < parent_rows) return .{ .first = 0, .rows = parent_rows };
-        if (e.kind != .run or !e.open) return null;
-        const prefix_rows = e.printRunPrefix(win, false);
-        if (row < prefix_rows) return null;
-        var measure = win;
-        measure.height = std.math.maxInt(u16);
-        const layout = run_details.draw(e, measure, false, row - prefix_rows);
-        const hit = layout.hit orelse return null;
-        return .{ .first = prefix_rows +| hit.first, .rows = hit.rows, .action = hit.action };
+        return if (row < parent_rows) .{ .first = 0, .rows = parent_rows } else null;
     }
 
     pub fn toggleControl(e: *Entry, control_hit: Control) void {
@@ -333,15 +344,35 @@ pub const Entry = struct {
         return e.height(win) +| e.gap;
     }
 
+    fn layoutLen(e: *const Entry) usize {
+        return e.displayText().len + e.output.items.len + e.changes.diff.len;
+    }
+
+    fn cachedHeight(e: *const Entry, win: vaxis.Window) ?u16 {
+        const c = e.cached orelse return null;
+        if (c.width != win.width or c.len != e.layoutLen() or c.open != e.open) return null;
+        if (e.kind == .run) {
+            if (c.simple != e.simple or c.width_method != win.screen.width_method) return null;
+        } else if (e.simple) return null;
+        return c.rows;
+    }
+
     pub fn height(e: *Entry, win: vaxis.Window) u16 {
-        const len = e.displayText().len + e.output.items.len + e.changes.diff.len;
-        if (if (e.simple) null else e.cached) |c| {
-            if (c.width == win.width and c.len == len and c.open == e.open) return c.rows;
-        }
+        if (e.cachedHeight(win)) |rows| return rows;
         var measure = win;
         measure.height = std.math.maxInt(u16);
-        const rows = e.print(measure, false);
-        e.cached = .{ .width = win.width, .len = len, .open = e.open, .rows = rows };
+        const rows = if (e.kind == .run) blk: {
+            const prefix_rows = e.printRunPrefix(measure, false);
+            break :blk if (e.open) run_details.draw(e, measure, false, prefix_rows) else prefix_rows;
+        } else e.print(measure, false);
+        e.cached = .{
+            .width = win.width,
+            .len = e.layoutLen(),
+            .open = e.open,
+            .rows = rows,
+            .simple = e.simple,
+            .width_method = win.screen.width_method,
+        };
         return rows;
     }
 

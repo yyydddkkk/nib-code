@@ -5,21 +5,59 @@ const FileDiff = @import("changes.zig").ChangeText.FileDiff;
 
 pub const preview_lines = 20;
 pub const Action = union(enum) { details, result, full_result, script, file: usize };
-pub const Hit = struct { action: Action, first: u16, rows: u16 };
-pub const Layout = struct { rows: u16 = 0, hit: ?Hit = null };
+pub const Rows = struct {
+    first: u16 = 0,
+    count: u16 = 0,
+
+    fn end(r: Rows) u16 {
+        return r.first +| r.count;
+    }
+
+    fn contains(r: Rows, row: u16) bool {
+        return row >= r.first and row < r.end();
+    }
+};
+
+pub const Hit = struct { action: Action, rows: Rows };
+
+const Layout = struct {
+    columns: Columns = .{},
+    changes: Rows = .{},
+    details: Rows = .{},
+    result: Rows = .{},
+    preview: Rows = .{},
+    output: Rows = .{},
+    full_result: Rows = .{},
+    script: Rows = .{},
+    script_body: Rows = .{},
+};
 
 pub const State = struct {
     open: ?bool = null,
     result_open: ?bool = null,
     full_result: bool = false,
     script_open: bool = false,
+    layout: Layout = .{},
+
     // vaxis retains printed slices until the frame is rendered.
     changes_label: [80]u8 = undefined,
     result_label: [80]u8 = undefined,
     script_label: [80]u8 = undefined,
     preview_label: [100]u8 = undefined,
 
-    pub fn expanded(s: State, e: anytype) bool {
+    pub fn hit(s: *const State, files: []const FileDiff, row: u16) ?Hit {
+        inline for (.{ .details, .result, .full_result, .script }) |action| {
+            const rows = @field(s.layout, @tagName(action));
+            if (rows.contains(row)) return .{ .action = action, .rows = rows };
+        }
+        for (files, 0..) |*f, i| {
+            if (row < f.heading_rows.first) break;
+            if (f.heading_rows.contains(row)) return .{ .action = .{ .file = i }, .rows = f.heading_rows };
+        }
+        return null;
+    }
+
+    pub fn expanded(s: *const State, e: anytype) bool {
         return s.open orelse needsAttention(e);
     }
 
@@ -38,7 +76,7 @@ pub const State = struct {
         return attention;
     }
 
-    pub fn resultExpanded(s: State, e: anytype) bool {
+    pub fn resultExpanded(s: *const State, e: anytype) bool {
         return s.result_open orelse (e.changes.file_count == 0 or needsAttention(e));
     }
 
@@ -73,31 +111,37 @@ fn preview(text: []const u8) []const u8 {
 const Painter = struct {
     win: vaxis.Window,
     commit: bool,
-    target: ?u16,
-    layout: Layout = .{},
+    row: u16 = 0,
 
-    fn line(p: *Painter, indent: u16, segments: []const vaxis.Segment, action: ?Action) void {
-        const first = p.layout.rows;
-        const x = @min(indent, p.win.width -| 1);
-        const r = p.win.child(.{ .x_off = x, .y_off = first, .width = p.win.width -| x }).print(segments, .{ .wrap = .grapheme, .commit = p.commit });
-        const rows = @max(1, r.row +| @intFromBool(r.col > 0));
-        p.layout.rows +|= rows;
-        if (action) |a| if (p.target) |row| {
-            if (row >= first and row < p.layout.rows) p.layout.hit = .{ .action = a, .first = first, .rows = rows };
+    // Named blocks keep their measured placement even when the paint window clips them.
+    fn line(p: *Painter, indent: u16, segments: []const vaxis.Segment, placement: ?*Rows) void {
+        if (p.commit) if (placement) |rows| {
+            _ = p.printLine(rows.first, rows.count, indent, segments);
+            p.row = rows.end();
+            return;
         };
+        const first = p.row;
+        const r = p.printLine(first, null, indent, segments);
+        const count = @max(1, r.row +| @intFromBool(r.col > 0));
+        if (placement) |rows| rows.* = .{ .first = first, .count = count };
+        p.row +|= count;
     }
 
-    fn heading(p: *Painter, text: []const u8, expanded: bool, action: Action, indent: u16) void {
-        p.line(indent, &.{ .{ .text = if (expanded) "▾ " else "▸ ", .style = .{ .dim = true } }, .{ .text = text, .style = .{ .dim = true } } }, action);
+    fn printLine(p: *Painter, row: u16, height: ?u16, indent: u16, segments: []const vaxis.Segment) vaxis.Window.PrintResult {
+        const x = @min(indent, p.win.width -| 1);
+        return p.win.child(.{ .x_off = x, .y_off = row, .height = height }).print(segments, .{ .wrap = .grapheme, .commit = p.commit });
     }
 
-    fn file(p: *Painter, f: *FileDiff, index: usize, expanded: bool, columns: Columns) void {
+    fn heading(p: *Painter, text: []const u8, expanded: bool, placement: *Rows, indent: u16) void {
+        p.line(indent, &.{ .{ .text = if (expanded) "▾ " else "▸ ", .style = .{ .dim = true } }, .{ .text = text, .style = .{ .dim = true } } }, placement);
+    }
+
+    fn file(p: *Painter, f: *FileDiff, expanded: bool, columns: Columns) void {
         const path = f.header[0..f.path_len];
         const leaf = if (std.mem.lastIndexOfScalar(u8, path, '/')) |at| at + 1 else 0;
         const added = if (f.added > 0) std.fmt.bufPrint(&f.added_label, "+{d}", .{f.added}) catch unreachable else "";
         const removed = if (f.removed > 0) std.fmt.bufPrint(&f.removed_label, "−{d}", .{f.removed}) catch unreachable else "";
         const aligned = columns.end <= p.win.width;
-        const first = p.layout.rows;
         const segments = [_]vaxis.Segment{
             .{ .text = if (expanded) "▾ " else "▸ ", .style = .{ .dim = true } },
             .{ .text = path[0..leaf], .style = .{ .dim = true } },
@@ -108,9 +152,9 @@ const Painter = struct {
             .{ .text = if (!aligned and added.len > 0 and removed.len > 0) " " else "" },
             .{ .text = if (aligned) "" else removed, .style = .{ .fg = .{ .index = 1 } } },
         };
-        p.line(4, &segments, .{ .file = index });
-        if (aligned) {
-            const row = p.win.child(.{ .y_off = first, .height = 1 });
+        p.line(4, &segments, &f.heading_rows);
+        if (aligned and p.commit) {
+            const row = p.win.child(.{ .y_off = f.heading_rows.first, .height = 1 });
             if (added.len > 0) _ = row.child(.{ .x_off = @intCast(columns.added_end - row.gwidth(added)) }).printSegment(.{ .text = added, .style = .{ .fg = .{ .index = 2 } } }, .{ .wrap = .none, .commit = p.commit });
             if (removed.len > 0) _ = row.child(.{ .x_off = @intCast(columns.removed_start) }).printSegment(.{ .text = removed, .style = .{ .fg = .{ .index = 1 } } }, .{ .wrap = .none, .commit = p.commit });
         }
@@ -118,7 +162,8 @@ const Painter = struct {
 
     fn diff(p: *Painter, text: []const u8) void {
         var lines: intraline.Lines = .{ .text = text };
-        while (lines.next()) |item| {
+        while (p.row < p.win.height) {
+            const item = lines.next() orelse break;
             const style: vaxis.Style = switch (item.line[0]) {
                 '+' => .{ .fg = .{ .index = 2 } },
                 '-' => .{ .fg = .{ .index = 1 } },
@@ -135,9 +180,9 @@ const Painter = struct {
 };
 
 const Columns = struct {
-    added_end: u32,
-    removed_start: u32,
-    end: u32,
+    added_end: u32 = 0,
+    removed_start: u32 = 0,
+    end: u32 = 0,
 
     fn measure(win: vaxis.Window, files: []FileDiff) Columns {
         var path: u32 = 0;
@@ -154,40 +199,41 @@ const Columns = struct {
     }
 };
 
-pub fn draw(e: anytype, win: vaxis.Window, commit: bool, target: ?u16) Layout {
-    var p: Painter = .{ .win = win, .commit = commit, .target = target };
+pub fn draw(e: anytype, win: vaxis.Window, commit: bool, prefix_rows: u16) u16 {
+    var p: Painter = .{ .win = win, .commit = commit, .row = prefix_rows };
     const s = &e.details;
+    const layout = &s.layout;
+    if (!commit) layout.* = .{ .columns = Columns.measure(win, e.changes.files) };
     if (e.changes.files.len > 0) {
-        p.layout.rows +|= 1;
+        p.row +|= 1;
         const title = std.fmt.bufPrint(&s.changes_label, "Changes · {d} {s}", .{ e.changes.file_count, if (e.changes.file_count == 1) "file" else "files" }) catch unreachable;
-        p.line(2, &.{.{ .text = title, .style = .{ .dim = true, .bold = true } }}, null);
-        const columns = Columns.measure(win, e.changes.files);
-        for (e.changes.files, 0..) |*f, i| {
+        p.line(2, &.{.{ .text = title, .style = .{ .dim = true, .bold = true } }}, &layout.changes);
+        for (e.changes.files) |*f| {
             const expanded = f.expanded(e.changes.files.len == 1);
-            p.file(f, i, expanded, columns);
+            p.file(f, expanded, layout.columns);
             if (expanded) p.diff(f.diff);
         }
     }
-    if (e.changesOnly()) return p.layout;
+    if (e.changesOnly()) return p.row;
     const expanded = s.expanded(e);
-    p.heading("Details", expanded, .details, 4);
-    if (!expanded) return p.layout;
+    p.heading("Details", expanded, &layout.details, 4);
+    if (!expanded) return p.row;
     const output = std.mem.trimEnd(u8, e.output.items, "\n");
     const count = lineCount(output);
     const result_open = s.resultExpanded(e);
     const result_title = std.fmt.bufPrint(&s.result_label, "Result · {d} {s}", .{ count, if (count == 1) "line" else "lines" }) catch unreachable;
-    p.heading(result_title, result_open, .result, 4);
+    p.heading(result_title, result_open, &layout.result, 4);
     if (result_open) {
         const limited = count > preview_lines and !s.full_result;
         if (limited) {
             const label = std.fmt.bufPrint(&s.preview_label, "Preview · first {d} of {d} lines", .{ preview_lines, count }) catch unreachable;
-            p.line(6, &.{.{ .text = label, .style = .{ .dim = true } }}, null);
+            p.line(6, &.{.{ .text = label, .style = .{ .dim = true } }}, &layout.preview);
         }
-        p.line(6, &.{.{ .text = if (output.len == 0) "No result" else if (limited) preview(output) else output }}, null);
-        if (count > preview_lines) p.heading(if (limited) "Show full result" else "Show preview", !limited, .full_result, 6);
+        p.line(6, &.{.{ .text = if (output.len == 0) "No result" else if (limited) preview(output) else output }}, &layout.output);
+        if (count > preview_lines) p.heading(if (limited) "Show full result" else "Show preview", !limited, &layout.full_result, 6);
     }
     const script_title = std.fmt.bufPrint(&s.script_label, "Script · {d} {s}", .{ lineCount(e.text.items), if (lineCount(e.text.items) == 1) "line" else "lines" }) catch unreachable;
-    p.heading(script_title, s.script_open, .script, 4);
-    if (s.script_open) p.line(6, &.{.{ .text = std.mem.trimEnd(u8, e.text.items, "\n") }}, null);
-    return p.layout;
+    p.heading(script_title, s.script_open, &layout.script, 4);
+    if (s.script_open) p.line(6, &.{.{ .text = std.mem.trimEnd(u8, e.text.items, "\n") }}, &layout.script_body);
+    return p.row;
 }
