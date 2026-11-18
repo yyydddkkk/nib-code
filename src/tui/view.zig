@@ -175,11 +175,14 @@ fn groupHeader(menu: []const commands.Candidate, index: usize, first: usize) ?co
 
 fn menuLayout(menu: []const commands.Candidate, selected: usize, limit: u16) MenuLayout {
     if (menu.len == 0 or limit == 0) return .{};
-    var first: usize = 0;
-    while (first < selected) : (first += 1) {
-        var needed: usize = 0;
-        for (first..selected + 1) |i| needed += 1 + @as(usize, @intFromBool(groupHeader(menu, i, first) != null));
-        if (needed <= limit) break;
+    var first = selected;
+    var needed: u16 = if (menu[selected].group() == null) 1 else 2;
+    while (first > 0) {
+        const group = menu[first - 1].group();
+        const added: u16 = if (group != null and group != menu[first].group()) 2 else 1;
+        if (needed + added > limit) break;
+        needed += added;
+        first -= 1;
     }
     var layout: MenuLayout = .{ .first = first, .end = first };
     while (layout.end < menu.len) {
