@@ -2,17 +2,19 @@
 
 ## Feature development
 
-Edit and run targeted checks in a feature worktree. For unmerged changes, build and run `./zig-out/bin/nib` in that worktree. Open a PR for the full Linux/macOS [CI gate](ci.md); merging it does not start the same suite again on `main`.
+Start feature branches from `main`, not `dev`. Edit, run targeted checks, and commit in a feature worktree. Open a PR from the feature branch to `main` for the full Linux/macOS [CI gate](ci.md); merging it does not start the same suite again on `main`.
 
-## Daily use from local main
+## Daily use from local dev
 
-Make sure this repository's **local `main`** already contains the merged changes you want. Run this from the root of any worktree containing the script, on Linux or macOS with Git, Zig 0.17, Bash, and Python 3:
+Use a local-only `dev` branch for daily integration. Create it from local `main` if needed (`git branch dev main`), then merge the checked feature commits you want to use into `dev`. This does not need to wait for the PR or CI. Do not push `dev` or use it as the source of a PR to `main`.
+
+Run this from the root of any worktree containing the script, on Linux or macOS with Git, Zig 0.17, Bash, and Python 3:
 
 ```sh
 ./scripts/dev-install.sh
 ```
 
-From another directory, invoke `/path/to/any/nib-worktree/scripts/dev-install.sh`. The script finds the repository from its own location, resolves `refs/heads/main` once, and checks out that exact commit in a temporary, unregistered Git directory. `main` does not need to be checked out anywhere. Neither feature-branch commits nor uncommitted files in any worktree enter the build. Local `main` may lag `origin/main`; the script does not fetch or synchronize either ref and fails if local `main` is missing. Zig may download the committed build's declared dependencies if they are not cached.
+From another directory, invoke `/path/to/any/nib-worktree/scripts/dev-install.sh`. The script finds the repository from its own location, resolves `refs/heads/dev` once, and checks out that exact commit in a temporary, unregistered Git directory. `dev` does not need to be checked out. Feature commits enter the build only once they are included in `dev`; uncommitted changes never enter it. If local `dev` is missing, the script fails rather than falling back to `main`, the invoking branch, or a remote ref. It does not fetch, synchronize, or update branches. Zig may download the committed build's declared dependencies if they are not cached.
 
 The default is Debug at `~/.local/bin/nib-dev`. Use `--release-fast` for ReleaseFast or `--bin-dir /path/to/bin` to choose a different directory (the name is always `nib-dev`). The script prints the commit, mode, and destination. It builds in isolation, then stages and checks the executable with `--version` before atomically replacing `nib-dev`. A failed build, failed validation, or interruption before replacement leaves the old binary in place. Concurrent installs publish complete binaries; the last successful replacement wins. The script never replaces `nib` or restarts existing processes.
 

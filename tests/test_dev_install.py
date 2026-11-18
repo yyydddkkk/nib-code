@@ -12,8 +12,8 @@ set -euo pipefail
 [[ $1 == build && $3 == --cache-dir && $5 == --prefix ]]
 [[ ! -e untracked ]]   # Must not copy any real checkout.
 [[ -z $(git status --porcelain) ]]
-if [[ -n ${MOVE_MAIN_TO:-} ]]; then
-    git -C "$MAIN_REPO" update-ref refs/heads/main "$MOVE_MAIN_TO"
+if [[ -n ${MOVE_DEV_TO:-} ]]; then
+    git -C "$SOURCE_REPO" update-ref refs/heads/dev "$MOVE_DEV_TO"
 fi
 if [[ ${MOCK_FAIL:-} == build ]]; then exit 21; fi
 mkdir -p "$6/bin"
@@ -32,6 +32,7 @@ class DevInstallTest(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.main = self.root / 'repo'
+        self.dev = self.root / 'integration'
         self.feature = self.root / 'feature'
         self.home = self.root / 'home'
         self.bin = self.home / '.local/bin'
@@ -49,11 +50,14 @@ class DevInstallTest(unittest.TestCase):
         (self.main / 'scripts').mkdir()
         shutil.copy2(INSTALLER, self.main / 'scripts')
         (self.main / 'identity').write_text('committed main')
-        self.commit = self.record(self.main)
+        self.main_commit = self.record(self.main)
+        self.git(self.main, 'worktree', 'add', '-qb', 'dev', str(self.dev))
+        (self.dev / 'identity').write_text('committed dev')
+        self.dev_commit = self.record(self.dev)
         self.git(self.main, 'worktree', 'add', '-qb', 'feature', str(self.feature))
         (self.feature / 'identity').write_text('committed feature')
         self.feature_commit = self.record(self.feature)
-        self.git(self.feature, 'update-ref', 'refs/remotes/origin/main', self.feature_commit)
+        self.git(self.feature, 'update-ref', 'refs/remotes/origin/dev', self.feature_commit)
         (self.bin / 'nib').write_bytes(b'stable binary')
         # A temp-looking directory owned by another session must survive.
         self.other_temp = self.tmp / 'nib-dev.other-session'
@@ -83,46 +87,48 @@ class DevInstallTest(unittest.TestCase):
 
     def assert_installed(self, directory, mode):
         actual = subprocess.check_output([directory / 'nib-dev', '--version'], text=True).strip()
-        self.assertEqual(actual, f'nib committed main:{self.commit}:{mode}')
+        self.assertEqual(actual, f'nib committed dev:{self.dev_commit}:{mode}')
 
-    def test_feature_invocation_uses_local_main_not_dirty_checkouts_or_origin(self):
-        for checkout in (self.main, self.feature):
+    def test_feature_invocation_uses_local_dev_not_main_dirty_checkouts_or_origin(self):
+        checkouts = (self.main, self.dev, self.feature)
+        for checkout in checkouts:
             (checkout / 'identity').write_text('uncommitted ' + checkout.name)
             (checkout / 'untracked').touch()
-        before = [self.git(p, 'status', '--porcelain=v1') for p in (self.main, self.feature)]
+        before = [self.git(p, 'status', '--porcelain=v1') for p in checkouts]
         worktrees = self.git(self.feature, 'worktree', 'list', '--porcelain')
         # The working directory and inherited Git environment do not select the source.
         result = self.install(cwd=self.feature, env=dict(self.env, GIT_DIR=str(self.root / 'wrong')))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f'Source: local main ({self.commit})', result.stdout)
+        self.assertIn(f'Source: local dev ({self.dev_commit})', result.stdout)
         self.assertIn('Build:  Debug', result.stdout)
         self.assertIn(f'Target: {self.bin}/nib-dev', result.stdout)
         self.assert_installed(self.bin, 'Debug')
         self.assertEqual(self.git(self.feature, 'worktree', 'list', '--porcelain'), worktrees)
-        self.assertEqual(self.git(self.feature, 'rev-parse', 'refs/heads/main'), self.commit)
-        self.assertEqual(self.git(self.feature, 'rev-parse', 'refs/remotes/origin/main'), self.feature_commit)
-        for checkout, status in zip((self.main, self.feature), before):
+        self.assertEqual(self.git(self.feature, 'rev-parse', 'refs/heads/dev'), self.dev_commit)
+        self.assertEqual(self.git(self.feature, 'rev-parse', 'refs/heads/main'), self.main_commit)
+        self.assertEqual(self.git(self.feature, 'rev-parse', 'refs/remotes/origin/dev'), self.feature_commit)
+        for checkout, status in zip(checkouts, before):
             self.assertEqual(self.git(checkout, 'status', '--porcelain=v1'), status)
             self.assertEqual((checkout / 'identity').read_text(), 'uncommitted ' + checkout.name)
         self.assert_clean()
 
-    def test_main_not_checked_out_and_moves_during_release_fast_build(self):
-        self.git(self.main, 'switch', '-q', '--detach')
+    def test_dev_not_checked_out_and_moves_during_release_fast_build(self):
+        self.git(self.dev, 'switch', '-q', '--detach')
         other_bin = self.root / 'other bin'
-        env = dict(self.env, MAIN_REPO=str(self.main), MOVE_MAIN_TO=self.feature_commit)
+        env = dict(self.env, SOURCE_REPO=str(self.main), MOVE_DEV_TO=self.feature_commit)
         result = self.install('--release-fast', '--bin-dir', 'other bin', env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.git(self.main, 'rev-parse', 'main'), self.feature_commit)
+        self.assertEqual(self.git(self.main, 'rev-parse', 'dev'), self.feature_commit)
         self.assert_installed(other_bin, 'ReleaseFast')
         self.assertFalse((self.bin / 'nib-dev').exists())
         self.assert_clean(other_bin)
 
-    def test_missing_local_main_does_not_fall_back_to_origin(self):
-        self.git(self.main, 'switch', '-q', '--detach')
-        self.git(self.main, 'branch', '-D', 'main')
+    def test_missing_local_dev_does_not_fall_back_to_main_or_origin(self):
+        self.git(self.dev, 'switch', '-q', '--detach')
+        self.git(self.main, 'branch', '-D', 'dev')
         result = self.install()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('cannot resolve local refs/heads/main', result.stderr)
+        self.assertIn('cannot resolve local refs/heads/dev', result.stderr)
         self.assertFalse((self.bin / 'nib-dev').exists())
         self.assert_clean()
 
@@ -172,7 +178,7 @@ class DevInstallTest(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertFalse((self.bin / 'nib-dev').is_symlink())
         actual = subprocess.check_output([self.bin / 'nib-dev', '--version'], text=True).strip()
-        self.assertIn(actual, {f'nib committed main:{self.commit}:{mode}' for mode in ('Debug', 'ReleaseFast')})
+        self.assertIn(actual, {f'nib committed dev:{self.dev_commit}:{mode}' for mode in ('Debug', 'ReleaseFast')})
         self.assert_clean()
 
 

@@ -1,6 +1,6 @@
 # Releasing
 
-Stable releases batch useful changes that have already passed PR CI and merged. For daily use of merged changes without publishing a release, [install nib-dev from local main](developing.md).
+Stable releases batch useful changes that have already passed PR CI and merged. For daily use without publishing a release, [install `nib-dev` from local `dev`](developing.md).
 
 1. Bump only `.version` in `build.zig.zon` to a stable `X.Y.Z` version (no leading zeros).
 2. Add `docs/releases/<version>.md`: start with `# nib <version>` and the English notes, then `---`, then `# nib <version>（中文）` and the same notes in Chinese.

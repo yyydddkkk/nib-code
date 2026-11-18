@@ -13,7 +13,7 @@ A coding agent written in Zig 0.17, with command name `nib`.
 - Resume: `nib -c` / `nib --continue`; `nib --resume <32-character-lowercase-hex-ID>`. Also supported by `ask`; options may precede or follow the prompt.
 - Statistics: `python3 scripts/stats.py [log-file-or-directory] [--since YYYY-MM-DD] [--cwd directory] [--group-by version|system|patches|profile] [--json]`. SQL metrics index: `python3 scripts/stats_db.py [log-file-or-directory] [--db path] [--rebuild]`; see [docs/stats-sqlite.md](docs/stats-sqlite.md).
 - Reflection: TUI `/reflect [focus]` (requires `NIB_ISSUE_REPO=owner/name`; publishes issues automatically; see [docs/reflect.md](docs/reflect.md) for the switch and safety boundaries).
-- Daily local build: `./scripts/dev-install.sh` installs `nib-dev` from the exact committed local `main`, regardless of the invoking worktree. See [docs/developing.md](docs/developing.md).
+- Daily local build: `./scripts/dev-install.sh` installs `nib-dev` from the exact committed local `dev`, regardless of the invoking worktree. See [docs/developing.md](docs/developing.md).
 - Stable release: batch merged changes, open a version-and-bilingual-notes PR, and tag only with approval; see [docs/releasing.md](docs/releasing.md).
 
 ## Workflow
