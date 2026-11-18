@@ -11,6 +11,7 @@ const Event = @import("../session.zig").Event;
 
 pub const Ran = struct {
     outcome: sandbox.Outcome,
+    scope_id: ?usize = null,
     /// Session-arena-owned.
     changes: []const Change,
     images: []const Image = &.{},
@@ -23,7 +24,7 @@ pub fn run(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool)
     errdefer s.tools.background.stop(s.gpa);
     const ran = try runTimed(s, code, cancel, null);
     errdefer ran.outcome.deinit(s.gpa);
-    try s.commit(s.history.items.len, &.{}, s.context_tokens, null);
+    try s.commitLocalRun(s.tools.run_id);
     if (cancel != null and cancel.?.load(.acquire)) s.tools.background.stop(s.gpa);
     return ran;
 }
@@ -78,7 +79,7 @@ pub const PollTarget = struct {
     }
 };
 
-pub const Executed = struct { executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
+pub const Executed = struct { scope_id: ?usize = null, executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
 
 /// Output is arena-owned.
 pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming) !Executed {
@@ -91,7 +92,7 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
         const args = std.json.parseFromSlice(Rerun, a, call.function.arguments, .{}) catch
             return .{ .ok = false, .output = "error: expected {base: string, edits: [{old_text: string, new_text: string}]}" };
         base = args.value.base;
-        const source = try s.log.findSource(s.io, a, args.value.base, true) orelse
+        const source = try s.log.findSource(s.io, a, args.value.base) orelse
             return .{ .ok = false, .output = "error: base source unavailable in this Session" };
         if (!source.failed) return .{ .ok = false, .output = "error: base must be a completed failed script" };
         break :resolve patch(a, source.code, args.value.edits) catch |err|
@@ -131,7 +132,7 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     const tool_summary = try ToolSummary.init(a, timing.entries[0..timing.count], timing.run_index, timing.omitted - before_omitted);
     try tool_summary.annotateViews(a, ran.?.images);
     try sink.emit(sink.ctx, .{ .run_end = .{ .ok = o.ok, .output = output, .changes = ran.?.changes, .tool_summary = tool_summary } });
-    return .{ .executed_source = if (rerun) code else null, .output = output, .ok = o.ok, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
+    return .{ .executed_source = if (rerun) code else null, .output = output, .ok = o.ok, .scope_id = ran.?.scope_id, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
 }
 
 fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming, sink: Sink) !?Ran {
@@ -187,7 +188,7 @@ fn takeJobResult(job: *@import("run_job.zig").Job, a: std.mem.Allocator, changes
     const images = try @import("../tools.zig").takeImages(&job.scope.images, job.gpa, a);
     const outcome = job.outcome.?;
     job.outcome = null;
-    return .{ .outcome = outcome, .changes = changes, .images = images };
+    return .{ .outcome = outcome, .scope_id = job.scope.id, .changes = changes, .images = images };
 }
 
 test "execute emits per-Run actual tool summaries including empty and overflow" {

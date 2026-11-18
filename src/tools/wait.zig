@@ -26,7 +26,7 @@ pub fn wait(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.
         var i: usize = 0;
         while (i < remaining.items.len) {
             const id = remaining.items[i];
-            if (try inbox.takeForWait(gpa, t.io, id)) |taken| {
+            if (try inbox.takeForWait(gpa, t.io, id, t.runId())) |taken| {
                 defer gpa.free(taken.text);
                 bg.delivered(t.io, id, taken.invocation);
                 const output = if (std.mem.indexOfScalar(u8, taken.text, '\n')) |nl| taken.text[nl + 1 ..] else taken.text;

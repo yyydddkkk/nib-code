@@ -1,5 +1,6 @@
 const std = @import("std");
 const provider = @import("../provider.zig");
+const Background = @import("events.zig").Background;
 const Tuning = @import("tuning.zig").Resolved;
 
 pub const RunResult = struct {
@@ -9,8 +10,16 @@ pub const RunResult = struct {
     run_ms: ?u64 = null,
     tool_bytes: ?u64 = null,
     output_bytes: ?u64 = null,
+    /// Own output when the provider tool message also carries Inbox text.
+    output: ?[]const u8 = null,
     remaining_steps: ?usize = null,
     calls_omitted: ?u64 = null,
+};
+
+pub const Delivery = struct {
+    event: Background,
+    via: enum { insert, fold, wait },
+    output_bytes: u64,
 };
 
 pub const Diagnostic = struct {
@@ -74,6 +83,7 @@ pub const Record = struct {
     calls_omitted: ?u64 = null,
     task_ids: ?@import("events.zig").TaskIds = null,
     run_results: ?[]const RunResult = null,
+    deliveries: ?[]const Delivery = null,
     nib_version: ?[]const u8 = null,
     system_sha: ?[]const u8 = null,
     patches_off: ?[]const []const u8 = null,
@@ -137,7 +147,14 @@ pub const Log = struct {
             if (!std.mem.eql(u8, parent, restored.parent_session_id orelse "")) return error.AgentSessionParentMismatch;
         }
         var log: Log = .{ .tuning = restored.tuning, .file = file, .mcp_servers = restored.mcp_servers, .plugin_skills = restored.plugin_skills, .skills = restored.skills, .offset = data.len, .parent_session_id = restored.parent_session_id, .cache_key = restored.cache_key, .forked_from = restored.forked_from, .provider = restored.provider, .custom_provider = restored.custom_provider, .model = restored.model, .steps = restored.steps, .next_agent_id = restored.next_agent_id, .next_bash_id = restored.next_bash_id, .next_run_id = restored.next_run_id, .agent_sessions = restored.agent_sessions, .lost_background = restored.lost_background, .pending_background_bytes = restored.pending_background_bytes };
-        if (restored.needs_repair) try log.append(io, a, .{ .repair = true });
+        if (restored.needs_repair) {
+            if (data[data.len - 1] != '\n') {
+                // Do not turn a valid JSON value missing its commit newline into a record.
+                try file.writePositionalAll(io, "!\n", log.offset);
+                log.offset += 2;
+            }
+            try log.append(io, a, .{ .repair = true });
+        }
         for (restored.background_repairs) |event| try log.append(io, a, .{ .background = event });
         if (restored.needs_repair or restored.background_repairs.len != 0) try log.file.sync(io);
         return log;
@@ -150,7 +167,7 @@ pub const Log = struct {
         try log.file.sync(io);
     }
 
-    pub fn findSource(log: *Log, io: std.Io, a: std.mem.Allocator, reference: []const u8, committed: bool) !?Source {
+    pub fn findSource(log: *Log, io: std.Io, a: std.mem.Allocator, reference: []const u8) !?Source {
         log.mutex.lockUncancelable(io);
         defer log.mutex.unlock(io);
         var reader = log.file.reader(io, &.{});
@@ -158,16 +175,19 @@ pub const Log = struct {
         var found: ?Source = null;
         var lines = std.mem.splitScalar(u8, data, '\n');
         while (lines.next()) |line| {
+            if (lines.peek() == null) break;
             const record = parseRecord(a, line) catch continue;
             if (record.source) |value| {
                 const ref = try std.fmt.allocPrint(a, "{d}:{d}", .{ value.step, value.run });
                 if (std.mem.eql(u8, reference, ref)) found = value;
             }
         }
-        const value = found orelse return null;
-        if (!committed) return value;
+        var value = found orelse return null;
         for (try @import("../replay.zig").loadMain(a, data)) |run| {
-            if (run.key.step == value.step and run.key.run == value.run and run.expected != null and std.mem.eql(u8, run.code, value.code)) return value;
+            if (run.key.step == value.step and run.key.run == value.run and run.expected != null and std.mem.eql(u8, run.code, value.code)) {
+                value.failed = run.source_reference;
+                return value;
+            }
         }
         return null;
     }
@@ -180,7 +200,7 @@ pub const Log = struct {
         if (log.poisoned) return error.SessionLogFailed;
         var stamped = record;
         stamped.at = @intCast(@divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms));
-        const bytes = try std.fmt.allocPrint(a, "{s}{f}\n", .{ if (stamped.repair) "\n" else "", std.json.fmt(stamped, .{ .emit_null_optional_fields = false }) });
+        const bytes = try std.fmt.allocPrint(a, "{f}\n", .{std.json.fmt(stamped, .{ .emit_null_optional_fields = false })});
         defer a.free(bytes);
         errdefer log.poisoned = true;
         try log.file.writePositionalAll(io, bytes, log.offset);
@@ -256,13 +276,32 @@ pub const Log = struct {
         if (record.from > history.items.len) return error.InvalidSessionLog;
         try history.ensureTotalCapacity(a, record.from + record.messages.len);
         try log.append(io, a, record);
-        if (record.from == history.items.len and record.forked_from == null) log.steps += assistantCount(record.messages);
+        if (record.from == history.items.len and record.forked_from == null) {
+            log.steps += assistantCount(record.messages);
+            log.pending_background_bytes = pendingBytes(log.pending_background_bytes, record);
+        }
         apply(history, record);
         tokens.* = record.context_tokens;
         errdefer log.poisoned = true;
         try log.file.sync(io);
     }
 };
+
+fn pendingBytes(previous: u64, record: Record) u64 {
+    var bytes = previous;
+    if (record.deliveries) |deliveries| {
+        if (record.model_ms != null) bytes = 0;
+        for (deliveries) |delivery| if (delivery.via != .wait) {
+            bytes += delivery.output_bytes;
+        };
+    } else {
+        for (record.messages) |message| if (message.source == .background) {
+            if (message.content) |text| bytes += text.len;
+        };
+        if (record.model_ms != null) bytes = 0;
+    }
+    return bytes;
+}
 
 fn assistantCount(messages: []const provider.Message) usize {
     var count: usize = 0;
@@ -334,6 +373,17 @@ fn restoreToolSummaries(a: std.mem.Allocator, history: []provider.Message, recor
     }
 }
 
+const Pending = struct { event: Background, delivered: bool = false };
+
+fn settleBackground(pending_background: *std.ArrayList(Pending), id: []const u8) void {
+    for (pending_background.items, 0..) |pending, i| {
+        if (std.mem.eql(u8, pending.event.id, id)) {
+            _ = pending_background.orderedRemove(i);
+            break;
+        }
+    }
+}
+
 pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { plugin_skills: []const @import("skills.zig").Skill, tuning: Tuning, mcp_servers: []const @import("../mcp/config.zig").Server, skills: @import("skills.zig").Summary, needs_repair: bool, steps: usize, parent_session_id: ?[]const u8, cache_key: ?[]const u8, forked_from: ?ForkedFrom, provider: provider.Id, custom_provider: ?[]const u8, model: ?[]const u8, next_agent_id: u64, next_bash_id: u64, next_run_id: u64, agent_sessions: []const AgentSession, lost_background: []const @import("events.zig").Background, background_repairs: []const @import("events.zig").Background, pending_background_bytes: u64 } {
     var parent_session_id: ?[]const u8 = null;
     var mcp_servers: []const @import("../mcp/config.zig").Server = &.{};
@@ -348,7 +398,6 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
     var pending_background_bytes: u64 = 0;
     var agent_sessions: std.ArrayList(AgentSession) = .empty;
     defer agent_sessions.deinit(a);
-    const Pending = struct { event: @import("events.zig").Background, delivered: bool = false };
     var pending_background: std.ArrayList(Pending) = .empty;
     defer pending_background.deinit(a);
     var id: provider.Id = .chat_completions;
@@ -403,16 +452,12 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             if (b.state == .started) {
                 try pending_background.append(a, .{ .event = b });
             } else {
-                for (pending_background.items, 0..) |pending, i| {
-                    if (std.mem.eql(u8, pending.event.id, b.id)) {
-                        _ = pending_background.orderedRemove(i);
-                        break;
-                    }
-                }
+                settleBackground(&pending_background, b.id);
             }
             continue;
         }
-        for (r.messages) |m| if (m.source == .background) {
+        if (r.deliveries == null) for (r.messages) |m| {
+            if (m.source != .background) continue;
             if (m.background_id) |background_id| {
                 for (pending_background.items) |*pending| {
                     if (!pending.delivered and std.mem.eql(u8, pending.event.id, background_id)) {
@@ -435,10 +480,11 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
         try history.ensureTotalCapacity(gpa, r.from + r.messages.len);
         if (r.from == history.items.len and r.forked_from == null) {
             steps += assistantCount(r.messages);
-            for (r.messages) |message| if (message.source == .background) {
-                if (message.content) |text| pending_background_bytes += text.len;
-            };
-            if (r.model_ms != null) pending_background_bytes = 0;
+            for (r.deliveries orelse &.{}) |delivery| {
+                try restoreId(delivery.event.id, &next_agent_id, &next_bash_id, &next_run_id);
+                settleBackground(&pending_background, delivery.event.id);
+            }
+            pending_background_bytes = pendingBytes(pending_background_bytes, r);
         }
         apply(history, r);
         try restoreToolSummaries(a, history.items, r, &replacements);
@@ -1052,7 +1098,6 @@ test "agentSession append restores mappings and ID high water across repeated re
 
 test "replay matches reused background IDs in FIFO order for finished and lost events" {
     const t = std.testing;
-    const Background = @import("events.zig").Background;
     const first: Background = .{ .id = "a1", .kind = .agent, .state = .started, .result = "first" };
     const other: Background = .{ .id = "b1", .kind = .bash, .state = .started };
     const second: Background = .{ .id = "a1", .kind = .agent, .state = .started, .result = "second" };
@@ -1153,7 +1198,6 @@ test "restore after background message commit without finished does not redelive
 
 test "restore closes delivered FIFO entries before delivering a reused ID as lost" {
     const t = std.testing;
-    const Background = @import("events.zig").Background;
     const first: Background = .{ .id = "a1", .kind = .agent, .state = .started, .result = "old invocation" };
     const second: Background = .{ .id = "a1", .kind = .agent, .state = .started, .result = "new invocation" };
     for ([_]?bool{ true, false, null }) |ok| {

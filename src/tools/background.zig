@@ -317,7 +317,7 @@ pub const Background = struct {
             };
             const text = try std.fmt.allocPrint(job.gpa, "[background run {s} finished]\n{s}", .{ job.id, completion.output });
             defer job.gpa.free(text);
-            _ = try bg.inbox.?.enqueueCompletion(job.gpa, io, job.id, .run, .finished, completion.ok, text, false, 0, completion, completion.execution);
+            _ = try bg.inbox.?.enqueueCompletion(job.gpa, io, job.id, .run, .finished, completion.ok, text, false, 0, completion, completion.execution, job.scope.id);
             job.collected = true;
             job.releaseExecution();
         }

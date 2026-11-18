@@ -213,7 +213,7 @@ def add_step(db, path, line, step, record, messages, at, time_source):
 
 def valid_messages(record):
     messages = record.get('messages')
-    if integer(record.get('from')) is None or not isinstance(messages, list) or not messages:
+    if integer(record.get('from')) is None or not isinstance(messages, list) or (not messages and not record.get('deliveries')):
         return None
     if not all(isinstance(message, dict) and message.get('role') in ('system', 'user', 'assistant', 'tool')
                and (message.get('content') is None or isinstance(message['content'], str))
@@ -259,7 +259,7 @@ def import_session(db, path, rebuild=False):
                     continue
                 messages = valid_messages(record)
                 if header is None:
-                    if messages is None or record['from'] != 0 or messages[0]['role'] != 'system':
+                    if not messages or record['from'] != 0 or messages[0]['role'] != 'system':
                         invalid += 1
                         continue
                     header = record
@@ -292,7 +292,14 @@ def import_session(db, path, rebuild=False):
                         db.execute(f'UPDATE sessions SET {assignments} WHERE path = ?',
                                    (*metadata.values(), key))
                     continue
-                add_background_runs(db, key, line, messages, at, time_source)
+                deliveries = record.get('deliveries')
+                if isinstance(deliveries, list):
+                    for delivery in objects(deliveries):
+                        event = delivery.get('event')
+                        if isinstance(event, dict) and event.get('kind') == 'run' and event.get('state') == 'finished':
+                            add_background_run(db, key, line, event.get('completion'), event.get('id'), at, time_source)
+                else:
+                    add_background_runs(db, key, line, messages, at, time_source)
                 assistants = sum(message['role'] == 'assistant' for message in messages)
                 if assistants:
                     add_step(db, key, line, step + 1, record, messages, at, time_source)

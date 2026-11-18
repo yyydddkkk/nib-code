@@ -30,7 +30,7 @@ Without --script, execute original main-log Run code. Match calls in creation or
 
 `tools.sleep(ms)` also records normal arguments/results/rejections. Replay returns recordings without timers/waits or advancing fixed `Date.now()`; bound polling by count rather than wall deadlines alone.
 
-Format with normal Run rules and compare byte-for-byte against the corresponding main-log tool message. Matching calls with different final output also diverge; match means more than identical arguments.
+Format with normal Run rules and compare byte-for-byte against the Run’s own output in the main log, excluding any folded Inbox text. Background Runs use their final committed completion, not the original registration notice. Matching calls with different final output also diverge; match means more than identical arguments.
 
 ### Diagnostic scripts
 

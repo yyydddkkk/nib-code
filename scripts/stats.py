@@ -781,14 +781,26 @@ class AgentStats:
                     pending[task_id]['terminal'] = True
                     self.complete(task_id, pending)
             return
-        for message in record['messages']:
-            if message.get('source') not in ('background', 'background_agent'):
-                continue
-            task_id = message.get('background_id', message.get('background_agent_id'))
-            kind = message.get('background_kind', 'agent')
-            if isinstance(task_id, str) and task_id in pending and pending[task_id]['kind'] == kind:
-                pending[task_id]['result'] = completed_steps
-                self.complete(task_id, pending)
+        deliveries = record.get('deliveries')
+        if isinstance(deliveries, list):
+            for delivery in deliveries:
+                event = delivery.get('event') if isinstance(delivery, dict) else None
+                if not isinstance(event, dict):
+                    continue
+                task_id = event.get('id')
+                if isinstance(task_id, str) and task_id in pending and pending[task_id]['kind'] == event.get('kind'):
+                    pending[task_id]['terminal'] = True
+                    pending[task_id]['result'] = completed_steps + (is_step and delivery.get('via') == 'fold')
+                    self.complete(task_id, pending)
+        else:
+            for message in record['messages']:
+                if message.get('source') not in ('background', 'background_agent'):
+                    continue
+                task_id = message.get('background_id', message.get('background_agent_id'))
+                kind = message.get('background_kind', 'agent')
+                if isinstance(task_id, str) and task_id in pending and pending[task_id]['kind'] == kind:
+                    pending[task_id]['result'] = completed_steps
+                    self.complete(task_id, pending)
         if not is_step:
             return
         calls = record.get('calls')
@@ -1035,7 +1047,7 @@ def records(path):
                     yield record
                     continue
                 messages = record.get('messages')
-                if not number(record.get('from')) or not isinstance(messages, list) or not messages:
+                if not number(record.get('from')) or not isinstance(messages, list) or (not messages and not record.get('deliveries')):
                     continue
                 if not all(isinstance(m, dict) and m.get('role') in ('system', 'user', 'assistant', 'tool')
                            and (m.get('content') is None or isinstance(m['content'], str))

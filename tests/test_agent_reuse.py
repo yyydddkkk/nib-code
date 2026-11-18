@@ -514,8 +514,9 @@ class ReuseTests:
         child = self.child_log()
         parent_id = records(child)[0]["parent_session_id"]
         parent_log = self.home / "sessions" / (parent_id + ".jsonl")
-        lifecycle = [row["background"]["state"] for row in records(parent_log)
-                     if row.get("background")]
+        lifecycle = [event["state"] for row in records(parent_log)
+                     for event in ([row["background"]] if "background" in row else
+                                   [d["event"] for d in row.get("deliveries", [])])]
         self.assertEqual(lifecycle, ["started", "started", "finished"])
         process.kill()
         process.communicate(timeout=5)
