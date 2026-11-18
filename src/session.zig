@@ -5,6 +5,7 @@ const sandbox = @import("sandbox.zig");
 const tools = @import("tools.zig");
 const provider = @import("provider.zig");
 const session_log = @import("session/log.zig");
+const inbox = @import("session/inbox.zig");
 const skills = @import("session/skills.zig");
 const instructions = @import("session/instructions.zig");
 const prompt = @import("session/prompt.zig");
@@ -48,7 +49,6 @@ pub const Session = struct {
     interrupt_signal: ?*const std.atomic.Value(std.posix.SIG) = null,
     /// Next-request estimate: latest usage plus tool results, or the compacted history size.
     context_tokens: u64 = 0,
-    pending_background_bytes: u64 = 0,
     /// Automatic compaction is not retried until the context reaches this size.
     compact_backoff: u64 = 0,
     tools: tools.Tools,
@@ -83,7 +83,7 @@ pub const Session = struct {
     }
 
     /// The caller owns the batch. Take leftovers only after joining the Turn.
-    pub fn takeQueued(s: *Session) !@import("session/inbox.zig").Batch {
+    pub fn takeQueued(s: *Session) !inbox.Batch {
         return s.inbox.takeUsers(s.gpa, s.io);
     }
 
@@ -92,7 +92,7 @@ pub const Session = struct {
     pub fn init(gpa: std.mem.Allocator, io: std.Io, client: *std.http.Client, cfg: provider.Config, options: Options) !Session {
         if (options.fork) |fork| {
             if (options.resume_id != null or options.continue_latest) return error.ConflictingForkOptions;
-            try cfg.checkSession(fork.provider, fork.model);
+            try cfg.checkFork(fork.provider, fork.model);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", fork.custom_provider orelse "")) return error.SessionProviderMismatch;
         }
         var s: Session = .{
@@ -141,10 +141,12 @@ pub const Session = struct {
             s.cfg.plugins_loaded = true;
             s.tools.cfg = s.cfg;
             s.tools.mcp_client = try @import("mcp.zig").Client.create(gpa, io, s.cfg.mcp_servers, options.environ, options.home, options.user_home, s.cfg.sandbox.writable, s.cfg.sandbox.mode != .off);
-            s.pending_background_bytes = s.log.pending_background_bytes;
             s.setTuning(s.log.tuning);
-            try cfg.checkSession(s.log.provider, s.log.model);
+            try cfg.checkSession(s.log.provider);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", s.log.custom_provider orelse "")) return error.SessionProviderMismatch;
+            if (cfg.protocol() != .chat_completions and !std.mem.eql(u8, s.log.model orelse "", cfg.model)) {
+                s.context_tokens = compaction.estimateTokens(s.history.items, cfg);
+            }
             s.cache_key = s.log.cache_key orelse s.id;
             s.tools.forked = s.log.forked_from != null;
             s.parent_session_id = s.log.parent_session_id;
@@ -169,7 +171,7 @@ pub const Session = struct {
                     .mcp_servers = s.cfg.mcp_servers,
                     .plugin_skills = s.cfg.plugin_skills,
                     .messages = messages,
-                    .context_tokens = compaction.estimateTokens(messages),
+                    .context_tokens = compaction.estimateTokens(messages, cfg),
                     .cwd = cwd,
                     .provider = cfg.provider,
                     .custom_provider = cfg.custom_provider,
@@ -365,10 +367,10 @@ pub const Session = struct {
     pub fn undo(s: *Session) ![]u8 {
         const a = s.arena.allocator();
         const intent = "[undo requested] File restoration may follow. Re-read affected files before continuing.";
-        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = intent, .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = intent }}), null);
+        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = intent, .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = intent }}, s.cfg), null);
         const text = try s.undo_history.undo(&s.tools, s.gpa);
         errdefer s.gpa.free(text);
-        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = try a.dupe(u8, text), .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = text }}), null);
+        try s.commit(s.history.items.len, &.{.{ .role = "user", .content = try a.dupe(u8, text), .source = .undo }}, s.context_tokens + compaction.estimateTokens(&.{.{ .role = "user", .content = text }}, s.cfg), null);
         return text;
     }
 
@@ -427,6 +429,7 @@ pub const Session = struct {
         var stop_background = true;
         defer {
             s.tools.background.finishTurn(s.gpa, s.io, stop_background);
+            if (stop_background) s.inbox.discardAbortedWaits(s.gpa, s.io);
             s.tools.progress.drain(s.io) catch {};
             s.usage.add(s.tools.takeUsage());
             s.summary.?.usage = s.usage;
@@ -494,10 +497,10 @@ pub const Session = struct {
             try messages.append(s.gpa, m);
         }
         try messages.append(s.gpa, .{ .role = "assistant", .content = text, .reasoning = reasoning });
-        try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items), null);
+        try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items, s.cfg), null);
     }
 
-    fn announceDelivered(s: *Session, item: @import("session/inbox.zig").Item, sink: Sink) !void {
+    fn announceDelivered(s: *Session, item: inbox.Item, sink: Sink) !void {
         if (item.background) |b| {
             s.tools.background.delivered(s.io, b.id, item.invocation);
             var event = b;
@@ -506,8 +509,35 @@ pub const Session = struct {
         } else if (sink.onUserInserted) |notify| try notify(sink.ctx, item.id);
     }
 
+    fn commitDelivery(s: *Session, record: session_log.Record, delivered: inbox.Batch, via: @FieldType(session_log.Delivery, "via"), scopes: []const usize) !inbox.Batch {
+        var waited: inbox.Batch = .{};
+        errdefer waited.deinit(s.gpa);
+        for (scopes) |scope| try s.inbox.takeWaited(s.gpa, s.io, scope, &waited);
+        for (delivered.items.items) |item| {
+            if (item.run_scope) |scope| try s.inbox.takeWaited(s.gpa, s.io, scope, &waited);
+        }
+        var deliveries: std.ArrayList(session_log.Delivery) = .empty;
+        defer deliveries.deinit(s.gpa);
+        try delivered.appendDeliveries(s.gpa, &deliveries, via);
+        try waited.appendDeliveries(s.gpa, &deliveries, .wait);
+        var commit_record = record;
+        commit_record.deliveries = deliveries.items;
+        try s.log.commit(s.io, s.gpa, &s.history, &s.context_tokens, commit_record);
+        return waited;
+    }
+
+    pub fn commitLocalRun(s: *Session, scope: usize) !void {
+        var waited = try s.commitDelivery(.{
+            .from = s.history.items.len,
+            .context_tokens = s.context_tokens,
+            .task_ids = s.tools.progress.highWater(s.io),
+            .model = s.cfg.model,
+        }, .{}, .wait, &.{scope});
+        waited.deinit(s.gpa);
+    }
+
     /// Delivery `tool`: queued results and user messages ride on the last tool message instead of becoming user messages.
-    fn foldInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink) !@import("session/inbox.zig").Batch {
+    fn foldInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink) !inbox.Batch {
         var batch = s.inbox.take(s.io);
         errdefer batch.deinit(s.gpa);
         if (batch.items.items.len == 0) return batch;
@@ -525,7 +555,7 @@ pub const Session = struct {
         return batch;
     }
 
-    fn insertInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink, background_only: bool) !@import("session/inbox.zig").Batch {
+    fn insertInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink, background_only: bool) !inbox.Batch {
         const before = pending.items.len;
         var inserted = if (background_only)
             try s.inbox.insertBackground(s.gpa, s.io, s.arena.allocator(), pending)
@@ -541,13 +571,16 @@ pub const Session = struct {
             try s.announceDelivered(item, sink);
         }
         if (has_background) {
-            try s.commit(s.history.items.len, pending.items, s.context_tokens + compaction.estimateTokens(pending.items), null);
+            var waited = try s.commitDelivery(.{
+                .from = s.history.items.len,
+                .messages = pending.items,
+                .context_tokens = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg),
+                .task_ids = s.tools.progress.highWater(s.io),
+                .model = s.cfg.model,
+            }, inserted, .insert, &.{});
+            defer waited.deinit(s.gpa);
             pending.clearRetainingCapacity();
-            for (inserted.items.items) |item| if (item.background != null) {
-                s.pending_background_bytes += item.text.len;
-            };
-            for (inserted.items.items) |item| if (item.background) |b|
-                try s.log.background(s.io, s.gpa, b, s.steps + 1);
+            for (waited.items.items) |item| try s.announceDelivered(item, sink);
         }
         return inserted;
     }
@@ -584,17 +617,17 @@ pub const Session = struct {
             if (s.cfg.limits.max_steps) |max_steps| {
                 if (step_index >= max_steps) return s.finishStepLimit(pending, sink, cancel, detail, max_steps);
             }
-            const size = s.context_tokens + compaction.estimateTokens(pending.items);
+            const size = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg);
             // The first fork request must send the inherited cache prefix before compaction can rewrite it.
             if (!(s.tools.forked and s.log.steps == 0) and size >= s.cfg.context_window - s.cfg.context_window / 4 and size >= s.compact_backoff)
                 try s.autoCompact(sink, cancel, detail);
             if (cancel.load(.acquire)) return error.Canceled;
             try tools.Tools.poll(&s.tools);
-            var inserted = if (held) @import("session/inbox.zig").Batch{} else try s.insertInbox(pending, sink, false);
+            var inserted = if (held) inbox.Batch{} else try s.insertInbox(pending, sink, false);
             defer inserted.deinit(s.gpa);
-            var folded: @import("session/inbox.zig").Batch = .{};
+            var folded: inbox.Batch = .{};
             defer folded.deinit(s.gpa);
-            const background_output_bytes = s.pending_background_bytes;
+            const background_output_bytes = s.log.pending_background_bytes;
             var request: std.ArrayList(provider.Message) = .empty;
             defer request.deinit(s.gpa);
             try request.appendSlice(s.gpa, s.history.items);
@@ -657,6 +690,8 @@ pub const Session = struct {
             defer s.tools.fork_snapshot = null;
             var run_results: std.ArrayList(session_log.RunResult) = .empty;
             defer run_results.deinit(s.gpa);
+            var scopes: std.ArrayList(usize) = .empty;
+            defer scopes.deinit(s.gpa);
             var output_tokens: u64 = 0;
             var empty_runs = reply.tool_calls.len > 0;
             for (reply.tool_calls, 0..) |call, run_index| {
@@ -664,6 +699,7 @@ pub const Session = struct {
                 const before_bytes = run_timing.tool_bytes;
                 const before_omitted = run_timing.omitted;
                 const result = try s.execute(call, sink, cancel, &run_timing);
+                if (result.scope_id) |scope| try scopes.append(s.gpa, scope);
                 empty_runs = empty_runs and result.ok and result.empty and result.background_id == null and
                     result.tool_summary != null and result.tool_summary.?.counts.len == 0 and result.tool_summary.?.omitted == 0;
                 run_timing.output_bytes += result.output.len;
@@ -687,21 +723,16 @@ pub const Session = struct {
                 pending.items[assistant_index].waiting = true;
                 try sink.emit(sink.ctx, .{ .notice = "Waiting for background results." });
             }
-            var carried_bytes: u64 = 0;
             held = s.tuning.delivery == .tool and reply.tool_calls.len > 0 and !waiting;
             if (held) {
                 try tools.Tools.poll(&s.tools);
+                const own = pending.items[pending.items.len - 1].content;
                 folded = try s.foldInbox(pending, sink);
-                for (folded.items.items) |item| if (item.background != null) {
-                    carried_bytes += item.text.len;
-                };
+                if (folded.items.items.len > 0) run_results.items[run_results.items.len - 1].output = own;
             }
-            var waited = s.inbox.takeWaited(s.io);
-            defer waited.deinit(s.gpa);
-            for (waited.items.items) |item| try s.announceDelivered(item, sink);
             const tokens = reply.usage.prompt_tokens + reply.usage.completion_tokens + output_tokens;
             const ms: u64 = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0));
-            try s.log.commit(s.io, s.gpa, &s.history, &s.context_tokens, .{
+            var waited = try s.commitDelivery(.{
                 .from = s.history.items.len,
                 .messages = pending.items,
                 .context_tokens = tokens,
@@ -733,10 +764,9 @@ pub const Session = struct {
                 .tool_bytes = run_timing.tool_bytes,
                 .output_bytes = run_timing.output_bytes + background_output_bytes,
                 .run_results = run_results.items,
-            });
-            s.pending_background_bytes = carried_bytes;
-            for (waited.items.items) |item| if (item.background) |b| try s.log.background(s.io, s.gpa, b, @intCast(s.steps));
-            for (folded.items.items) |item| if (item.background) |b| try s.log.background(s.io, s.gpa, b, @intCast(s.steps + 1));
+            }, folded, .fold, scopes.items);
+            defer waited.deinit(s.gpa);
+            for (waited.items.items) |item| try s.announceDelivered(item, sink);
             s.summary.?.steps += 1;
             s.summary.?.usage = s.usage;
             s.summary.?.timing.model_ms += model_ms;

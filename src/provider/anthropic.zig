@@ -85,25 +85,29 @@ pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, messages: 
         const m = messages[i];
         if (std.mem.eql(u8, m.role, "system")) continue;
         if (std.mem.eql(u8, m.role, "assistant")) {
+            const raw = if (m.reasoning) |r| if (r.includes_output and r.compatible(cfg)) r.data else null else null;
+            const text: []const u8 = m.content orelse "";
+            const calls: []const p.ToolCall = m.tool_calls orelse &.{};
+            if (raw == null and text.len == 0 and calls.len == 0) continue;
             if (managed) {
                 const historical = if (m.step_effort) |step| step.effort else "high";
                 const valid = std.mem.eql(u8, historical, "low") or std.mem.eql(u8, historical, "medium") or std.mem.eql(u8, historical, "high") or std.mem.eql(u8, historical, "xhigh") or std.mem.eql(u8, historical, "max");
                 try w.print("{s}{{\"role\":\"system\",\"content\":[],\"output_config\":{{\"effort\":{f}}}}},", .{ sep, std.json.fmt(if (valid) historical else "high", .{}) });
                 sep = "";
             }
-            if (m.reasoning) |r| if (r.provider == cfg.provider and r.includes_output) {
-                const blocks = try std.json.parseFromSliceLeaky(std.json.Value, a, r.data, .{});
+            if (raw) |data| {
+                const blocks = try std.json.parseFromSliceLeaky(std.json.Value, a, data, .{});
                 try w.print("{s}{{\"role\":\"assistant\",\"content\":{f}}}", .{ sep, std.json.fmt(blocks, .{}) });
                 sep = ",";
                 continue;
-            };
+            }
             try w.print("{s}{{\"role\":\"assistant\",\"content\":[", .{sep});
             var block_sep: []const u8 = "";
-            if (m.content) |text| if (text.len > 0) {
+            if (text.len > 0) {
                 try w.print("{f}", .{std.json.fmt(.{ .type = "text", .text = text }, .{})});
                 block_sep = ",";
-            };
-            for (m.tool_calls orelse &.{}) |call| {
+            }
+            for (calls) |call| {
                 const args = try std.json.parseFromSliceLeaky(std.json.Value, a, call.function.arguments, .{});
                 try w.print("{s}{f}", .{ block_sep, std.json.fmt(.{ .type = "tool_use", .id = call.id, .name = call.function.name, .input = args }, .{}) });
                 block_sep = ",";
@@ -314,7 +318,13 @@ test "Anthropic request caching paired results adaptive effort and signed contin
     try cfg.setEffort("off");
     try t.expectEqualStrings("low", effort(cfg).?);
     const blocks = "[{\"type\":\"thinking\",\"thinking\":\"private\",\"signature\":\"opaque-signature\"},{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"run\",\"input\":{\"code\":\"1\"}}]";
-    const body = try requestBody(a, t.io, cfg, &.{ .{ .role = "system", .content = "instructions" }, .{ .role = "user", .content = "task" }, .{ .role = "assistant", .reasoning = .{ .provider = .anthropic, .data = blocks, .includes_output = true } }, .{ .role = "tool", .tool_call_id = "call", .content = "result" } }, "[]", null);
+    const messages: []const p.Message = &.{
+        .{ .role = "system", .content = "instructions" },
+        .{ .role = "user", .content = "task" },
+        .{ .role = "assistant", .reasoning = .{ .provider = .anthropic, .data = blocks, .includes_output = true, .model = cfg.model }, .tool_calls = &.{.{ .id = "call", .function = .{ .name = "run", .arguments = "{\"code\":\"1\"}" } }} },
+        .{ .role = "tool", .tool_call_id = "call", .content = "result" },
+    };
+    const body = try requestBody(a, t.io, cfg, messages, "[]", null);
     const value = try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{});
     try t.expectEqualStrings("adaptive", value.object.get("thinking").?.object.get("type").?.string);
     try t.expectEqualStrings("opaque-signature", value.object.get("messages").?.array.items[2].object.get("content").?.array.items[0].object.get("signature").?.string);
@@ -322,6 +332,15 @@ test "Anthropic request caching paired results adaptive effort and signed contin
     try t.expect(std.mem.indexOf(u8, body, "tool_result") != null);
     cfg.model = "claude-haiku-5-5";
     try t.expectEqualStrings("off", effort(cfg).?);
+    const changed = try requestBody(a, t.io, cfg, messages, "[]", null);
+    try t.expect(std.mem.indexOf(u8, changed, "opaque-signature") == null);
+    const history = (try std.json.parseFromSliceLeaky(std.json.Value, a, changed, .{})).object.get("messages").?.array.items;
+    const tool_use = history[1].object.get("content").?.array.items[0].object;
+    const tool_result = history[2].object.get("content").?.array.items[0].object;
+    try t.expectEqualStrings("tool_use", tool_use.get("type").?.string);
+    try t.expectEqualStrings("1", tool_use.get("input").?.object.get("code").?.string);
+    try t.expectEqualStrings(tool_use.get("id").?.string, tool_result.get("tool_use_id").?.string);
+    try t.expectEqualStrings("result", tool_result.get("content").?.string);
     cfg.model = "claude-3-7-sonnet";
     try cfg.setEffort("medium");
     const legacy = try requestBody(a, t.io, cfg, &.{.{ .role = "user", .content = "task" }}, "[]", 32);

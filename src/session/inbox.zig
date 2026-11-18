@@ -1,20 +1,20 @@
 const std = @import("std");
 const provider = @import("../provider.zig");
+const Delivery = @import("log.zig").Delivery;
 const Background = @import("events.zig").Background;
 
 pub const Batch = struct {
     items: std.ArrayList(Item) = .empty,
 
     pub fn deinit(b: *Batch, gpa: std.mem.Allocator) void {
-        for (b.items.items) |item| {
-            gpa.free(item.text);
-            if (item.background) |bkg| gpa.free(bkg.id);
-            if (item.completion_arena) |owned| {
-                var arena = owned;
-                arena.deinit();
-            }
-        }
+        for (b.items.items) |item| item.deinit(gpa);
         b.items.deinit(gpa);
+    }
+
+    pub fn appendDeliveries(b: Batch, gpa: std.mem.Allocator, deliveries: *std.ArrayList(Delivery), via: @FieldType(Delivery, "via")) !void {
+        for (b.items.items) |item| if (item.background) |event| {
+            try deliveries.append(gpa, .{ .event = event, .via = via, .output_bytes = item.text.len });
+        };
     }
 
     pub fn joined(b: Batch, gpa: std.mem.Allocator) ![]u8 {
@@ -29,7 +29,25 @@ pub const Batch = struct {
     }
 };
 
-pub const Item = struct { id: u64, text: []const u8, background: ?Background = null, detached: bool = false, invocation: usize = 0, completion_arena: ?std.heap.ArenaAllocator = null };
+pub const Item = struct {
+    id: u64,
+    text: []const u8,
+    background: ?Background = null,
+    detached: bool = false,
+    invocation: usize = 0,
+    completion_arena: ?std.heap.ArenaAllocator = null,
+    run_scope: ?usize = null,
+    waited_by: ?usize = null,
+
+    fn deinit(item: Item, gpa: std.mem.Allocator) void {
+        gpa.free(item.text);
+        if (item.background) |event| gpa.free(event.id);
+        if (item.completion_arena) |owned| {
+            var arena = owned;
+            arena.deinit();
+        }
+    }
+};
 
 pub const Inbox = struct {
     mutex: std.Io.Mutex = .init,
@@ -50,10 +68,10 @@ pub const Inbox = struct {
     }
 
     pub fn enqueueBackground(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, execution: ?@import("../sandbox/timing.zig").Execution) !u64 {
-        return q.enqueueCompletion(gpa, io, id, kind, state, ok, text, detached, invocation, null, execution);
+        return q.enqueueCompletion(gpa, io, id, kind, state, ok, text, detached, invocation, null, execution, null);
     }
 
-    pub fn enqueueCompletion(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, completion: ?@import("events.zig").RunCompletion, execution: ?@import("../sandbox/timing.zig").Execution) !u64 {
+    pub fn enqueueCompletion(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, completion: ?@import("events.zig").RunCompletion, execution: ?@import("../sandbox/timing.zig").Execution, run_scope: ?usize) !u64 {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
         const copy = try gpa.dupe(u8, text);
@@ -67,7 +85,7 @@ pub const Inbox = struct {
             break :blk try cloneCompletion(owned.?.allocator(), value);
         } else null;
         const message_id = q.next_id;
-        try q.batch.items.append(gpa, .{ .id = message_id, .text = copy, .background = .{ .id = agent_id, .kind = kind, .state = state, .ok = ok, .completion = copy_completion, .execution = execution }, .detached = detached, .invocation = invocation, .completion_arena = owned });
+        try q.batch.items.append(gpa, .{ .id = message_id, .text = copy, .background = .{ .id = agent_id, .kind = kind, .state = state, .ok = ok, .completion = copy_completion, .execution = execution }, .detached = detached, .invocation = invocation, .completion_arena = owned, .run_scope = run_scope });
         q.next_id += 1;
         return message_id;
     }
@@ -75,7 +93,7 @@ pub const Inbox = struct {
     pub const Waited = struct { kind: Background.Kind, ok: ?bool, invocation: usize, text: []u8 };
 
     /// Moves the oldest queued background result of `id` to `waited`; the copy of its text belongs to the caller.
-    pub fn takeForWait(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8) !?Waited {
+    pub fn takeForWait(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, run_scope: usize) !?Waited {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
         for (q.batch.items.items, 0..) |item, i| {
@@ -83,19 +101,56 @@ pub const Inbox = struct {
             if (!std.mem.eql(u8, b.id, id)) continue;
             const text = try gpa.dupe(u8, item.text);
             errdefer gpa.free(text);
-            try q.waited.items.append(gpa, item);
+            var claimed = item;
+            claimed.waited_by = run_scope;
+            try q.waited.items.append(gpa, claimed);
+            // A background Run can itself have waited. Its claims follow its result.
+            if (item.run_scope) |scope| {
+                for (q.waited.items.items) |*receipt| {
+                    if (receipt.waited_by == scope) receipt.waited_by = run_scope;
+                }
+            }
             _ = q.batch.items.orderedRemove(i);
             return .{ .kind = b.kind, .ok = b.ok, .invocation = item.invocation, .text = text };
         }
         return null;
     }
 
-    pub fn takeWaited(q: *Inbox, io: std.Io) Batch {
+    pub fn takeWaited(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, run_scope: usize, batch: *Batch) !void {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
-        const batch = q.waited;
-        q.waited = .{};
-        return batch;
+        var count: usize = 0;
+        for (q.waited.items.items) |item| {
+            if (item.waited_by == run_scope) count += 1;
+        }
+        try batch.items.ensureUnusedCapacity(gpa, count);
+        var retained: usize = 0;
+        for (q.waited.items.items) |item| {
+            if (item.waited_by == run_scope) {
+                batch.items.appendAssumeCapacity(item);
+            } else {
+                q.waited.items.items[retained] = item;
+                retained += 1;
+            }
+        }
+        q.waited.items.shrinkRetainingCapacity(retained);
+    }
+
+    // After abort, only claims owned by Runs with queued results can still be committed.
+    pub fn discardAbortedWaits(q: *Inbox, gpa: std.mem.Allocator, io: std.Io) void {
+        q.mutex.lockUncancelable(io);
+        defer q.mutex.unlock(io);
+        var retained: usize = 0;
+        for (q.waited.items.items) |item| {
+            const queued = for (q.batch.items.items) |owner| {
+                if (owner.run_scope == item.waited_by) break true;
+            } else false;
+            if (queued) {
+                q.waited.items.items[retained] = item;
+                retained += 1;
+            } else item.deinit(gpa);
+        }
+        q.waited.items.shrinkRetainingCapacity(retained);
     }
 
     pub fn empty(q: *Inbox, io: std.Io) bool {
@@ -313,14 +368,40 @@ test "waiting takes one result by id and leaves the rest queued" {
     _ = try q.enqueue(t.allocator, t.io, "user text");
     _ = try q.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "[background bash b1 finished]\nfirst", false, 0, null);
     _ = try q.enqueueBackground(t.allocator, t.io, "b2", .bash, .finished, false, "second", false, 0, null);
-    try t.expect(try q.takeForWait(t.allocator, t.io, "b9") == null);
-    const taken = (try q.takeForWait(t.allocator, t.io, "b2")).?;
+    try t.expect(try q.takeForWait(t.allocator, t.io, "b9", 1) == null);
+    const taken = (try q.takeForWait(t.allocator, t.io, "b2", 1)).?;
     defer t.allocator.free(taken.text);
     try t.expectEqualStrings("second", taken.text);
     try t.expectEqual(@as(?bool, false), taken.ok);
     try t.expectEqual(@as(usize, 2), q.batch.items.items.len);
-    var waited = q.takeWaited(t.io);
+    var waited: Batch = .{};
     defer waited.deinit(t.allocator);
+    try q.takeWaited(t.allocator, t.io, 2, &waited);
+    try t.expectEqual(@as(usize, 0), waited.items.items.len);
+    try q.takeWaited(t.allocator, t.io, 1, &waited);
     try t.expectEqual(@as(usize, 1), waited.items.items.len);
     try t.expectEqualStrings("b2", waited.items.items[0].background.?.id);
+}
+
+test "wait claims follow the consuming Run, including when that Run is itself waited on" {
+    const t = std.testing;
+    var q: Inbox = .{};
+    defer q.batch.deinit(t.allocator);
+    defer q.waited.deinit(t.allocator);
+    var claimed: Batch = .{};
+    defer claimed.deinit(t.allocator);
+    _ = try q.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "first", false, 0, null);
+    const first = (try q.takeForWait(t.allocator, t.io, "b1", 1)).?;
+    defer t.allocator.free(first.text);
+    _ = try q.enqueueCompletion(t.allocator, t.io, "r1", .run, .finished, true, "second", false, 0, null, null, 1);
+    const second = (try q.takeForWait(t.allocator, t.io, "r1", 2)).?;
+    defer t.allocator.free(second.text);
+
+    try q.takeWaited(t.allocator, t.io, 1, &claimed);
+    try t.expectEqual(@as(usize, 0), claimed.items.items.len);
+    try q.takeWaited(t.allocator, t.io, 2, &claimed);
+    try t.expectEqual(@as(usize, 2), claimed.items.items.len);
+    try t.expectEqualStrings("b1", claimed.items.items[0].background.?.id);
+    try t.expectEqualStrings("r1", claimed.items.items[1].background.?.id);
+    try t.expect(q.empty(t.io));
 }

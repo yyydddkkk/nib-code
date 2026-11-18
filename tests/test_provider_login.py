@@ -116,6 +116,64 @@ def test_key_entry_and_model_list(tmp):
         mock.close()
 
 
+def test_environment_key_wins_and_survives_logout(tmp):
+    tmp.mkdir()
+    home = tmp / "home"
+    nib = home / "nib"
+    nib.mkdir(parents=True)
+    mock = Mock("responses", custom_run=True, key="env-openai-secret")
+    local = Mock("chat_completions", key="")
+    cfg = nib / "config.toml"
+    cfg.write_text(f'''[openai]
+base_url = "{mock.url}"
+[providers.local]
+protocol = "chat_completions"
+base_url = "{local.url}"
+model = "local-model"
+context_window = 32768
+''')
+    stored_key = "stored-openai-secret"
+    (nib / "auth.json").write_text(json.dumps({"keys": {"openai": stored_key}}))
+    terminal = Terminal(tmp, base_env(home, OPENAI_API_KEY=mock.key))
+    try:
+        # Startup falls back from unsigned-in Codex to OpenAI without saving the choice.
+        terminal.send("/status\r")
+        until_visible(terminal, "Provider openai · gpt-6.2-sol · key from OPENAI_API_KEY")
+        assert not cfg.read_text().startswith("provider")
+        terminal.send("/provider ")
+        until_visible(terminal, "OPENAI_API_KEY · current")
+        terminal.send("\x15/provider logout openai\r")
+        until_visible(terminal, "OpenAI · signed out · key still set in OPENAI_API_KEY")
+        assert store(home) == {"keys": {}}
+        terminal.send("again after logout\r")
+        terminal.wait_turn("mock answer")
+        assert {k.lower(): v for k, v in mock.requests[-1][1].items()}["authorization"] == f"Bearer {mock.key}"
+
+        terminal.send("/model ")
+        until_visible(terminal, "local-model")
+        terminal.send("\x15/provider local\r")
+        until_visible(terminal, "local · local-model · new session")
+        terminal.send("/status\r")
+        until_visible(terminal, "Provider local · local-model · no key needed")
+        terminal.send("again without a key\r")
+        terminal.wait_turn("mock answer")
+        assert not any(k.lower() == "authorization" for k in local.requests[-1][1])
+
+        terminal.send("/model openai/gpt-6.1-terra\r")
+        until_visible(terminal, "openai · gpt-6.1-terra · new session")
+        terminal.send("/status\r")
+        until_visible(terminal, "Provider openai · gpt-6.1-terra · key from OPENAI_API_KEY")
+        terminal.send("again after switching\r")
+        terminal.wait_turn("mock answer")
+        assert mock.requests[-1][2]["model"] == "gpt-6.1-terra"
+        assert not mock.errors and not local.errors, (mock.errors, local.errors)
+        assert all(secret.encode() not in terminal.read() for secret in (mock.key, stored_key))
+    finally:
+        terminal.close()
+        mock.close()
+        local.close()
+
+
 def test_child_agent_uses_stored_key(tmp):
     tmp.mkdir()
     home = tmp / "home"
@@ -253,11 +311,23 @@ def test_codex_browser_login(tmp):
         assert tokens["account_id"] == "acc-mock" and tokens["refresh_token"] == "issued-refresh"
         assert mode(home / "nib" / "auth.json") == 0o600
         assert 'provider = "codex"' in (home / "nib" / "config.toml").read_text()
+        cli_file = home / "codex" / "auth.json"
+        cli_file.parent.mkdir()
+        cli_auth = json.dumps({"tokens": {"access_token": "cli-test-token", "account_id": "acc-mock"}})
+        cli_file.write_text(cli_auth)
+        terminal.send("/status\r")
+        until_visible(terminal, "ChatGPT login stored by nib")
         terminal.send("/provider ")
         until_visible(terminal, "signed in · ChatGPT Plus · current")
         terminal.send("\x15/provider logout codex\r")
-        until_visible(terminal, "Codex · signed out")
-        assert "tokens" not in store(home)
+        until_visible(terminal, "Codex · signed out · Codex CLI login kept")
+        assert "tokens" not in store(home) and cli_file.read_text() == cli_auth
+        terminal.send("/status\r")
+        until_visible(terminal, "ChatGPT login from the Codex CLI")
+        terminal.send("/provider ")
+        until_visible(terminal, "signed in · ChatGPT · current")
+        assert b"cli-test-token" not in terminal.read()
+        cli_file.unlink()
     finally:
         terminal.close()
     # Esc while waiting cancels and frees the callback port.

@@ -3,8 +3,7 @@ const std = @import("std");
 const atomic_file = @import("tools/atomic_file.zig");
 const provider = @import("provider.zig");
 const codex = @import("provider/responses.zig");
-const auth_store = @import("auth/store.zig");
-const auth_codex = @import("auth/codex.zig");
+const auth = @import("auth.zig");
 const Allocator = std.mem.Allocator;
 const Env = std.process.Environ.Map;
 
@@ -27,38 +26,19 @@ pub fn load(a: Allocator, io: std.Io, env: *const Env, home_path: []const u8, de
         return err;
     };
     defer a.free(text);
-    var cfg = try resolve(a, env, text, path, detail);
-    try applyStore(a, io, home_path, &cfg);
-    if (env.get("NIB_PROVIDER") == null and !credentialed(a, io, cfg)) {
-        if (try pickCredentialed(a, io, env, home_path, text, path)) |picked| cfg = picked;
+    var credentials = try auth.Lookup.init(a, io, env, home_path);
+    defer credentials.deinit();
+    const cfg = try resolve(a, env, text, path, detail, &credentials);
+    if (env.get("NIB_PROVIDER") == null and !auth.current(a, io, cfg).available()) {
+        if (try pickCredentialed(a, io, &credentials, text, path)) |picked| return picked;
     }
     return cfg;
-}
-
-/// Fills a missing key from nib's own store; environment keys win.
-pub fn applyStore(a: Allocator, io: std.Io, home_path: []const u8, cfg: *provider.Config) !void {
-    if (cfg.provider == .codex or cfg.api_key.len > 0) return;
-    const file = try auth_store.path(a, home_path);
-    defer a.free(file);
-    var doc = auth_store.Doc.load(a, io, file) catch return;
-    defer doc.deinit();
-    const key = doc.key(cfg.name()) orelse return;
-    cfg.api_key = try a.dupe(u8, key);
-    cfg.key_source = .store;
-}
-
-/// Whether requests can be sent: a Codex login, a key, or a service that needs none.
-pub fn credentialed(a: Allocator, io: std.Io, cfg: provider.Config) bool {
-    if (cfg.provider != .codex) return !cfg.missingKey();
-    var login = auth_codex.load(a, io, .{ .nib_home = cfg.nib_home, .codex_home = cfg.codex_home, .issuer = cfg.auth_issuer }) catch return false;
-    login.deinit();
-    return true;
 }
 
 pub const startup_order = [_][]const u8{ "codex", "anthropic", "openai", "deepseek", "xai" };
 
 /// First credentialed service: Codex login, built-in keys, then custom services. Not persisted.
-fn pickCredentialed(a: Allocator, io: std.Io, env: *const Env, home_path: []const u8, text: []const u8, path: []const u8) !?provider.Config {
+fn pickCredentialed(a: Allocator, io: std.Io, credentials: *auth.Lookup, text: []const u8, path: []const u8) !?provider.Config {
     var scratch: std.heap.ArenaAllocator = .init(a);
     defer scratch.deinit();
     var detail: ?[]u8 = null;
@@ -66,14 +46,13 @@ fn pickCredentialed(a: Allocator, io: std.Io, env: *const Env, home_path: []cons
     var names: std.ArrayList([]const u8) = .empty;
     try names.appendSlice(scratch.allocator(), &startup_order);
     for (file.providers.items) |item| if (item.custom) try names.append(scratch.allocator(), item.name);
-    var picked_env = try env.clone(scratch.allocator());
+    var picked_env = try credentials.env.clone(scratch.allocator());
     for ([_][]const u8{ "NIB_MODEL", "NIB_BASE_URL", "NIB_CONTEXT_WINDOW" }) |name| _ = picked_env.swapRemove(name);
     for (names.items) |name| {
         try picked_env.put("NIB_PROVIDER", name);
         var d: ?[]u8 = null;
-        var cfg = resolve(a, &picked_env, text, path, &d) catch continue;
-        try applyStore(a, io, home_path, &cfg);
-        if (credentialed(a, io, cfg)) return cfg;
+        const cfg = resolve(a, &picked_env, text, path, &d, credentials) catch continue;
+        if (auth.current(a, io, cfg).available()) return cfg;
     }
     return null;
 }
@@ -571,7 +550,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
 }
 
 // Returned string fields are allocated with a, except canonical reasoning_effort values.
-pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8, detail: *?[]u8) !provider.Config {
+fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8, detail: *?[]u8, credentials: ?*auth.Lookup) !provider.Config {
     detail.* = null;
     var scratch: std.heap.ArenaAllocator = .init(a);
     defer scratch.deinit();
@@ -616,7 +595,7 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
         cfg.custom_vision = settings.vision;
         cfg.custom_max_output = settings.max_output;
     }
-    cfg.api_key_env = if (settings.api_key_env) |value| try a.dupe(u8, value) else if (entry.api_key_env.len > 0) try a.dupe(u8, entry.api_key_env[0]) else null;
+    cfg.api_key_env = settings.api_key_env;
     cfg.codex_transport = if (env.get("NIB_CODEX_TRANSPORT")) |v| std.meta.stringToEnum(provider.Transport, v) orelse {
         detail.* = try a.dupe(u8, "NIB_CODEX_TRANSPORT: expected websocket or sse");
         return error.InvalidConfig;
@@ -666,18 +645,8 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
     errdefer a.free(cfg.model);
     cfg.base_url = try a.dupe(u8, env.get("NIB_BASE_URL") orelse settings.base_url orelse entry.base_url);
     errdefer a.free(cfg.base_url);
-    const key = if (settings.api_key_env) |key_env| env.get(key_env) orelse "" else for (entry.api_key_env) |key_name| {
-        if (env.get(key_name)) |value| {
-            cfg.api_key_env = try a.dupe(u8, key_name);
-            break value;
-        }
-    } else "";
-    cfg.api_key = try a.dupe(u8, key);
-    errdefer a.free(cfg.api_key);
-    cfg.key_source = if (key.len > 0) .env else .none;
-    cfg.nib_home = home(a, env) catch null;
-    cfg.auth_issuer = if (env.get("NIB_AUTH_ISSUER")) |v| try a.dupe(u8, v) else null;
-    cfg.codex_home = if (env.get("CODEX_HOME")) |v| try a.dupe(u8, v) else try std.fs.path.join(a, &.{ env.get("HOME") orelse "", ".codex" });
+    var env_only: auth.Lookup = .{ .env = env };
+    try (credentials orelse &env_only).apply(a, &cfg);
     cfg.enabled_skills = try enabledSkills(a, file.skills.items);
     cfg.enabled_plugins = try enabledSkills(a, file.plugins.items);
     inline for (.{ "after_edit", "turn_end" }) |event| {
@@ -779,8 +748,9 @@ pub fn saveModel(a: Allocator, io: std.Io, env: *const Env, home_path: []const u
     try selected_env.put("NIB_PROVIDER", selection.provider);
     if (selection.model) |model| try selected_env.put("NIB_MODEL", model);
     var detail: ?[]u8 = null;
-    var cfg = try resolve(a, &selected_env, text, path, &detail);
-    try applyStore(a, io, home_path, &cfg);
+    var credentials = try auth.Lookup.init(a, io, env, home_path);
+    defer credentials.deinit();
+    const cfg = try resolve(a, &selected_env, text, path, &detail, &credentials);
     if (cfg.provider == .chat_completions and !std.mem.eql(u8, cfg.model, provider.definition(.chat_completions).default_model) and env.get("NIB_CONTEXT_WINDOW") == null) {
         const file = try parse(a, a, text, path, &detail);
         if (file.chat_settings.context_window == null) return error.UnknownModelContextWindow;
@@ -799,15 +769,19 @@ pub fn modelEntries(a: Allocator, io: std.Io, env: *const Env, home_path: []cons
     const text = try read(a, io, path);
     var detail: ?[]u8 = null;
     const file = try parse(a, a, text, path, &detail);
-    const services = try @import("auth.zig").services(a, io, env, home_path);
+    var credentials = try auth.Lookup.init(a, io, env, home_path);
+    defer credentials.deinit();
     var entries: std.ArrayList(ModelEntry) = .empty;
     for (provider.definitions) |entry| {
         const configured = for (file.providers.items) |item| {
             if (std.mem.eql(u8, item.name, entry.id)) break true;
         } else false;
-        const signed_in = if (@import("auth.zig").find(services, entry.id)) |svc| svc.signed_in else false;
         const selected = if (file.provider_name) |name| std.mem.eql(u8, name, entry.id) else false;
-        if (!configured and !selected and !signed_in and !std.mem.eql(u8, entry.id, cfg.name())) continue;
+        if (!configured and !selected and !std.mem.eql(u8, entry.id, cfg.name())) {
+            // Do not advertise the compatibility identity as an additional service.
+            const id = std.meta.stringToEnum(provider.Id, entry.id).?;
+            if (id == .chat_completions or !(try credentials.inspect(a, io, id, entry.id, null)).source.available()) continue;
+        }
         if (entry.models.len == 0) try appendModel(a, &entries, entry.id, entry.default_model);
         for (entry.models) |model| try appendModel(a, &entries, entry.id, model.id);
     }
@@ -964,7 +938,7 @@ test "provider defaults file environment and command effort precedence" {
     defer env.deinit();
     try env.put("HOME", "/fictional");
     var detail: ?[]u8 = null;
-    var cfg = try resolve(a, &env, "", "test/config.toml", &detail);
+    var cfg = try resolve(a, &env, "", "test/config.toml", &detail, null);
     try t.expectEqual(provider.Id.codex, cfg.provider);
     try t.expectEqualStrings("gpt-6.2-sol", cfg.model);
     try t.expectEqual(@as(u64, 500000), cfg.context_window);
@@ -981,13 +955,13 @@ test "provider defaults file environment and command effort precedence" {
         \\base_url = "https://chat.test"
         \\context_window = 100000
     ;
-    cfg = try resolve(a, &env, text, "test/config.toml", &detail);
+    cfg = try resolve(a, &env, text, "test/config.toml", &detail, null);
     try t.expectEqualStrings("file-model", cfg.model);
     try t.expectEqualStrings("https://chat.test", cfg.base_url);
     try t.expectEqual(@as(u64, 100000), cfg.context_window);
     try t.expectEqualStrings("medium", cfg.reasoning_effort.?);
     try env.put("NIB_PROVIDER", "codex");
-    cfg = try resolve(a, &env, text, "test/config.toml", &detail);
+    cfg = try resolve(a, &env, text, "test/config.toml", &detail, null);
     try t.expectEqualStrings("gpt-6-sol", cfg.model);
     try t.expectEqualStrings("https://codex.test", cfg.base_url);
     try t.expectEqual(@as(u64, 200000), cfg.context_window);
@@ -996,14 +970,14 @@ test "provider defaults file environment and command effort precedence" {
     try env.put("NIB_CONTEXT_WINDOW", "12345");
     try env.put("NIB_REASONING_EFFORT", "low");
     try env.put("NIB_API_KEY", "mock");
-    cfg = try resolve(a, &env, text, "test/config.toml", &detail);
+    cfg = try resolve(a, &env, text, "test/config.toml", &detail, null);
     try t.expectEqualStrings("env-model", cfg.model);
     try t.expectEqualStrings("https://env.test", cfg.base_url);
     try t.expectEqual(@as(u64, 12345), cfg.context_window);
     try t.expectEqualStrings("", cfg.api_key);
     try t.expectEqualStrings("low", cfg.reasoning_effort.?);
     try env.put("NIB_THINKING", "off");
-    cfg = try resolve(a, &env, text, "test/config.toml", &detail);
+    cfg = try resolve(a, &env, text, "test/config.toml", &detail, null);
     try t.expectEqual(@as(?bool, false), cfg.thinking);
     try cfg.setEffort("high");
     try t.expectEqualStrings("high", cfg.reasoning_effort.?);
@@ -1012,13 +986,13 @@ test "provider defaults file environment and command effort precedence" {
     try t.expectEqual(@as(?bool, null), cfg.thinking);
     try t.expectEqual(@as(?[]const u8, null), cfg.reasoning_effort);
     try env.put("NIB_PROVIDER", "chat_completions");
-    cfg = try resolve(a, &env, text, "test/config.toml", &detail);
+    cfg = try resolve(a, &env, text, "test/config.toml", &detail, null);
     try t.expectEqualStrings("mock", cfg.api_key);
     for (provider.Config.effort_values) |effort| {
         const file_text = try std.fmt.allocPrint(a, "effort = \"{s}\"", .{effort});
         var empty: Env = .init(t.allocator);
         defer empty.deinit();
-        const file_cfg = try resolve(a, &empty, file_text, "test/config.toml", &detail);
+        const file_cfg = try resolve(a, &empty, file_text, "test/config.toml", &detail, null);
         var expected: provider.Config = .{ .base_url = "", .model = "", .api_key = "" };
         try expected.setEffort(effort);
         try t.expectEqual(expected.thinking, file_cfg.thinking);
@@ -1117,38 +1091,38 @@ test "environment validation and model-dependent defaults" {
     defer env.deinit();
     var detail: ?[]u8 = null;
     try env.put("NIB_PROVIDER", "chat_completions");
-    var cfg = try resolve(a, &env, "", "config.toml", &detail);
+    var cfg = try resolve(a, &env, "", "config.toml", &detail, null);
     try t.expectEqualStrings("deepseek-flash", cfg.model);
     try t.expectEqualStrings("https://api.deepseek.com", cfg.base_url);
     try t.expectEqual(@as(u64, 1000000), cfg.context_window);
-    try t.expect(cfg.missingKey());
+    try t.expect(!auth.current(a, t.io, cfg).available());
     try env.put("DEEPSEEK_API_KEY", "mock-fallback");
-    try t.expectEqualStrings("mock-fallback", (try resolve(a, &env, "", "config.toml", &detail)).api_key);
+    try t.expectEqualStrings("mock-fallback", (try resolve(a, &env, "", "config.toml", &detail, null)).api_key);
     try env.put("NIB_PROVIDER", "codex");
     try env.put("NIB_MODEL", "gpt-6-sol");
-    cfg = try resolve(a, &env, "", "config.toml", &detail);
+    cfg = try resolve(a, &env, "", "config.toml", &detail, null);
     try t.expectEqual(@as(u64, 272000), cfg.context_window);
-    try cfg.checkSession(.codex, "gpt-6-sol");
-    try t.expectError(error.SessionProviderMismatch, cfg.checkSession(.chat_completions, null));
+    try cfg.checkSession(.codex);
+    try t.expectError(error.SessionProviderMismatch, cfg.checkSession(.chat_completions));
     try env.put("NIB_MODEL", "unknown");
-    try t.expectError(error.UnknownCodexModelContextWindow, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.UnknownCodexModelContextWindow, resolve(a, &env, "", "config.toml", &detail, null));
     try env.put("NIB_CONTEXT_WINDOW", "10000");
-    try t.expectEqual(@as(u64, 10000), (try resolve(a, &env, "", "config.toml", &detail)).context_window);
+    try t.expectEqual(@as(u64, 10000), (try resolve(a, &env, "", "config.toml", &detail, null)).context_window);
     try env.put("NIB_CONTEXT_WINDOW", "bad");
-    try t.expectError(error.InvalidContextWindow, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidContextWindow, resolve(a, &env, "", "config.toml", &detail, null));
     try env.put("NIB_CONTEXT_WINDOW", "0");
-    try t.expectError(error.InvalidContextWindow, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidContextWindow, resolve(a, &env, "", "config.toml", &detail, null));
     try env.put("NIB_CONTEXT_WINDOW", "10000");
     try env.put("NIB_THINKING", "invalid");
-    try t.expectError(error.InvalidThinking, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidThinking, resolve(a, &env, "", "config.toml", &detail, null));
     try env.put("NIB_THINKING", "on");
-    cfg = try resolve(a, &env, "effort = \"off\"", "config.toml", &detail);
+    cfg = try resolve(a, &env, "effort = \"off\"", "config.toml", &detail, null);
     try t.expectEqual(@as(?bool, true), cfg.thinking);
     try t.expectEqual(@as(?[]const u8, null), cfg.reasoning_effort);
     try env.put("NIB_REASONING_EFFORT", "invalid");
-    try t.expectError(error.InvalidReasoningEffort, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidReasoningEffort, resolve(a, &env, "", "config.toml", &detail, null));
     try env.put("NIB_PROVIDER", "invalid");
-    try t.expectError(error.InvalidProvider, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidProvider, resolve(a, &env, "", "config.toml", &detail, null));
 }
 
 test "NIB_TUNE is validated at startup" {
@@ -1159,9 +1133,9 @@ test "NIB_TUNE is validated at startup" {
     var env: Env = .init(a);
     var detail: ?[]u8 = null;
     try env.put("NIB_TUNE", "delivery=tool");
-    _ = try resolve(a, &env, "", "config.toml", &detail);
+    _ = try resolve(a, &env, "", "config.toml", &detail, null);
     try env.put("NIB_TUNE", "delivery=short");
-    try t.expectError(error.InvalidTuning, resolve(a, &env, "", "config.toml", &detail));
+    try t.expectError(error.InvalidTuning, resolve(a, &env, "", "config.toml", &detail, null));
     try t.expectEqualStrings("NIB_TUNE: delivery has no variant 'short'; variants: user, tool", detail.?);
 }
 
@@ -1173,17 +1147,17 @@ test "limits defaults, bounds and diagnostics" {
     var env: Env = .init(t.allocator);
     defer env.deinit();
     var detail: ?[]u8 = null;
-    const defaults = (try resolve(a, &env, "", "config.toml", &detail)).limits;
+    const defaults = (try resolve(a, &env, "", "config.toml", &detail, null)).limits;
     try t.expectEqualDeep(provider.Limits{ .llm_concurrency = 4, .llm_calls_per_run = 100, .llm_input_kib = 256, .agent_concurrency = 4, .max_steps = null, .stream_idle_timeout_s = 300 }, defaults);
-    try t.expectEqualDeep(defaults, (try resolve(a, &env, "[limits]\n", "config.toml", &detail)).limits);
-    try t.expectEqual(@as(?usize, null), (try resolve(a, &env, "[limits]\nllm_concurrency = 8\n", "config.toml", &detail)).limits.max_steps);
-    try t.expectEqual(@as(?usize, 50), (try resolve(a, &env, "[limits]\nmax_steps = 50\n", "config.toml", &detail)).limits.max_steps);
+    try t.expectEqualDeep(defaults, (try resolve(a, &env, "[limits]\n", "config.toml", &detail, null)).limits);
+    try t.expectEqual(@as(?usize, null), (try resolve(a, &env, "[limits]\nllm_concurrency = 8\n", "config.toml", &detail, null)).limits.max_steps);
+    try t.expectEqual(@as(?usize, 50), (try resolve(a, &env, "[limits]\nmax_steps = 50\n", "config.toml", &detail, null)).limits.max_steps);
     const names = [_][]const u8{ "llm_concurrency", "llm_calls_per_run", "llm_input_kib", "agent_concurrency", "max_steps", "stream_idle_timeout_s", "run_background_after_ms", "stream_content_timeout_s", "request_timeout_s" };
     const maxima = [_]usize{ 64, 10000, 65536, 64, 100000, 3600, 3600000, 3600, 3600 };
     for (names, maxima) |name, max| {
         for ([_]usize{ 1, max }) |n| {
             const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {d}\n", .{ name, n });
-            const limits = (try resolve(a, &env, text, "config.toml", &detail)).limits;
+            const limits = (try resolve(a, &env, text, "config.toml", &detail, null)).limits;
             inline for (names) |field| {
                 if (std.mem.eql(u8, name, field)) try t.expectEqual(@as(@TypeOf(@field(limits, field)), n), @field(limits, field));
             }
@@ -1191,15 +1165,15 @@ test "limits defaults, bounds and diagnostics" {
         const values = [_][]const u8{ "0", "-1", "true", "\"1\"", "1.5" };
         for (values) |value| {
             const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {s}\n", .{ name, value });
-            try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+            try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
             try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:2:"));
         }
         const text = try std.fmt.allocPrint(a, "[limits]\n{s} = {d}\n", .{ name, max + 1 });
-        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
         try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:2:"));
     }
     for ([_][]const u8{ "[limits]\nunknown = 1", "[limits]\nmax_steps = 1\nmax_steps = 2", "[limits]\n[limits]" }) |text| {
-        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
         try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:"));
     }
 }
@@ -1212,26 +1186,26 @@ test "sandbox defaults, file settings and NIB_SANDBOX override" {
     var env: Env = .init(a);
     try env.put("HOME", "/home/u");
     var detail: ?[]u8 = null;
-    const defaults = try resolve(a, &env, "", "config.toml", &detail);
+    const defaults = try resolve(a, &env, "", "config.toml", &detail, null);
     try t.expectEqual(.off, defaults.sandbox.mode);
     try t.expectEqual(@as(usize, 0), defaults.sandbox.writable.len);
     const text = "[sandbox]\nmode = \"off\" # trusted machine\nwritable = [\"~/extra\", \"/data/shared\",]\n";
-    const file = try resolve(a, &env, text, "config.toml", &detail);
+    const file = try resolve(a, &env, text, "config.toml", &detail, null);
     try t.expectEqual(.off, file.sandbox.mode);
     try t.expectEqual(@as(usize, 2), file.sandbox.writable.len);
     try t.expectEqualStrings("/home/u/extra", file.sandbox.writable[0]);
     try t.expectEqualStrings("/data/shared", file.sandbox.writable[1]);
-    try t.expectEqual(.workspace, (try resolve(a, &env, "[sandbox]\nmode = \"workspace\"", "config.toml", &detail)).sandbox.mode);
+    try t.expectEqual(.workspace, (try resolve(a, &env, "[sandbox]\nmode = \"workspace\"", "config.toml", &detail, null)).sandbox.mode);
     try env.put("NIB_SANDBOX", "workspace");
-    try t.expectEqual(.workspace, (try resolve(a, &env, text, "config.toml", &detail)).sandbox.mode);
+    try t.expectEqual(.workspace, (try resolve(a, &env, text, "config.toml", &detail, null)).sandbox.mode);
     try env.put("NIB_SANDBOX", "off");
-    try t.expectEqual(.off, (try resolve(a, &env, "[sandbox]\nmode = \"workspace\"", "config.toml", &detail)).sandbox.mode);
+    try t.expectEqual(.off, (try resolve(a, &env, "[sandbox]\nmode = \"workspace\"", "config.toml", &detail, null)).sandbox.mode);
     try env.put("NIB_SANDBOX", "maybe");
-    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
     try t.expect(std.mem.startsWith(u8, detail.?, "NIB_SANDBOX:"));
     for ([_][]const u8{ "[sandbox]\nmode = \"on\"", "[sandbox]\nmode = 1", "[sandbox]\nunknown = 1", "[sandbox]\nmode = \"off\"\nmode = \"off\"", "[sandbox]\nwritable = [\"relative\"]", "[sandbox]\nwritable = [\"/a\"", "[sandbox]\nwritable = \"/a\"", "[sandbox]\nwritable = [\"/a\" \"/b\"]", "[sandbox]\n[sandbox]" }) |bad| {
         var clean: Env = .init(a);
-        try t.expectError(error.InvalidConfig, resolve(a, &clean, bad, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &clean, bad, "config.toml", &detail, null));
         try t.expect(std.mem.startsWith(u8, detail.?, "config.toml:"));
     }
 }
@@ -1243,25 +1217,25 @@ test "summary and Run display budget file and environment precedence" {
     const a = arena.allocator();
     var env: Env = .init(a);
     var detail: ?[]u8 = null;
-    const defaults = try resolve(a, &env, "", "config.toml", &detail);
+    const defaults = try resolve(a, &env, "", "config.toml", &detail, null);
     try t.expectEqual(.off, defaults.reasoning_summary);
     try t.expectEqual(@as(usize, 16384), defaults.limits.run_output_bytes);
     const text = "[codex]\nreasoning_summary = \"auto\"\n[limits]\nrun_output_bytes = 32768\n";
-    const file = try resolve(a, &env, text, "config.toml", &detail);
+    const file = try resolve(a, &env, text, "config.toml", &detail, null);
     try t.expectEqual(.auto, file.reasoning_summary);
     try t.expectEqual(@as(usize, 32768), file.limits.run_output_bytes);
     try env.put("NIB_REASONING_SUMMARY", "off");
     try env.put("NIB_RUN_OUTPUT_BYTES", "65536");
-    const overridden = try resolve(a, &env, text, "config.toml", &detail);
+    const overridden = try resolve(a, &env, text, "config.toml", &detail, null);
     try t.expectEqual(.off, overridden.reasoning_summary);
     try t.expectEqual(@as(usize, 65536), overridden.limits.run_output_bytes);
     for ([_][]const u8{ "0", "16383", "16777217", "many" }) |value| {
         try env.put("NIB_RUN_OUTPUT_BYTES", value);
-        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
     }
     _ = env.swapRemove("NIB_RUN_OUTPUT_BYTES");
     try env.put("NIB_REASONING_SUMMARY", "invalid");
-    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
     for ([_][]const u8{ "[codex]\nreasoning_summary = \"invalid\"", "[limits]\nrun_output_bytes = 16383", "[limits]\nrun_output_bytes = 16777217", "[limits]\nrun_output_bytes = true" }) |invalid| {
         try t.expectError(error.InvalidConfig, parse(a, a, invalid, "config.toml", &detail));
     }
@@ -1294,15 +1268,15 @@ test "Codex transport defaults, TOML selection and environment precedence" {
     var env: Env = .init(t.allocator);
     defer env.deinit();
     var detail: ?[]u8 = null;
-    try t.expectEqual(provider.Transport.websocket, (try resolve(a, &env, "", "config.toml", &detail)).codex_transport);
+    try t.expectEqual(provider.Transport.websocket, (try resolve(a, &env, "", "config.toml", &detail, null)).codex_transport);
     const text = "[codex]\ntransport = \"sse\"\n";
-    try t.expectEqual(provider.Transport.sse, (try resolve(a, &env, text, "config.toml", &detail)).codex_transport);
+    try t.expectEqual(provider.Transport.sse, (try resolve(a, &env, text, "config.toml", &detail, null)).codex_transport);
     try env.put("NIB_CODEX_TRANSPORT", "websocket");
-    try t.expectEqual(provider.Transport.websocket, (try resolve(a, &env, text, "config.toml", &detail)).codex_transport);
+    try t.expectEqual(provider.Transport.websocket, (try resolve(a, &env, text, "config.toml", &detail, null)).codex_transport);
     try env.put("NIB_CODEX_TRANSPORT", "sse");
-    try t.expectEqual(provider.Transport.sse, (try resolve(a, &env, "", "config.toml", &detail)).codex_transport);
+    try t.expectEqual(provider.Transport.sse, (try resolve(a, &env, "", "config.toml", &detail, null)).codex_transport);
     try env.put("NIB_CODEX_TRANSPORT", "invalid");
-    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
     try t.expectError(error.InvalidConfig, parse(a, a, "[codex]\ntransport = \"invalid\"\n", "config.toml", &detail));
     try t.expectError(error.InvalidConfig, parse(a, a, "[chat_completions]\ntransport = \"websocket\"\n", "config.toml", &detail));
 }
@@ -1314,16 +1288,16 @@ test "Codex Run tool defaults custom with validated file and environment fallbac
     const a = arena.allocator();
     var env: Env = .init(a);
     var detail: ?[]u8 = null;
-    try t.expectEqual(.custom, (try resolve(a, &env, "", "config.toml", &detail)).codex_run_tool);
+    try t.expectEqual(.custom, (try resolve(a, &env, "", "config.toml", &detail, null)).codex_run_tool);
     const text = "[codex]\nrun_tool = \"function\"";
-    try t.expectEqual(.function, (try resolve(a, &env, text, "config.toml", &detail)).codex_run_tool);
+    try t.expectEqual(.function, (try resolve(a, &env, text, "config.toml", &detail, null)).codex_run_tool);
     try env.put("NIB_CODEX_RUN_TOOL", "custom");
-    try t.expectEqual(.custom, (try resolve(a, &env, text, "config.toml", &detail)).codex_run_tool);
+    try t.expectEqual(.custom, (try resolve(a, &env, text, "config.toml", &detail, null)).codex_run_tool);
     try env.put("NIB_CODEX_RUN_TOOL", "invalid");
-    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+    try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
     try env.put("NIB_CODEX_RUN_TOOL", "custom");
     for ([_][]const u8{ "[codex]\nrun_tool = \"invalid\"", "[codex]\nrun_tool = true", "[codex]\nrun_tool = \"custom\"\nrun_tool = \"function\"", "[chat_completions]\nrun_tool = \"custom\"" }) |bad| {
-        try t.expectError(error.InvalidConfig, resolve(a, &env, bad, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &env, bad, "config.toml", &detail, null));
     }
 }
 
@@ -1428,7 +1402,7 @@ test "skills config booleans and atomic toggles preserve other lines" {
     try t.expectError(error.InvalidConfig, parse(a, a, "effort = true", "test", &detail));
     var env: Env = .init(a);
     defer env.deinit();
-    const resolved = try resolve(a, &env, "[skills]\non = true\noff = false", "test", &detail);
+    const resolved = try resolve(a, &env, "[skills]\non = true\noff = false", "test", &detail, null);
     try t.expectEqual(@as(usize, 1), resolved.enabled_skills.len);
     try t.expectEqualStrings("on", resolved.enabled_skills[0]);
 }
@@ -1452,7 +1426,7 @@ test "built-in catalogs custom providers and environment selection" {
     for (provider.definitions) |entry| {
         try env.put("NIB_PROVIDER", entry.id);
         if (entry.api_key_env.len > 0) try env.put(entry.api_key_env[0], "fake-key");
-        const cfg = try resolve(a, &env, "", "config.toml", &detail);
+        const cfg = try resolve(a, &env, "", "config.toml", &detail, null);
         try t.expectEqualStrings(entry.id, @tagName(cfg.provider));
         try t.expectEqualStrings(entry.default_model, cfg.model);
         try t.expectEqual(entry.protocol, cfg.protocol());
@@ -1461,14 +1435,14 @@ test "built-in catalogs custom providers and environment selection" {
     _ = env.swapRemove("NIB_PROVIDER");
     try env.put("SITE_KEY", "fake-custom-key");
     const text = "provider = \"mysite\"\n[providers.mysite]\nprotocol = \"responses\"\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"code\"\ncontext_window = 12345\napi_key_env = \"SITE_KEY\"\n";
-    var cfg = try resolve(a, &env, text, "config.toml", &detail);
+    var cfg = try resolve(a, &env, text, "config.toml", &detail, null);
     try t.expectEqualStrings("mysite", cfg.name());
     try t.expectEqualStrings("fake-custom-key", cfg.api_key);
     try t.expectEqual(provider.Protocol.responses, cfg.protocol());
     try t.expectEqual(@as(u64, 12345), cfg.context_window);
     try env.put("NIB_MODEL", "override");
     try env.put("NIB_CONTEXT_WINDOW", "9876");
-    cfg = try resolve(a, &env, text, "config.toml", &detail);
+    cfg = try resolve(a, &env, text, "config.toml", &detail, null);
     try t.expectEqualStrings("override", cfg.model);
     try t.expectEqual(@as(u64, 9876), cfg.context_window);
 }
@@ -1482,15 +1456,15 @@ test "custom max_output is an optional positive integer" {
     defer env.deinit();
     var detail: ?[]u8 = null;
     const head = "provider = \"site\"\n[providers.site]\nprotocol = \"chat_completions\"\nbase_url = \"http://localhost:1/v1\"\nmodel = \"m\"\ncontext_window = 1000\n";
-    try t.expectEqual(@as(?u32, null), (try resolve(a, &env, head, "config.toml", &detail)).custom_max_output);
+    try t.expectEqual(@as(?u32, null), (try resolve(a, &env, head, "config.toml", &detail, null)).custom_max_output);
     const set = try std.fmt.allocPrint(a, "{s}max_output = 8_192\n", .{head});
-    try t.expectEqual(@as(?u32, 8192), (try resolve(a, &env, set, "config.toml", &detail)).custom_max_output);
+    try t.expectEqual(@as(?u32, 8192), (try resolve(a, &env, set, "config.toml", &detail, null)).custom_max_output);
     for ([_][]const u8{ "max_output = 0\n", "max_output = -5\n", "max_output = \"8\"\n", "max_output = true\n", "max_output = 5000000000\n" }) |line| {
         const text = try std.fmt.allocPrint(a, "{s}{s}", .{ head, line });
-        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail));
+        try t.expectError(error.InvalidConfig, resolve(a, &env, text, "config.toml", &detail, null));
         try t.expect(std.mem.indexOf(u8, detail.?, "max_output must be") != null);
     }
-    try t.expectError(error.InvalidConfig, resolve(a, &env, "[openai]\nmax_output = 5\n", "config.toml", &detail));
+    try t.expectError(error.InvalidConfig, resolve(a, &env, "[openai]\nmax_output = 5\n", "config.toml", &detail, null));
 }
 
 test "custom configuration rejects incomplete duplicate conflicting and secret fields" {
@@ -1549,14 +1523,14 @@ test "model entries include configured services and saving is atomic" {
     var detail: ?[]u8 = null;
     var anthropic_env = try env.clone(a);
     try anthropic_env.put("NIB_PROVIDER", "anthropic");
-    const anthropic = try resolve(a, &anthropic_env, custom, "config.toml", &detail);
+    const anthropic = try resolve(a, &anthropic_env, custom, "config.toml", &detail, null);
     const own = try modelEntries(a, t.io, &env, root, anthropic);
     try t.expectEqual(@as(usize, 6), own.len);
     try t.expectEqualStrings("local", own[4].provider);
     try t.expectEqualStrings("locked", own[5].provider);
     var local_env = try env.clone(a);
     try local_env.put("NIB_PROVIDER", "local");
-    const local = try resolve(a, &local_env, custom, "config.toml", &detail);
+    const local = try resolve(a, &local_env, custom, "config.toml", &detail, null);
     const listed = try modelEntries(a, t.io, &env, root, local);
     try t.expectEqual(@as(usize, 2), listed.len);
     try t.expectEqualStrings("old", listed[0].model);
@@ -1632,7 +1606,7 @@ test "startup picks the first credentialed service without persisting" {
     // Nothing credentialed: the configured (default Codex) service stays, flagged as not credentialed.
     var cfg = try load(a, t.io, &env, root, &detail);
     try t.expectEqual(provider.Id.codex, cfg.provider);
-    try t.expect(!credentialed(a, t.io, cfg));
+    try t.expect(!auth.current(a, t.io, cfg).available());
     // A stored key for xAI and an env key for OpenAI: built-in order puts OpenAI first.
     try tmp.dir.writeFile(t.io, .{ .sub_path = "auth.json", .data = "{\"keys\":{\"xai\":\"stored-fake\"}}" });
     cfg = try load(a, t.io, &env, root, &detail);
@@ -1648,7 +1622,9 @@ test "startup picks the first credentialed service without persisting" {
     // A Codex login outranks every key.
     try tmp.dir.createDirPath(t.io, "codex");
     try tmp.dir.writeFile(t.io, .{ .sub_path = "codex/auth.json", .data = "{\"tokens\":{\"access_token\":\"a\",\"account_id\":\"b\"}}" });
-    try t.expectEqual(provider.Id.codex, (try load(a, t.io, &env, root, &detail)).provider);
+    const cli = try load(a, t.io, &env, root, &detail);
+    try t.expectEqual(provider.Id.codex, cli.provider);
+    try t.expectEqualStrings("ChatGPT login from the Codex CLI", auth.describe(a, t.io, cli));
     // A configured credentialed service wins over the order; an explicit NIB_PROVIDER is never replaced.
     try tmp.dir.writeFile(t.io, .{ .sub_path = "config.toml", .data = "provider = \"deepseek\"\n" });
     try t.expectEqual(provider.Id.codex, (try load(a, t.io, &env, root, &detail)).provider);
@@ -1658,9 +1634,41 @@ test "startup picks the first credentialed service without persisting" {
     try tmp.dir.writeFile(t.io, .{ .sub_path = "auth.json", .data = "{}" });
     const explicit = try load(a, t.io, &env, root, &detail);
     try t.expectEqual(provider.Id.xai, explicit.provider);
-    try t.expect(!credentialed(a, t.io, explicit));
+    try t.expect(!auth.current(a, t.io, explicit).available());
     const config_text = try tmp.dir.readFileAlloc(t.io, "config.toml", a, .unlimited);
     try t.expectEqualStrings("provider = \"deepseek\"\n", config_text);
+}
+
+test "legacy chat_completions keeps its identity and ordered keys when switching and signing out" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var env = try envWithHome(a, root);
+    try auth.setKey(a, t.io, root, "chat_completions", "stored-legacy");
+    try env.put("NIB_API_KEY", "legacy-env");
+    try env.put("DEEPSEEK_API_KEY", "deepseek-env");
+
+    const switched = try saveModel(a, t.io, &env, root, .{ .provider = "chat_completions", .model = null });
+    try t.expectEqual(provider.Id.chat_completions, switched.provider);
+    try t.expectEqualStrings("legacy-env", switched.api_key);
+    try t.expectEqualStrings("key from NIB_API_KEY", auth.describe(a, t.io, switched));
+    const removed = try auth.signOut(a, t.io, &env, root, "chat_completions");
+    try t.expect(removed.removed);
+    try t.expectEqualStrings("NIB_API_KEY", removed.env_name.?);
+
+    var detail: ?[]u8 = null;
+    const startup = try load(a, t.io, &env, root, &detail);
+    try t.expectEqual(provider.Id.chat_completions, startup.provider);
+    try t.expectEqualStrings(switched.api_key, startup.api_key);
+    try env.put("NIB_API_KEY", "");
+    const fallback = try load(a, t.io, &env, root, &detail);
+    try t.expectEqual(provider.Id.chat_completions, fallback.provider);
+    try t.expectEqualStrings("deepseek-env", fallback.api_key);
+    try t.expectEqualStrings("key from DEEPSEEK_API_KEY", auth.describe(a, t.io, fallback));
 }
 
 test "custom services come last and a stored key serves a keyless config" {
@@ -1809,7 +1817,7 @@ test "simple persistence preserves surrounding configuration and rejects invalid
         try saveSimple(a, t.io, root, simple);
         const text = try tmp.dir.readFileAlloc(t.io, "config.toml", a, .limited(10000));
         try t.expect(std.mem.endsWith(u8, text, "# keep\n[codex]\n"));
-        try t.expectEqual(simple, (try resolve(a, &env, text, "test", &detail)).simple);
+        try t.expectEqual(simple, (try resolve(a, &env, text, "test", &detail, null)).simple);
     }
     for ([_][]const u8{ "ui = true", "ui = \"bad\"", "ui = \"normal\"\nui = \"simple\"" }) |text| try t.expectError(error.InvalidConfig, parse(a, a, text, "test", &detail));
 }
@@ -1822,8 +1830,8 @@ test "open command template is an optional non-empty top-level string" {
     var env: Env = .init(a);
     defer env.deinit();
     var detail: ?[]u8 = null;
-    try t.expect((try resolve(a, &env, "", "test", &detail)).open == null);
-    try t.expectEqualStrings("zed {path}:{line}", (try resolve(a, &env, "open = \"zed {path}:{line}\"\n[codex]\n", "test", &detail)).open.?);
+    try t.expect((try resolve(a, &env, "", "test", &detail, null)).open == null);
+    try t.expectEqualStrings("zed {path}:{line}", (try resolve(a, &env, "open = \"zed {path}:{line}\"\n[codex]\n", "test", &detail, null)).open.?);
     for ([_][]const u8{ "open = \"\"", "open = \"  \"", "open = 3", "open = \"a\"\nopen = \"b\"" }) |text| try t.expectError(error.InvalidConfig, parse(a, a, text, "test", &detail));
 }
 

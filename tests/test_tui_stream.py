@@ -133,7 +133,25 @@ def test_incremental_stream(tmp):
             terminal.send("\x15")
 
 
+def test_large_paste_does_not_redraw_per_key(tmp):
+    payload = "first line\n" + "/help\n  indented text\twith a tab\n" * 96 + "last line"
+    reply = Reply("paste received")
+    with fixture(tmp, [reply]) as (terminal, _, _):
+        offset = len(terminal.read())
+        terminal.send("\x1b[200~" + payload + "\x1b[201~")
+        terminal.until(b"[Pasted #1")
+        frames = terminal.read()[offset:].count(b"\x1b[?2026h")
+        assert 1 <= frames <= 4, f"pasting repainted {frames} frames"
+        assert not reply.received.is_set(), "pasted newlines must not submit input"
+        terminal.send("\r")
+        assert reply.received.wait(5), "pasted draft was not sent"
+        assert reply.messages[-1]["content"] == payload
+        terminal.wait_turn(reply.text)
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-tui-stream-") as directory:
+        test_large_paste_does_not_redraw_per_key(Path(directory) / "paste")
+        print("test_large_paste_does_not_redraw_per_key: ok")
         test_incremental_stream(Path(directory) / "incremental")
         print("test_incremental_stream: ok")

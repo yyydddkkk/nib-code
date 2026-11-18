@@ -120,7 +120,8 @@ def child_code(case, step):
 
 
 def reply(handler, provider, code, text):
-    run_args = {"code": code}
+    run_name = "rerun" if isinstance(code, dict) else "run"
+    run_args = code if isinstance(code, dict) else {"code": code}
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Transfer-Encoding", "chunked")
@@ -147,7 +148,7 @@ def reply(handler, provider, code, text):
         event("response.output_item.done", output_index=0, item=message)
         output = [message]
         if code is not None:
-            item = {"id": "agent_fc", "type": "function_call", "call_id": "agent_call", "name": "run",
+            item = {"id": "agent_fc", "type": "function_call", "call_id": "agent_call", "name": run_name,
                     "arguments": json.dumps(run_args), "status": "completed"}
             event("response.output_item.added", output_index=1, item={**item, "arguments": "", "status": "in_progress"})
             event("response.function_call_arguments.delta", output_index=1, item_id=item["id"], delta=item["arguments"])
@@ -161,7 +162,7 @@ def reply(handler, provider, code, text):
         event(choices=[{"delta": {"content": text}}])
         if code is not None:
             event(choices=[{"delta": {"tool_calls": [{"index": 0, "id": "agent_call", "type": "function",
-                  "function": {"name": "run", "arguments": json.dumps(run_args)}}]}}])
+                  "function": {"name": run_name, "arguments": json.dumps(run_args)}}]}}])
         event(choices=[{"delta": {}, "finish_reason": "tool_calls" if code is not None else "stop"}], usage=USAGE)
         handler.wfile.write(b"e\r\ndata: [DONE]\n\n\r\n")
     handler.wfile.write(b"0\r\n\r\n")

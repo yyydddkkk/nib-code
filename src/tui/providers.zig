@@ -72,7 +72,7 @@ fn logout(app: *App, svc: auth.Service) !void {
     defer arena.deinit();
     const out = auth.signOut(arena.allocator(), app.io, app.environ, app.session.options.home, svc.id) catch |err| return app.report(.err, "could not sign out: {s}", .{@errorName(err)});
     const text = try auth.signOutText(arena.allocator(), svc.name, out);
-    if (out.removed and std.mem.eql(u8, svc.id, app.cfg.name()) and out.env_name == null and !out.cli_login) dropKey(app);
+    if (out.removed and std.mem.eql(u8, svc.id, app.cfg.name())) dropKey(app);
     app.refreshCredentials();
     try app.transcript.add(gpa, .info, text);
 }
@@ -229,14 +229,17 @@ test "service rows mark the current service and offer sign-out only when asked" 
     try env.put("HOME", root);
     try env.put("CODEX_HOME", root);
     try env.put("OPENAI_API_KEY", "fake");
+    try auth.setKey(a, testing.io, root, "openai", "fake-stored-openai");
     try auth.setKey(a, testing.io, root, "xai", "fake-stored");
     const plain = try serviceChoices(a, testing.io, &env, root, "openai", "");
     try testing.expectEqual(@as(usize, 6), plain.len);
     try testing.expectEqualStrings("OPENAI_API_KEY · current", plain[2].detail);
     try testing.expectEqualStrings("Add endpoint…", plain[5].label);
     const typed = try serviceChoices(a, testing.io, &env, root, "openai", "lo");
-    try testing.expectEqual(@as(usize, 7), typed.len);
-    try testing.expectEqualStrings("logout xai", typed[6].value);
-    try testing.expectEqualStrings("Sign out xAI", typed[6].label);
+    try testing.expectEqual(@as(usize, 8), typed.len);
+    try testing.expectEqualStrings("logout openai", typed[6].value);
+    try testing.expectEqualStrings("Sign out OpenAI", typed[6].label);
+    try testing.expectEqualStrings("logout xai", typed[7].value);
+    try testing.expectEqualStrings("Sign out xAI", typed[7].label);
     try testing.expectEqual(@as(usize, 6), (try serviceChoices(a, testing.io, &env, root, "openai", "x")).len);
 }

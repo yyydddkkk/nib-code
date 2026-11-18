@@ -110,6 +110,7 @@ pub const ChangeText = struct {
         removed_label: [32]u8 = undefined,
         diff: []u8,
         open: ?bool = null,
+        heading_rows: @import("run_details.zig").Rows = .{},
 
         pub fn expanded(f: FileDiff, single: bool) bool {
             return f.open orelse (single and @import("run_details.zig").lineCount(f.diff) <= 20);

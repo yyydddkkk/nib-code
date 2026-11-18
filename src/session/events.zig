@@ -90,6 +90,7 @@ pub const RunCompletion = struct {
     execution: ?@import("../sandbox/timing.zig").Execution = null,
     step: usize,
     run_index: usize,
+    source_reference: ?bool = null,
     ok: bool,
     output: []const u8,
     run_ms: u64,
