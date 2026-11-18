@@ -175,6 +175,12 @@ Compare same ReleaseFast binary/model/effort; record source commit, wrappers, ac
 
 python3 `scripts/stats.py` `<log-directory>` --group-by transport --json compares actual model_ms/first_data_ms/code_first_ms, checking incremental/input_items/input_bytes/transport_fallback. Group full_reason for full-input causes. SSE fallback Steps include WS costs, not pure SSE. Judge success, Steps, tokens/cache, total wall time together; mocks prove no performance benefit. [Logs](session-log.md#step-transport-fields).
 
+## Fast mode
+
+On a supported Codex GPT model, use `/fast` while idle to request Fast mode for subsequent Turns in the same Session. Run `/fast` again to return to Standard. The setting is saved as `fast = true` or `fast = false` under `[codex]` in `config.toml`; it also applies to `nib ask`. The default is Standard, and other providers and unsupported models are unaffected.
+
+Fast mode requests `service_tier: "priority"` on WebSocket and SSE, including during transport fallback. Changing the tier opens a fresh WebSocket and sends full history on the next request. It does not change the model or reasoning effort. `/status` shows **Fast requested**, not the tier actually used by the backend. Availability depends on your model and account, and Fast can use more of your allowance or credits. See [Codex Fast mode](https://developers.openai.com/codex/speed).
+
 ## Reasoning summaries
 
 Default omits `reasoning.summary`, preserving effort, `include:["reasoning.encrypted_content"]`, `store:false`, reasoning history. SSE/WS share construction. No empty TUI blocks/ask reasoning deltas without summaries; encrypted continuation remains.

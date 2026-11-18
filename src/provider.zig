@@ -43,6 +43,7 @@ pub fn withSmallModel(cfg: Config) ?Config {
     small.model = smallModel(cfg.provider) orelse return null;
     small.thinking = null;
     small.reasoning_effort = null;
+    small.codex_fast = false;
     return small;
 }
 
@@ -118,6 +119,7 @@ pub const Config = struct {
     /// Test hook for the ChatGPT OAuth issuer (NIB_AUTH_ISSUER).
     auth_issuer: ?[]const u8 = null,
     codex_transport: Transport = .websocket,
+    codex_fast: bool = false,
     codex_run_tool: enum { custom, function } = .custom,
     reasoning_summary: enum { off, auto } = .off,
     codex_home: ?[]const u8 = null,
@@ -154,6 +156,18 @@ pub const Config = struct {
             if (model.vision) |value| return value;
         };
         return entry.vision;
+    }
+
+    pub fn supportsCodexFast(cfg: Config) bool {
+        if (cfg.provider != .codex) return false;
+        // Codex CLI 0.170.0 catalog: GPT models advertising the priority tier.
+        const models = .{ "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5" };
+        inline for (models) |model| if (std.mem.eql(u8, cfg.model, model)) return true;
+        return false;
+    }
+
+    pub fn codexServiceTier(cfg: Config) ?[]const u8 {
+        return if (cfg.codex_fast and cfg.supportsCodexFast()) "priority" else null;
     }
 
     pub fn customRun(cfg: Config) bool {

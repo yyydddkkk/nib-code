@@ -9,7 +9,7 @@ const provider = @import("../provider.zig");
 const auth = @import("../auth.zig");
 const providers = @import("providers.zig");
 
-pub const Command = enum { simple, help, new, @"resume", compact, undo, provider, model, effort, copy, reflect, js, tasks, stop, status, skills, mcp, plugins };
+pub const Command = enum { simple, help, new, @"resume", compact, undo, provider, model, effort, fast, copy, reflect, js, tasks, stop, status, skills, mcp, plugins };
 
 pub const Choices = enum { none, models, efforts, sessions, tasks, services };
 
@@ -42,6 +42,7 @@ pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .provider = .{ .args = "[service]", .help = "sign in and switch service", .choices = .services, .needs_arg = true },
     .model = .{ .args = "<model>", .help = "switch model and service", .choices = .models, .needs_arg = true },
     .effort = .{ .group = .send, .args = "[level]", .help = "reasoning effort", .choices = .efforts },
+    .fast = .{ .group = .send, .help = "toggle Codex Fast mode" },
     .copy = .{ .group = .view, .help = "copy last answer", .while_busy = true },
     .reflect = .{ .args = "[focus]", .help = "publish issue drafts" },
     .js = .{ .group = .send, .args = "<code>", .help = "run JavaScript", .needs_arg = true },
@@ -257,6 +258,7 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
     switch (c) {
         .simple => try app.toggleSimple(),
         .status => {
+            if (app.cfg.codexServiceTier() != null) try app.report(.info, "Fast requested", .{});
             const skills = session.log.skills;
             var suffix: std.ArrayList(u8) = .empty;
             defer suffix.deinit(gpa);
@@ -430,6 +432,17 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             if (arg.len == 0) return app.transcript.add(gpa, .err, "usage: /model <model> · type /model and a space to pick one");
             const selection = modelSelection(app, arg) catch return app.transcript.add(gpa, .err, "usage: /model <model>");
             try select(app, selection, null);
+        },
+        .fast => {
+            if (arg.len != 0) return app.report(.err, "usage: /fast", .{});
+            if (!app.cfg.supportsCodexFast()) return app.report(.err, "Fast mode is not available for this provider and model", .{});
+            const enabled = !app.cfg.codex_fast;
+            config.saveCodexFast(gpa, app.io, session.options.home, enabled) catch |err|
+                return app.report(.err, "could not save Fast mode: {s}", .{@errorName(err)});
+            app.cfg.codex_fast = enabled;
+            session.cfg.codex_fast = enabled;
+            session.tools.cfg = session.cfg;
+            try app.report(.info, "{s}", .{if (enabled) "Fast requested · may use more credits" else "Standard mode"});
         },
         .effort => {
             if (arg.len > 0) {
