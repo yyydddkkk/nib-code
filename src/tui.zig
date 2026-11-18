@@ -190,14 +190,16 @@ pub fn run(init: std.process.Init, session: *Session) !void {
     var frames: Frames = .{};
     while (true) {
         const event = try loop.nextEvent();
-        const refresh = event.refresh();
+        const buffering_paste = app.pasting and event == .key_press;
         const old_hover = app.hovered;
         const old_hover_row = app.hovered_row;
         const old_link = app.link;
         const motion = event == .mouse and event.mouse.type == .motion and !app.selection.active;
-        if (!motion and event.flushesVisible()) app.transcript.flushVisible();
+        if (!buffering_paste and !motion and event.flushesVisible()) app.transcript.flushVisible();
         if (!try app.handle(event)) break;
+        if (buffering_paste) continue;
         if (motion and old_hover == app.hovered and old_hover_row == app.hovered_row and std.meta.eql(old_link, app.link)) continue;
+        const refresh = event.refresh();
         const frame_start = std.Io.Clock.Timestamp.now(io, .awake);
         if (frames.due(frame_start, if (refresh != .immediate and app.transcript.hasBacklog()) .content else refresh)) {
             app.transcript.advanceVisible(frame_start);
