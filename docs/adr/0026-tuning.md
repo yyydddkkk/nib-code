@@ -34,8 +34,14 @@ patches become one kind of tuning.
   family differs. Unmatched models get the defaults, which hold only what helps every
   model.
 - **Overrides for experiments.** `NIB_TUNE=<tuning>=<variant>[,...]` replaces variants
-  for one process and its child Sessions. It exists for measurement and diagnosis, not
-  for users: tuning is not part of `config.toml`; users choose a model and nib follows.
+  for one process and its child Sessions. Together with `NIB_PATCHES_OFF`, it supports
+  measurement and diagnosis, not persistent user customization. There is no Tuning
+  section in `config.toml` or user-defined Profile. Users still choose their model,
+  effort, permissions, and budgets, and give project instructions in `AGENTS.md`.
+- **Benchmark baseline.** Use the shipped Profile with both experiment switches
+  unset for default benchmark results. Label and report runs with overrides
+  separately; they can test a candidate default but are not results for the
+  shipped Profile.
 - **Fixed per Session.** Variants are resolved once when a Session starts and stored in
   the log header; resumed Sessions keep them. The system prompt therefore never changes
   mid-Session and never breaks the prompt cache.

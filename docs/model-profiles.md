@@ -45,6 +45,10 @@ Family detection uses the model name, not the Provider or API shape. Family rout
 
 The boundary for strategies is movable: promote a family strategy when it works as a shared default, move a common strategy into a Profile when evidence shows that only some families benefit, and remove workarounds without a measurable effect. Keep the execution contracts independent of those moves.
 
+## Experiments, not user configuration
+
+Use `NIB_TUNE` or `NIB_PATCHES_OFF` for controlled comparisons and diagnosis. They are not persistent user settings. Use the shipped Profile for default benchmarks and report overridden runs separately; see [ADR 0026](adr/0026-tuning.md#decision).
+
 ## Session lifecycle
 
 New Sessions resolve once. Resumed Sessions retain the exact logged system prompt and restore logged Tuning; changing the current defaults or experiment switches does not rewrite them. Forks still inherit their parent's system text and resolve the child's runtime Tuning; that can differ when the allowed model change crosses families or experiment settings change. This is not a promise that forks are re-rendered for the child model.
