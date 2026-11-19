@@ -246,9 +246,10 @@ pub fn select(app: *App, selection: config.ModelSelection, note: ?[]const u8) !v
     app.context = session.context_tokens;
     app.refreshCredentials();
     const override = if (app.environ.get("NIB_PROVIDER") != null and app.environ.get("NIB_MODEL") != null) " · NIB_PROVIDER/NIB_MODEL override at startup" else if (app.environ.get("NIB_PROVIDER") != null) " · NIB_PROVIDER overrides at startup" else if (app.environ.get("NIB_MODEL") != null) " · NIB_MODEL overrides at startup" else "";
+    const fast = if (fresh and !app.signed_out and cfg.codexServiceTier() != null) " · Fast" else "";
     if (note) |text| {
-        try app.report(.info, "{s}{s}{s}", .{ text, if (fresh) " · new session" else "", override });
-    } else try app.report(.info, "{s} · {s}{s}{s}", .{ cfg.name(), cfg.model, if (fresh) " · new session" else "", override });
+        try app.report(.info, "{s}{s}{s}{s}", .{ text, if (fresh) " · new session" else "", fast, override });
+    } else try app.report(.info, "{s} · {s}{s}{s}{s}", .{ cfg.name(), cfg.model, if (fresh) " · new session" else "", fast, override });
 }
 
 pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
@@ -420,7 +421,8 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             app.steps = 0;
             app.last_summary = null;
             app.context = session.context_tokens;
-            try app.report(.info, "{s} session {s}", .{ if (c == .new) "new" else "resumed", session.id[0..8] });
+            const fast = if (c == .new and !app.signed_out and app.cfg.codexServiceTier() != null) " · Fast" else "";
+            try app.report(.info, "{s} session {s}{s}", .{ if (c == .new) "new" else "resumed", session.id[0..8], fast });
         },
         .copy => {
             const answer = app.transcript.lastAnswer() orelse return app.transcript.add(gpa, .err, "no answer to copy yet");

@@ -118,13 +118,24 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
                 const w = win.gwidth(label);
                 if (w <= win.width - 2) _ = win.child(.{ .x_off = win.width - 1 - w, .y_off = input_y, .height = 1, .width = w }).printSegment(.{ .text = label, .style = .{ .dim = true } }, .{ .wrap = .none });
             }
-        } else {
+        } else if (!s.fastRequested()) {
             const meta = text.footer(s, win.width - 7);
             if (meta.len > 0) {
                 const meta_w = win.gwidth(meta);
                 put(win, 2, input_y + input_h + 1, " ");
                 _ = win.child(.{ .x_off = 3, .y_off = input_y + input_h + 1, .width = meta_w, .height = 1 }).printSegment(.{ .text = meta, .style = .{ .dim = true } }, .{ .wrap = .none });
                 put(win, 3 + meta_w, input_y + input_h + 1, " ");
+            }
+        }
+        if (s.fastRequested()) {
+            const meta = text.footer(s, win.width - 7);
+            const y_footer = input_y + input_h + 1;
+            const w = win.gwidth(meta);
+            if (w > 0) {
+                const meta_x = win.width - 4 - w;
+                put(win, meta_x - 1, y_footer, " ");
+                _ = win.child(.{ .x_off = meta_x, .y_off = y_footer, .width = w, .height = 1 }).printSegment(.{ .text = meta, .style = .{ .dim = true } }, .{ .wrap = .none });
+                put(win, win.width - 4, y_footer, " ");
             }
         }
     } else if (win.width >= 3) {
@@ -466,6 +477,41 @@ test "empty screen has one guidance line and no zero statistics" {
     try testing.expect(std.mem.indexOf(u8, image, "Ask about this project · / for commands") != null);
     try testing.expect(std.mem.indexOf(u8, image, "Enter send") == null);
     try testing.expect(std.mem.indexOf(u8, image, "0%") == null);
+}
+
+test "Fast stays on the right side of the input border in Normal and Simple modes" {
+    const a = testing.allocator;
+    for ([_]u16{ 11, 60, 120, 160 }) |width| {
+        var screen = try vaxis.Screen.init(a, .{ .cols = width, .rows = 12, .x_pixel = 0, .y_pixel = 0 });
+        defer screen.deinit(a);
+        const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = width, .height = 12, .screen = &screen };
+        var input: Editor = .{};
+        defer input.deinit(a);
+        var scroll: Viewport = .{};
+        var text: status.Text = .{};
+        var cfg = mock_cfg;
+        cfg.provider = .codex;
+        cfg.model = "gpt-6.1-sol";
+        cfg.codex_fast = true;
+        for ([_]bool{ false, true }) |simple| {
+            cfg.simple = simple;
+            draw(win, &.{}, &input, &scroll, &.{}, 0, .{ .cfg = cfg, .context = cfg.context_window }, &text);
+            const image = try snapshot(a, &screen);
+            defer a.free(image);
+            const meta = if (simple or width == 11) " Fast ──╯\n" else " gpt-6.1-sol · Fast · context 100% ──╯\n";
+            try testing.expect(std.mem.endsWith(u8, image, meta));
+            if (simple and width >= 60) try testing.expect(std.mem.indexOf(u8, image, " context 100% ╮") != null);
+        }
+        cfg.simple = false;
+        for ([_]bool{ false, true }) |signed_out| {
+            if (!signed_out) cfg.provider = .openai;
+            draw(win, &.{}, &input, &scroll, &.{}, 0, .{ .cfg = cfg, .signed_out = signed_out }, &text);
+            const image = try snapshot(a, &screen);
+            defer a.free(image);
+            try testing.expect(std.mem.indexOf(u8, image, "Fast") == null);
+            cfg.provider = .codex;
+        }
+    }
 }
 
 test "model menu shows distinct model names and current marker at common widths" {

@@ -179,7 +179,7 @@ python3 `scripts/stats.py` `<log-directory>` --group-by transport --json compare
 
 On a supported Codex GPT model, use `/fast` while idle to request Fast mode for subsequent Turns in the same Session. Run `/fast` again to return to Standard. The setting is saved as `fast = true` or `fast = false` under `[codex]` in `config.toml`; it also applies to `nib ask`. The default is Standard, and other providers and unsupported models are unaffected.
 
-Fast mode requests `service_tier: "priority"` on WebSocket and SSE, including during transport fallback. Changing the tier opens a fresh WebSocket and sends full history on the next request. It does not change the model or reasoning effort. `/status` shows **Fast requested**, not the tier actually used by the backend. Availability depends on your model and account, and Fast can use more of your allowance or credits. See [Codex Fast mode](https://developers.openai.com/codex/speed).
+Fast mode requests `service_tier: "priority"` on WebSocket and SSE, including during transport fallback. Changing the tier opens a fresh WebSocket and sends full history on the next request. It does not change the model or reasoning effort. The new-Session heading and the bottom-right of the input frame show **Fast** when requested. Like **Fast requested** in `/status`, this describes the local setting, not the tier actually used by the backend. Availability depends on your model and account, and Fast can use more of your allowance or credits. See [Codex Fast mode](https://developers.openai.com/codex/speed).
 
 ## Reasoning summaries
 
