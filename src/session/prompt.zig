@@ -122,16 +122,40 @@ pub fn backgroundWait(mode: BackgroundMode) []const u8 {
         "If no independent work remains, reply briefly without tools; Session waits locally and continues the Turn.";
 }
 
-fn render(a: std.mem.Allocator, cwd: []const u8, docs: []const u8, bytes: usize, background: []const u8, validation: []const u8, lines: []const u8) ![]u8 {
+const RenderInputs = struct {
+    cwd: []const u8,
+    tool_docs: []const u8,
+    run_output_bytes: usize,
+    background_guidance: []const u8,
+    validation_guidance: []const u8,
+    patch_lines: []const u8,
+};
+
+fn render(a: std.mem.Allocator, inputs: RenderInputs) ![]u8 {
+    const bytes = inputs.run_output_bytes;
     const budget = if (bytes % 1024 == 0) try std.fmt.allocPrint(a, "{d} KiB", .{bytes / 1024}) else try std.fmt.allocPrint(a, "{d} bytes", .{bytes});
     defer a.free(budget);
-    return std.fmt.allocPrint(a, system_template, .{ cwd, docs, background, budget, validation, lines });
+    return std.fmt.allocPrint(a, system_template, .{
+        inputs.cwd,
+        inputs.tool_docs,
+        inputs.background_guidance,
+        budget,
+        inputs.validation_guidance,
+        inputs.patch_lines,
+    });
 }
 
 pub fn renderCommon(a: std.mem.Allocator, cwd: []const u8) ![]u8 {
     const docs = try tools.Tools.commonDocumentation(a);
     defer a.free(docs);
-    return render(a, cwd, docs, @import("output.zig").max_bytes, "", "", "");
+    return render(a, .{
+        .cwd = cwd,
+        .tool_docs = docs,
+        .run_output_bytes = @import("output.zig").max_bytes,
+        .background_guidance = "",
+        .validation_guidance = "",
+        .patch_lines = "",
+    });
 }
 
 pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.Tools, profile: Profile, environ: ?*const std.process.Environ.Map) ![]u8 {
@@ -143,7 +167,14 @@ pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.To
     const mode = host.backgroundMode();
     const background = try std.fmt.allocPrint(a, " {s} {s}", .{ backgroundDelivery(mode), backgroundWait(mode) });
     defer a.free(background);
-    return render(a, cwd, docs, bytes, background, validationRuleText(host.tuning.validation), lines);
+    return render(a, .{
+        .cwd = cwd,
+        .tool_docs = docs,
+        .run_output_bytes = bytes,
+        .background_guidance = background,
+        .validation_guidance = validationRuleText(host.tuning.validation),
+        .patch_lines = lines,
+    });
 }
 
 pub fn turnBudgetText(a: std.mem.Allocator, system: []const u8, max_steps: ?usize, user_text: []const u8) ![]const u8 {
@@ -243,6 +274,29 @@ test "prompt patches can be disabled individually or all at once" {
     const none = try patchLines(gpa, &env, .default);
     defer gpa.free(none);
     try std.testing.expectEqualStrings("", none);
+}
+
+test "system prompt omits only the disabled patch" {
+    const t = std.testing;
+    const a = t.allocator;
+    const host: tools.Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "m" } };
+    var env: std.process.Environ.Map = .init(a);
+    defer env.deinit();
+    const enabled = try renderSystem(a, "/work", &host, .default, &env);
+    defer a.free(enabled);
+
+    const disabled_id = "no-shell-search";
+    try env.put("NIB_PATCHES_OFF", disabled_id);
+    const system = try renderSystem(a, "/work", &host, .default, &env);
+    defer a.free(system);
+
+    for (patches) |patch| {
+        try t.expect(std.mem.indexOf(u8, enabled, patch.text) != null);
+        try t.expectEqual(
+            !std.mem.eql(u8, patch.id, disabled_id),
+            std.mem.indexOf(u8, system, patch.text) != null,
+        );
+    }
 }
 
 test "patches apply only to their profiles" {
@@ -386,9 +440,18 @@ test "common footprint uses shared text without selected policy or endpoint tool
     for ([_][]const u8{ "async read", "async llm", "Long Runs auto-background" }) |part| {
         try t.expect(std.mem.indexOf(u8, text, part) != null);
     }
-    for ([_][]const u8{ "async search", "async mcp", "async wait", "Before full builds/tests", "Session waits locally", "backticks, ${", "; current:", "{{llm_" }) |part| {
+    for ([_][]const u8{ "async search", "async mcp", "async wait", "; current:", "{{llm_" }) |part| {
         try t.expect(std.mem.indexOf(u8, text, part) == null);
     }
+    for (std.meta.tags(BackgroundMode)) |mode| {
+        try t.expect(std.mem.indexOf(u8, text, backgroundDelivery(mode)) == null);
+        try t.expect(std.mem.indexOf(u8, text, backgroundWait(mode)) == null);
+    }
+    for (std.meta.tags(Validation)) |variant| {
+        const guidance = validationRuleText(variant);
+        if (guidance.len != 0) try t.expect(std.mem.indexOf(u8, text, guidance) == null);
+    }
+    for (patches) |patch| try t.expect(std.mem.indexOf(u8, text, patch.text) == null);
 }
 
 test "validation variants preserve delivery and remove only validation guidance" {
