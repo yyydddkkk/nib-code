@@ -29,6 +29,8 @@ A profile states only where it differs from the default, in three groups:
 
 Wire encoders under `provider/` stay per protocol and do not read profiles.
 
+Family routing now records the recognized family separately from the applied Profile. Gemini is recognized but uses `default`, as do unknown models. The existing `codex` Profile label denotes the GPT family, not the Codex Provider. No per-model routing is needed. See [Model Profiles](../model-profiles.md) for ownership, evolution, and how the selected strategy reaches the runtime and prompt renderer.
+
 ## Evidence rule
 
 Every profile entry follows the existing patch discipline in

@@ -317,9 +317,10 @@ class BackgroundRunTests(unittest.TestCase):
         self.assertEqual(completion["tool_bytes"], sum(c["result_bytes"] for c in completion["calls"]))
         runs = [e["run_end"] for e in events if "run_end" in e]
         self.assertIn("continuing in background as r1", runs[0]["output"])
-        self.assertIn("captured output is preserved and will arrive automatically as a message", runs[0]["output"])
-        self.assertIn("no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait", runs[0]["output"])
-        self.assertIn("Do not read its redirected logs before completion", runs[0]["output"])
+        self.assertIn("Captured output is preserved", runs[0]["output"])
+        self.assertIn("Results arrive automatically as messages", runs[0]["output"])
+        self.assertIn("reply briefly without tools", runs[0]["output"])
+        self.assertNotIn("tools.wait()", runs[0]["output"])
         self.assertNotIn("before-yield", runs[0]["output"])
         self.assertEqual(runs[0]["changes"], [])
         self.assertEqual([c["path"] for c in runs[1]["changes"]], ["independent.txt"])
@@ -410,7 +411,10 @@ class BackgroundRunTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in self.finished_records(rows)], ["r1"])
         finished = [e["background"] for e in events if e.get("background", {}).get("state") == "finished"]
         self.assertEqual([e["id"] for e in finished], ["r1"])
-        self.assertIn("appended to the output of your next Run", next(e["run_end"]["output"] for e in events if "run_end" in e))
+        registration = next(e["run_end"]["output"] for e in events if "run_end" in e)
+        self.assertIn("appended to a later Run's output", registration)
+        self.assertIn("await tools.wait()", registration)
+        self.assertNotIn("reply briefly without tools", registration)
         self.assertEqual(events[-1]["end"]["text"], "done")
 
     def test_tool_delivery_wait_returns_results_once_and_is_not_backgrounded(self):

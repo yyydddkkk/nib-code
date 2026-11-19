@@ -234,8 +234,8 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             assert header["nib_version"] == version + "+" + git_commit.stdout.strip(), header
         assert header["system_sha"] == hashlib.sha256(base.encode()).hexdigest()[:12], header
         assert "patches_off" not in header
-        assert header["profile"] == "deepseek", header["profile"]
-        assert all(not any(key in record for key in ("nib_version", "system_sha", "patches_off", "profile"))
+        assert (header["family"], header["profile"]) == ("deepseek", "deepseek"), header
+        assert all(not any(key in record for key in ("nib_version", "system_sha", "patches_off", "family", "profile"))
                    for record in initial_records[1:])
         assert system.index("You are nib") < system.index("GLOBAL_MARKER") < system.index("PROJECT_MARKER")
         assert "async mcp(" not in system and "<mcp_tools>" not in system
@@ -736,6 +736,16 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
                 "\n\nInstructions below apply in order; later instructions take priority.\n", 1)[0]
             assert child_header["nib_version"] == header["nib_version"]
             assert child_header["system_sha"] == hashlib.sha256(child_base.encode()).hexdigest()[:12]
+        for model, family in (("google/gemini-3-flash", "gemini"), ("proxy/unknown-model", "unknown")):
+            home = tmp / family
+            ask("fallback route", overrides={"NIB_HOME": str(home), "NIB_MODEL": model})
+            route = replay(next((home / "sessions").glob("*.jsonl")))[1][0]
+            assert (route["model"], route["family"], route["profile"]) == (model, family, "default"), route
+            assert route["tuning"] == {"delivery": "user", "validation": "single"}, route
+            sent = read_requests(requests_path)[-1]
+            assert sent["model"] == model, sent["model"]
+            assert "async wait(ids)" not in sent["messages"][0]["content"]
+
         patches_home = tmp / "patches-home"
         ask("patch labels", overrides={"NIB_HOME": str(patches_home), "NIB_PATCHES_OFF": "all"})
         patches_header = replay(next((patches_home / "sessions").glob("[0-9a-f]" * 32 + ".jsonl")))[1][0]

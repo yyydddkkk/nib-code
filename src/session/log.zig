@@ -87,6 +87,7 @@ pub const Record = struct {
     nib_version: ?[]const u8 = null,
     system_sha: ?[]const u8 = null,
     patches_off: ?[]const []const u8 = null,
+    family: ?[]const u8 = null,
     profile: ?[]const u8 = null,
     tuning: ?std.json.ArrayHashMap([]const u8) = null,
     cwd: ?[]const u8 = null,

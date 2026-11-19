@@ -83,9 +83,10 @@ pub const system_template =
     \\{s}```
     \\
     \\Writing scripts:
-    \\- Top-level `await` works. Each Step is a full model round trip, usually 10 s or more; one Run can {s}
+    \\- Top-level `await` works. Each Step is a full model round trip; one Run can read several files and make independent edits, returning only what you need.
 ++ std.fmt.comptimePrint("\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to {d} at a time; commands chained inside one bash call (&&, ;) run one after another.\n", .{sandbox.tool_concurrency}) ++
-    \\- Long Runs auto-background while awaiting tools; scripts and captured output stay intact. Background Run/bash/agent results arrive automatically as messages. Continue useful work meanwhile; never check or wait for them with ps, cat/tail logs, sleep, empty Runs or timeout reruns. Do not read their redirected logs before completion. If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn. After edit/write changes, rerun the same command/cwd directly: older Run bash stops with {{superseded_by}}, not failure. Do not wait for the stale result.
+    \\- Long Runs auto-background while awaiting tools; scripts and captured output stay intact. Continue useful work; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read their redirected logs before completion.
+++ "{s}" ++
     \\- Default to doing the task yourself. Unless the user requests delegation, delegate only independent read-only investigations that can run in parallel with useful parent work and whose results can be discarded. Keep serial edits, builds, tests and reviews in the main loop. Waiting on a foreground agent is serial; background delegation does not help if you must wait for it to proceed.
     \\- The last expression and console.log output share {s} per Run, truncated by console call and final result with markers; tool results inside JS remain complete. Locate with grep, then read needed line ranges. Large multi-file output can exceed this display budget: batch reads or print only needed snippets.
 ++ "\n{s}" ++
@@ -96,13 +97,6 @@ pub const system_template =
 
 const Validation = @import("tuning.zig").Resolved.Validation;
 
-fn validationRunText(variant: Validation) []const u8 {
-    return switch (variant) {
-        .single => "read several files, make all independent edits, then build and test, returning only what you need (such as failures).",
-        .@"existing-only", .none => "read several files and make all independent edits, returning only what you need.",
-    };
-}
-
 fn validationRuleText(variant: Validation) []const u8 {
     return switch (variant) {
         .single => "- Before full builds/tests, finish implementation, known regression tests, expected results/fixtures and formatting; aim for one full validation. On failure, fix the failures and revalidate. Keep all necessary checks.\n",
@@ -111,33 +105,45 @@ fn validationRuleText(variant: Validation) []const u8 {
     };
 }
 
-pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.Tools, environ: ?*const std.process.Environ.Map) ![]const u8 {
-    const docs = try host.documentation(a);
-    defer a.free(docs);
-    const lines = try patchLines(a, environ, if (host.cfg) |cfg| Profile.forModel(cfg.model) else .default);
-    defer a.free(lines);
-    const bytes = if (host.cfg) |cfg| cfg.limits.run_output_bytes else @import("output.zig").max_bytes;
-    const budget = if (bytes % 1024 == 0) try std.fmt.allocPrint(a, "{d} KiB", .{bytes / 1024}) else try std.fmt.allocPrint(a, "{d} bytes", .{bytes});
-    defer a.free(budget);
-    const rendered = try std.fmt.allocPrint(a, system_template, .{ cwd, docs, validationRunText(host.validation), budget, validationRuleText(host.validation), lines });
-    return if (host.waitEnabled()) toolDelivery(a, rendered) else rendered;
+const BackgroundMode = @import("tuning.zig").Resolved.BackgroundMode;
+
+pub fn backgroundDelivery(mode: BackgroundMode) []const u8 {
+    return switch (mode) {
+        .user => "Results arrive automatically as messages.",
+        .tool => "Results are appended to a later Run's output.",
+        .tool_without_wait => "Results are appended to a later Run's output while you work; if you reply without tools, Session delivers them as messages.",
+    };
 }
 
-/// Each pair rewrites "end the response and the Session waits" for `tools.wait`; a missing phrase is a test failure.
-const tool_delivery_text = [_][2][]const u8{
-    .{ "Background Run/bash/agent results arrive automatically as messages.", "Background Run/bash/agent results arrive appended to the output of your next Run." },
-    .{ "If no independent work remains, end the model response immediately with a brief text reply and no run/tool call (not even console.log); Session waits locally, delivers the result and continues the Turn.", "If no independent work remains, call `await tools.wait()` (optionally after other work in the same Run); it returns the results when the tasks finish. Do not end the model response to wait." },
-    .{ "arrive automatically as messages; never sleep", "arrive appended to the output of your next Run; never sleep" },
-    .{ "Idle:reply to wait.", "Idle: await tools.wait()." },
-    .{ "No independent work: brief reply without tools; Session waits.", "No independent work: await tools.wait()." },
-    .{ "No independent work:brief reply without tools; Session waits.", "No independent work: await tools.wait()." },
-    .{ "With no independent work, reply without tools to wait locally.", "With no independent work, await tools.wait()." },
-};
+pub fn backgroundWait(mode: BackgroundMode) []const u8 {
+    return if (mode == .tool)
+        "If no independent work remains, call `await tools.wait()`."
+    else
+        "If no independent work remains, reply briefly without tools; Session waits locally and continues the Turn.";
+}
 
-fn toolDelivery(a: std.mem.Allocator, text: []const u8) ![]const u8 {
-    var current = text;
-    for (tool_delivery_text) |pair| current = try std.mem.replaceOwned(u8, a, current, pair[0], pair[1]);
-    return current;
+fn render(a: std.mem.Allocator, cwd: []const u8, docs: []const u8, bytes: usize, background: []const u8, validation: []const u8, lines: []const u8) ![]u8 {
+    const budget = if (bytes % 1024 == 0) try std.fmt.allocPrint(a, "{d} KiB", .{bytes / 1024}) else try std.fmt.allocPrint(a, "{d} bytes", .{bytes});
+    defer a.free(budget);
+    return std.fmt.allocPrint(a, system_template, .{ cwd, docs, background, budget, validation, lines });
+}
+
+pub fn renderCommon(a: std.mem.Allocator, cwd: []const u8) ![]u8 {
+    const docs = try tools.Tools.commonDocumentation(a);
+    defer a.free(docs);
+    return render(a, cwd, docs, @import("output.zig").max_bytes, "", "", "");
+}
+
+pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.Tools, profile: Profile, environ: ?*const std.process.Environ.Map) ![]u8 {
+    const docs = try host.documentation(a);
+    defer a.free(docs);
+    const lines = try patchLines(a, environ, profile);
+    defer a.free(lines);
+    const bytes = if (host.cfg) |cfg| cfg.limits.run_output_bytes else @import("output.zig").max_bytes;
+    const mode = host.backgroundMode();
+    const background = try std.fmt.allocPrint(a, " {s} {s}", .{ backgroundDelivery(mode), backgroundWait(mode) });
+    defer a.free(background);
+    return render(a, cwd, docs, bytes, background, validationRuleText(host.tuning.validation), lines);
 }
 
 pub fn turnBudgetText(a: std.mem.Allocator, system: []const u8, max_steps: ?usize, user_text: []const u8) ![]const u8 {
@@ -160,7 +166,7 @@ pub fn stepLimitPrompt(a: std.mem.Allocator, base: []const u8, max_steps: ?usize
 test "system prompt documents every tool in JavaScript" {
     const gpa = std.testing.allocator;
     var host: tools.Tools = .{ .io = std.testing.io, .home = "/unused", .cfg = .{ .provider = .codex, .base_url = "", .api_key = "", .model = @import("../provider/responses.zig").default_model } };
-    const prompt = try renderSystem(gpa, "/work", &host, null);
+    const prompt = try renderSystem(gpa, "/work", &host, .default, null);
     defer gpa.free(prompt);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "```js\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "{{llm_options}}") == null);
@@ -168,10 +174,10 @@ test "system prompt documents every tool in JavaScript" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "backticks, ${ or backslashes") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "last expression and console.log output share 16 KiB per Run") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "tool results inside JS remain complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "failures).\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
-    for ([_][]const u8{ "Background Run/bash/agent results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
+    for ([_][]const u8{ "Results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
         try std.testing.expect(std.mem.indexOf(u8, prompt, text) != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "Session waits locally, delivers the result and continues the Turn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Session waits locally and continues the Turn") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "independent read-only investigations") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Keep serial edits, builds, tests and reviews in the main loop") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "1800000 (30 min)") != null);
@@ -187,11 +193,11 @@ test "system prompt documents every tool in JavaScript" {
 test "MCP API descriptions enter context only with enabled servers" {
     const t = std.testing;
     var host: tools.Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "m" } };
-    const off = try renderSystem(t.allocator, "/work", &host, null);
+    const off = try renderSystem(t.allocator, "/work", &host, .default, null);
     defer t.allocator.free(off);
     try t.expect(std.mem.indexOf(u8, off, "async mcp(") == null);
     host.cfg.?.mcp_servers = &.{.{ .id = "test", .command = "server", .enabled = true }};
-    const on = try renderSystem(t.allocator, "/work", &host, null);
+    const on = try renderSystem(t.allocator, "/work", &host, .default, null);
     defer t.allocator.free(on);
     try t.expect(std.mem.indexOf(u8, on, "async mcp(") != null);
     try t.expect(std.mem.indexOf(u8, on, "async mcp_schema(") != null);
@@ -200,7 +206,7 @@ test "MCP API descriptions enter context only with enabled servers" {
 test "system prompt renders configured Run display budget" {
     const t = std.testing;
     var host: tools.Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "m", .limits = .{ .run_output_bytes = 32768 } } };
-    const system = try renderSystem(t.allocator, "/work", &host, null);
+    const system = try renderSystem(t.allocator, "/work", &host, .default, null);
     defer t.allocator.free(system);
     try t.expect(std.mem.indexOf(u8, system, "share 32 KiB per Run") != null);
     try t.expect(std.mem.indexOf(u8, system, "known regression tests, expected results/fixtures and formatting") != null);
@@ -209,7 +215,7 @@ test "system prompt renders configured Run display budget" {
 test "system prompt never mentions run effort" {
     const t = std.testing;
     var host: tools.Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .provider = .codex, .base_url = "", .api_key = "", .model = @import("../provider/responses.zig").default_model } };
-    const system = try renderSystem(t.allocator, "/work", &host, null);
+    const system = try renderSystem(t.allocator, "/work", &host, .default, null);
     defer t.allocator.free(system);
     try t.expect(std.mem.indexOf(u8, system, "run's effort") == null);
     try t.expect(std.mem.indexOf(u8, system, "effort-specific") == null);
@@ -357,21 +363,32 @@ test "resumed Turns expose budget changes without rewriting the original system"
     try t.expect(std.mem.endsWith(u8, disabled, "\n\nprompt"));
 }
 
-test "tool delivery rewrites every wait-by-ending-the-response sentence" {
-    const gpa = std.testing.allocator;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var host: tools.Tools = .{ .io = std.testing.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" } };
-    const user = try renderSystem(a, "/work", &host, null);
-    for (tool_delivery_text) |pair| try std.testing.expect(std.mem.indexOf(u8, user, pair[0]) != null);
-    try std.testing.expect(std.mem.indexOf(u8, user, "tools.wait") == null);
-    host.delivery_tool = true;
-    const tool = try renderSystem(a, "/work", &host, null);
-    for (tool_delivery_text) |pair| try std.testing.expect(std.mem.indexOf(u8, tool, pair[0]) == null);
-    try std.testing.expect(std.mem.indexOf(u8, tool, "Session waits") == null);
-    try std.testing.expect(std.mem.indexOf(u8, tool, "reply without tools") == null);
-    try std.testing.expect(std.mem.indexOf(u8, tool, "async wait(ids)") != null);
+test "background prompt matches the host tool table and delivery" {
+    const t = std.testing;
+    var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" } };
+    for (std.meta.tags(BackgroundMode)) |mode| {
+        host.tuning.delivery = if (mode == .user) .user else .tool;
+        host.depth = if (mode == .tool_without_wait) 1 else 0;
+        const text = try renderSystem(t.allocator, "/work", &host, .deepseek, null);
+        defer t.allocator.free(text);
+        try t.expectEqual(mode, host.backgroundMode());
+        try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundDelivery(mode)));
+        try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundWait(mode)));
+        try t.expectEqual(mode == .tool, std.mem.indexOf(u8, text, "async wait(ids)") != null);
+        try t.expectEqual(mode == .tool, std.mem.indexOf(u8, text, "await tools.wait()") != null);
+    }
+}
+
+test "common footprint uses shared text without selected policy or endpoint tools" {
+    const t = std.testing;
+    const text = try renderCommon(t.allocator, "/work");
+    defer t.allocator.free(text);
+    for ([_][]const u8{ "async read", "async llm", "Long Runs auto-background" }) |part| {
+        try t.expect(std.mem.indexOf(u8, text, part) != null);
+    }
+    for ([_][]const u8{ "async search", "async mcp", "async wait", "Before full builds/tests", "Session waits locally", "backticks, ${", "; current:", "{{llm_" }) |part| {
+        try t.expect(std.mem.indexOf(u8, text, part) == null);
+    }
 }
 
 test "validation variants preserve delivery and remove only validation guidance" {
@@ -380,11 +397,11 @@ test "validation variants preserve delivery and remove only validation guidance"
     defer arena.deinit();
     const a = arena.allocator();
     for ([_]bool{ false, true }) |delivery| {
-        var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" }, .delivery_tool = delivery };
+        var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" }, .tuning = .{ .delivery = if (delivery) .tool else .user } };
         inline for (std.meta.tags(Validation)) |variant| {
-            host.validation = variant;
-            const system = try renderSystem(a, "/work", &host, null);
-            try t.expectEqual(variant == .single, std.mem.indexOf(u8, system, "then build and test") != null);
+            host.tuning.validation = variant;
+            const system = try renderSystem(a, "/work", &host, .default, null);
+            try t.expect(std.mem.indexOf(u8, system, "Full checks") == null);
             try t.expectEqual(variant == .single, std.mem.indexOf(u8, system, "known regression tests, expected results/fixtures") != null);
             try t.expectEqual(variant == .@"existing-only", std.mem.indexOf(u8, system, "do not write new test scripts or install toolchains") != null);
             try t.expectEqual(delivery, std.mem.indexOf(u8, system, "async wait(ids)") != null);

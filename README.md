@@ -35,7 +35,7 @@ Against Codex CLI on the same model:
 
 *Nov 2026 · gpt-6.1-terra, medium · 20 runs vs Codex CLI 0.166.0 at API prices · memory of idle TUIs.*
 
-[More numbers →](docs/benchmarks.md)
+**Shared prompt: ~1.5k tokens**, including the common tool API. [Full request counts by model family →](docs/benchmarks.md#current-prompt-footprint)
 
 ## Install
 

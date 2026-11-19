@@ -1,7 +1,22 @@
 const std = @import("std");
 
-/// Model-family behavior, chosen from the model name rather than the provider
-/// (ADR 0025), so a custom endpoint serving `deepseek-flash` gets `.deepseek`.
+pub const Family = enum {
+    gpt,
+    deepseek,
+    claude,
+    gemini,
+    unknown,
+
+    pub fn forModel(model: []const u8) Family {
+        const name = model[if (std.mem.lastIndexOfScalar(u8, model, '/')) |slash| slash + 1 else 0..];
+        if (startsWithFold(name, "gpt-") or startsWithFold(name, "codex-") or std.ascii.eqlIgnoreCase(name, "codex")) return .gpt;
+        if (startsWithFold(name, "deepseek-")) return .deepseek;
+        if (startsWithFold(name, "claude-")) return .claude;
+        if (startsWithFold(name, "gemini-")) return .gemini;
+        return .unknown;
+    }
+};
+
 pub const Profile = enum {
     codex,
     deepseek,
@@ -11,12 +26,13 @@ pub const Profile = enum {
     pub const Set = std.EnumSet(Profile);
     pub const all: Set = .full;
 
-    pub fn forModel(model: []const u8) Profile {
-        const name = model[if (std.mem.lastIndexOfScalar(u8, model, '/')) |slash| slash + 1 else 0..];
-        if (startsWithFold(name, "gpt-") or startsWithFold(name, "codex")) return .codex;
-        if (startsWithFold(name, "deepseek-")) return .deepseek;
-        if (startsWithFold(name, "claude-")) return .claude;
-        return .default;
+    pub fn forFamily(family: Family) Profile {
+        return switch (family) {
+            .gpt => .codex,
+            .deepseek => .deepseek,
+            .claude => .claude,
+            .gemini, .unknown => .default,
+        };
     }
 };
 
@@ -45,16 +61,26 @@ test "profiles follow the model name, not the provider" {
         .{ .model = "my-gpt-wrapper", .expected = .default },
         .{ .model = "deepseek", .expected = .default },
     };
-    for (cases) |case| try t.expectEqual(case.expected, Profile.forModel(case.model));
+    for (cases) |case| try t.expectEqual(case.expected, Profile.forFamily(Family.forModel(case.model)));
 }
 
 test "a custom provider resolves by its model" {
     const t = std.testing;
     const provider = @import("../provider.zig");
     const cfg: provider.Config = .{ .provider = .custom, .custom_provider = "boban", .base_url = "http://x", .api_key = "", .model = "deepseek-flash" };
-    try t.expectEqual(Profile.deepseek, Profile.forModel(cfg.model));
+    try t.expectEqual(Profile.deepseek, Profile.forFamily(Family.forModel(cfg.model)));
 }
 
 test "the full set holds every profile" {
     for (std.meta.tags(Profile)) |profile| try std.testing.expect(Profile.all.contains(profile));
+}
+
+test "recognized family and fallback profile are separate" {
+    const t = std.testing;
+    try t.expectEqual(Family.gpt, Family.forModel("proxy/codex-mini"));
+    try t.expectEqual(Family.gemini, Family.forModel("google/GEMINI-3-flash"));
+    try t.expectEqual(Family.unknown, Family.forModel("custom/model"));
+    try t.expectEqual(Family.unknown, Family.forModel("codexample"));
+    try t.expectEqual(Profile.default, Profile.forFamily(.gemini));
+    try t.expectEqual(Profile.default, Profile.forFamily(.unknown));
 }

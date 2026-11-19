@@ -15,10 +15,12 @@ pub fn projectRoot(io: std.Io, a: std.mem.Allocator, cwd: []const u8) ![]const u
     }
 }
 
+pub const precedence_notice = "\n\nInstructions below apply in order; later instructions take priority.\n";
+
 pub fn append(io: std.Io, a: std.mem.Allocator, base: []const u8, global: []const u8, project: []const u8) ![]const u8 {
     var prompt: std.ArrayList(u8) = .empty;
     try prompt.appendSlice(a, base);
-    try prompt.appendSlice(a, "\n\nInstructions below apply in order; later instructions take priority.\n");
+    try prompt.appendSlice(a, precedence_notice);
     for ([_][]const u8{ global, project }) |path| {
         const text = std.Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited) catch |err| switch (err) {
             error.FileNotFound => continue,

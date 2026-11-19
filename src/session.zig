@@ -9,7 +9,7 @@ const inbox = @import("session/inbox.zig");
 const skills = @import("session/skills.zig");
 const instructions = @import("session/instructions.zig");
 const prompt = @import("session/prompt.zig");
-const Profile = @import("session/profile.zig").Profile;
+const model_profile = @import("session/profile.zig");
 const Tuning = @import("session/tuning.zig").Resolved;
 const compaction = @import("session/compact.zig");
 const runner = @import("session/run.zig");
@@ -61,20 +61,10 @@ pub const Session = struct {
     inbox: @import("session/inbox.zig").Inbox = .{},
     hook_jobs: std.ArrayList(*@import("session/hooks.zig").TurnJob) = .empty,
     undo_history: @import("tools/undo.zig").History = .{},
-    /// Fixed when the Session starts; resumed Sessions keep the logged variants.
-    tuning: Tuning = .{},
-
-    /// `config.load` validates NIB_TUNE at startup, so a failure here is not user-facing.
-    fn resolveTuning(s: *Session) !void {
+    fn resolveTuning(s: *Session, profile: model_profile.Profile) !void {
         var detail: []const u8 = "";
         const env = if (s.options.environ) |e| e.get("NIB_TUNE") else null;
-        s.setTuning(try Tuning.resolve(s.arena.allocator(), Profile.forModel(s.cfg.model), env, &detail));
-    }
-
-    fn setTuning(s: *Session, resolved: Tuning) void {
-        s.tuning = resolved;
-        s.tools.delivery_tool = resolved.delivery == .tool;
-        s.tools.validation = resolved.validation;
+        s.tools.tuning = try Tuning.resolve(s.arena.allocator(), profile, env, &detail);
     }
 
     /// Thread-safe while a Turn runs; other Session mutation is exclusive.
@@ -141,7 +131,7 @@ pub const Session = struct {
             s.cfg.plugins_loaded = true;
             s.tools.cfg = s.cfg;
             s.tools.mcp_client = try @import("mcp.zig").Client.create(gpa, io, s.cfg.mcp_servers, options.environ, options.home, options.user_home, s.cfg.sandbox.writable, s.cfg.sandbox.mode != .off);
-            s.setTuning(s.log.tuning);
+            s.tools.tuning = s.log.tuning;
             try cfg.checkSession(s.log.provider);
             if (!std.mem.eql(u8, cfg.custom_provider orelse "", s.log.custom_provider orelse "")) return error.SessionProviderMismatch;
             if (cfg.protocol() != .chat_completions and !std.mem.eql(u8, s.log.model orelse "", cfg.model)) {
@@ -166,7 +156,9 @@ pub const Session = struct {
                 s.parent_session_id = options.parent_session_id orelse try a.dupe(u8, fork.session);
                 try s.tools.file_state.importVersions(io, gpa, fork.file_versions);
                 const messages = try session_history.inherit(a, fork);
-                try s.resolveTuning();
+                const family = model_profile.Family.forModel(cfg.model);
+                const profile = model_profile.Profile.forFamily(family);
+                try s.resolveTuning(profile);
                 try s.log.commit(io, gpa, &s.history, &s.context_tokens, .{
                     .mcp_servers = s.cfg.mcp_servers,
                     .plugin_skills = s.cfg.plugin_skills,
@@ -180,7 +172,9 @@ pub const Session = struct {
                     .cache_key = s.cache_key,
                     .forked_from = .{ .session = try a.dupe(u8, fork.session), .message_count = fork.message_count },
                     .nib_version = @import("build_options").nib_version,
-                    .tuning = try s.tuning.toLog(a),
+                    .family = @tagName(family),
+                    .profile = @tagName(profile),
+                    .tuning = try s.tools.tuning.toLog(a),
                 });
             } else {
                 try s.initializeHistory(cwd);
@@ -219,8 +213,10 @@ pub const Session = struct {
     pub fn initializeHistory(s: *Session, cwd: []const u8) !void {
         std.debug.assert(s.log.steps == 0);
         const a = s.arena.allocator();
-        try s.resolveTuning();
-        const template = try prompt.renderSystem(a, cwd, &s.tools, s.options.environ);
+        const family = model_profile.Family.forModel(s.cfg.model);
+        const profile = model_profile.Profile.forFamily(family);
+        try s.resolveTuning(profile);
+        const template = try prompt.renderSystem(a, cwd, &s.tools, profile, s.options.environ);
         const base = try prompt.stepLimitPrompt(a, template, s.cfg.limits.max_steps);
         const global = try std.fs.path.join(a, &.{ s.options.home, "AGENTS.md" });
         const root = try instructions.projectRoot(s.io, a, cwd);
@@ -246,8 +242,9 @@ pub const Session = struct {
             .mcp_servers = s.cfg.mcp_servers,
             .plugin_skills = s.cfg.plugin_skills,
             .patches_off = try prompt.disabledPatches(a, s.options.environ),
-            .profile = @tagName(Profile.forModel(s.cfg.model)),
-            .tuning = try s.tuning.toLog(a),
+            .family = @tagName(family),
+            .profile = @tagName(profile),
+            .tuning = try s.tools.tuning.toLog(a),
         });
     }
 
@@ -723,7 +720,7 @@ pub const Session = struct {
                 pending.items[assistant_index].waiting = true;
                 try sink.emit(sink.ctx, .{ .notice = "Waiting for background results." });
             }
-            held = s.tuning.delivery == .tool and reply.tool_calls.len > 0 and !waiting;
+            held = s.tools.backgroundMode().foldsResults() and reply.tool_calls.len > 0 and !waiting;
             if (held) {
                 try tools.Tools.poll(&s.tools);
                 const own = pending.items[pending.items.len - 1].content;
@@ -1081,10 +1078,10 @@ test "tuning follows the model, NIB_TUNE and the log" {
     {
         var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
         defer session.deinit();
-        try t.expectEqual(Tuning.Delivery.user, session.tuning.delivery);
-        try t.expectEqual(Tuning.Validation.single, session.tools.validation);
-        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") != null);
-        try t.expect(!session.tools.delivery_tool);
+        try t.expectEqual(Tuning.Delivery.user, session.tools.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.single, session.tools.tuning.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Before full builds/tests") != null);
+        try t.expect(!session.tools.waitEnabled());
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") == null);
     }
     cfg.model = "deepseek-flash";
@@ -1093,10 +1090,10 @@ test "tuning follows the model, NIB_TUNE and the log" {
         var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
         defer session.deinit();
         id = try a.dupe(u8, session.id);
-        try t.expectEqual(Tuning.Delivery.tool, session.tuning.delivery);
-        try t.expectEqual(Tuning.Validation.none, session.tools.validation);
-        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") == null);
-        try t.expect(session.tools.delivery_tool);
+        try t.expectEqual(Tuning.Delivery.tool, session.tools.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.none, session.tools.tuning.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Before full builds/tests") == null);
+        try t.expect(session.tools.waitEnabled());
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") != null);
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Session waits") == null);
         try session.commit(session.history.items.len, &.{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "yo" } }, 10, null);
@@ -1105,16 +1102,16 @@ test "tuning follows the model, NIB_TUNE and the log" {
         try env.put("NIB_TUNE", "delivery=user,validation=existing-only");
         var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env, .resume_id = id });
         defer session.deinit();
-        try t.expectEqual(Tuning.Delivery.tool, session.tuning.delivery);
-        try t.expectEqual(Tuning.Validation.none, session.tools.validation);
-        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "then build and test") == null);
-        try t.expect(session.tools.delivery_tool);
+        try t.expectEqual(Tuning.Delivery.tool, session.tools.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.none, session.tools.tuning.validation);
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Before full builds/tests") == null);
+        try t.expect(session.tools.waitEnabled());
     }
     {
         var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env });
         defer session.deinit();
-        try t.expectEqual(Tuning.Delivery.user, session.tuning.delivery);
-        try t.expectEqual(Tuning.Validation.@"existing-only", session.tools.validation);
+        try t.expectEqual(Tuning.Delivery.user, session.tools.tuning.delivery);
+        try t.expectEqual(Tuning.Validation.@"existing-only", session.tools.tuning.validation);
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "do not write new test scripts") != null);
         const path = try std.fmt.allocPrint(a, "{s}/sessions/{s}.jsonl", .{ root, session.id });
         const data = try std.Io.Dir.cwd().readFileAlloc(t.io, path, a, .unlimited);

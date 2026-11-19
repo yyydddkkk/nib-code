@@ -72,6 +72,18 @@ pub fn build(b: *std.Build) void {
     const tests = b.addRunArtifact(b.addTest(.{ .root_module = mod }));
     b.step("test", "Run tests").dependOn(&tests.step);
 
+    const footprint = b.addExecutable(.{
+        .name = "prompt-footprint",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/prompt_footprint.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "nib", .module = mod }},
+        }),
+    });
+    const footprint_run = b.addRunArtifact(footprint);
+    b.step("prompt-footprint", "Dump fixed prompt fixtures without contacting a model").dependOn(&footprint_run.step);
+
     const bench_sandbox = b.createModule(.{
         .root_source_file = b.path("src/sandbox.zig"),
         .target = target,

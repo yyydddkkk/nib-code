@@ -1,6 +1,24 @@
 # Data
 
-## Resource usage
+## Current prompt footprint
+
+The **shared prompt is 1,488 tokens**. It includes the common system instructions and JavaScript tool API, but not selected strategy variants, patches, endpoint-only tool text, or outer request-tool definitions. It is a measure of shared text, not a request total.
+
+| Example | Family → Profile | System | Request tool definitions | Total fixed input |
+| --- | --- | ---: | ---: | ---: |
+| Codex / GPT-6.2 Sol | GPT → `codex` | 1,822 | 212 | 2,034 |
+| Anthropic / Claude Sonnet 5.5 | Claude → `claude` | 1,779 | 201 | 1,980 |
+| DeepSeek / DeepSeek Flash | DeepSeek → `deepseek` | 1,799 | 203 | 2,002 |
+| Custom Chat Completions / Gemini fixture | Gemini → `default` | 1,682 | 203 | 1,885 |
+| Custom Chat Completions / unknown-model fixture | Unknown → `default` | 1,674 | 203 | 1,877 |
+
+These are offline `o200k_base` estimates (not billed usage). The fixtures use cwd `/work`, default limits, no project or global instructions, no history, and no enabled extensions. The tool definitions are taken from the actual protocol encoders. The two custom fixtures exercise routing without implying native service support. The historical comparison below is retained with its original scope; do not compare its totals to the shared-only count.
+
+```sh
+zig build prompt-footprint | uv run --no-project --with tiktoken==0.14.0 python scripts/prompt_footprint.py
+```
+
+## Historical resource usage
 
 | Agent | Version | Installed size | Idle RSS | Total RSS of 10 idle instances | Fixed prompt per request, ≈tokens |
 | --- | --- | ---: | ---: | ---: | ---: |

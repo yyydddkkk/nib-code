@@ -277,7 +277,7 @@ fn toolOutputImages(cfg: p.Config) bool {
     return cfg.provider == .codex or cfg.provider == .openai;
 }
 
-fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key: []const u8, messages: []const p.Message, tools_json: []const u8, max_tokens: ?u32) ![]u8 {
+pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key: []const u8, messages: []const p.Message, tools_json: []const u8, max_tokens: ?u32) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const a = arena.allocator();

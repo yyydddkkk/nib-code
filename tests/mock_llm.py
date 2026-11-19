@@ -48,7 +48,7 @@ class H(http.server.BaseHTTPRequestHandler):
         msgs=body['messages']
         with LOG_LOCK:
             LOG.write(json.dumps({"received":time.monotonic(),"n":len(msgs),"roles":[m['role'] for m in msgs],"has_tools":(body.get('tools') or [{}])[0].get('function',{}).get('name'),
-                              "messages":msgs,"thinking":body.get('thinking'),"reasoning_effort":body.get('reasoning_effort'),"has_reasoning_effort":'reasoning_effort' in body,"system_has_tools_api":'const tools = {' in msgs[0].get('content','')})+"\n"); LOG.flush()
+                              "messages":msgs,"model":body.get("model"),"thinking":body.get('thinking'),"reasoning_effort":body.get('reasoning_effort'),"has_reasoning_effort":'reasoning_effort' in body,"system_has_tools_api":'const tools = {' in msgs[0].get('content','')})+"\n"); LOG.flush()
         if serve_effort(self, body, "chat_completions"):
             return
         if serve_llm(self, body, 'chat_completions'):
