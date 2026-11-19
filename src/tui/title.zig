@@ -50,12 +50,13 @@ pub fn readBranch(io: std.Io, a: std.mem.Allocator, root: []const u8) ?[]u8 {
 
 /// `<project> · <branch> · <model> · <effort>`; the branch is omitted when null, the
 /// effort when the server picks it.
-pub fn compose(buf: []u8, project: []const u8, branch: ?[]const u8, model: []const u8, effort: []const u8) []const u8 {
+pub fn compose(buf: []u8, project: []const u8, branch: ?[]const u8, model: []const u8, effort: []const u8, fast: bool) []const u8 {
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(project) catch return w.buffered();
     if (branch) |b| w.print(" · {s}", .{b}) catch return w.buffered();
     w.print(" · {s}", .{model}) catch return w.buffered();
-    if (std.mem.indexOf(u8, effort, "default") == null) w.print(" · {s}", .{effort}) catch {};
+    if (std.mem.indexOf(u8, effort, "default") == null) w.print(" · {s}", .{effort}) catch return w.buffered();
+    if (fast) w.writeAll(" · Fast") catch {};
     return w.buffered();
 }
 
@@ -94,8 +95,10 @@ test "branch from a plain repository, a worktree gitdir file and no git" {
 
 test "title composition" {
     var buf: [128]u8 = undefined;
-    try testing.expectEqualStrings("nibcode · main · deepseek-flash · high", compose(&buf, "nibcode", "main", "deepseek-flash", "high"));
-    try testing.expectEqualStrings("nibcode · deepseek-flash · off", compose(&buf, "nibcode", null, "deepseek-flash", "off"));
-    try testing.expectEqualStrings("nibcode · main · m", compose(&buf, "nibcode", "main", "m", "server default"));
-    try testing.expectEqualStrings("nibcode · main · m", compose(&buf, "nibcode", "main", "m", "on (server default effort)"));
+    try testing.expectEqualStrings("nibcode · main · deepseek-flash · high", compose(&buf, "nibcode", "main", "deepseek-flash", "high", false));
+    try testing.expectEqualStrings("nibcode · deepseek-flash · off", compose(&buf, "nibcode", null, "deepseek-flash", "off", false));
+    try testing.expectEqualStrings("nibcode · main · m", compose(&buf, "nibcode", "main", "m", "server default", false));
+    try testing.expectEqualStrings("nibcode · main · m", compose(&buf, "nibcode", "main", "m", "on (server default effort)", false));
+    try testing.expectEqualStrings("nibcode · main · gpt-6.1-sol · high · Fast", compose(&buf, "nibcode", "main", "gpt-6.1-sol", "high", true));
+    try testing.expectEqualStrings("nibcode · gpt-6.1-sol · Fast", compose(&buf, "nibcode", null, "gpt-6.1-sol", "server default", true));
 }
