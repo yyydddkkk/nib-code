@@ -6,7 +6,7 @@
     "installed_bytes": 6682784,
     "idle_rss_kib": 4512,
     "ten_rss_kib": 45148,
-    "fixed_prompt_tokens": 2039
+    "shared_prompt_tokens": 1493
   },
   "comparison": {
     "model": "gpt-6.1-terra",

@@ -3,9 +3,9 @@
   <text x="124" y="25" fill="#59636e" text-anchor="end" font-weight="400">pi</text>
   <rect x="136" y="11" width="73.7" height="18" rx="3" fill="#B4BBC3" />
   <text x="219.67946784922395" y="25" fill="#1f2328" text-anchor="start" font-weight="400">1,282 tokens</text>
-  <text x="124" y="57" fill="#1865EE" text-anchor="end" font-weight="700">nib</text>
-  <rect x="136" y="43" width="117.2" height="18" rx="3" fill="#1865EE" />
-  <text x="263.1859866962306" y="57" fill="#1865EE" text-anchor="start" font-weight="700">2,039 tokens</text>
+  <text x="124" y="57" fill="#1865EE" text-anchor="end" font-weight="700">nib (shared)</text>
+  <rect x="136" y="43" width="85.8" height="18" rx="3" fill="#1865EE" />
+  <text x="231.80611973392462" y="57" fill="#1865EE" text-anchor="start" font-weight="700">1,493 tokens</text>
   <text x="124" y="89" fill="#59636e" text-anchor="end" font-weight="400">pi + extensions</text>
   <rect x="136" y="75" width="138.9" height="18" rx="3" fill="#B4BBC3" />
   <text x="284.910509977827" y="89" fill="#1f2328" text-anchor="start" font-weight="400">2,417 tokens</text>

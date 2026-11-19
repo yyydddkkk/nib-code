@@ -20,7 +20,7 @@ The **shared prompt in nib 0.19.0 is 1,493 tokens**. It includes the common syst
 | Custom Chat Completions / Gemini fixture | Gemini → `default` | 1,687 | 203 | 1,890 |
 | Custom Chat Completions / unknown-model fixture | Unknown → `default` | 1,679 | 203 | 1,882 |
 
-These are offline `o200k_base` estimates (not billed usage). The fixtures use cwd `/work`, default limits, no project or global instructions, no history, and no enabled extensions. The tool definitions are taken from the actual protocol encoders. The two custom fixtures exercise routing without implying native service support. The chart below uses the Codex / GPT-6.2 Sol row for nib; the shared-only count is not comparable to full fixed-input counts.
+These are offline `o200k_base` estimates (not billed usage). The fixtures use cwd `/work`, default limits, no project or global instructions, no history, and no enabled extensions. The tool definitions are taken from the actual protocol encoders. The two custom fixtures exercise routing without implying native service support. The chart below shows nib’s shared-only count alongside the other agents’ historical full counts. The chart does not compare full request overhead on an equal basis.
 
 ```sh
 zig build prompt-footprint | uv run --no-project --with tiktoken==0.14.0 python scripts/prompt_footprint.py
@@ -40,14 +40,14 @@ zig build prompt-footprint | uv run --no-project --with tiktoken==0.14.0 python 
 
 *Measured locally in November 2026, idle TUI in a 140×40 terminal, no model requests; fixed prompts include system and tool definitions. nib re-measured at 0.9.0 under the same conditions (0.5.0 reproduces 3.8 MB / 38 MB there).*
 
-## Fixed prompt per request
+## Prompt sizes as reported
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/bench-prompt-dark.svg">
-  <img src="assets/bench-prompt-light.svg" alt="Fixed prompt tokens per request, ascending: pi clean 1,282; nib 0.19.0 on Codex / GPT-6.2 Sol 2,039; pi with everyday extensions 2,417; dsh 6,236; prime-agent 8,891; Codex CLI 10,260; Claude Code 11,275." width="880">
+  <img src="assets/bench-prompt-light.svg" alt="Prompt tokens: nib 0.19.0 shared only 1,493. Historical full counts for other agents: pi clean 1,282; pi with everyday extensions 2,417; dsh 6,236; prime-agent 8,891; Codex CLI 10,260; Claude Code 11,275." width="880">
 </picture>
 
-*nib 0.19.0 on Codex / GPT-6.2 Sol: system prompt + request tool definitions, estimated offline. Other agents retain their November 2026 measurements. See the table above for nib's other configurations.*
+*nib 0.19.0 shows only its shared prompt and common tool API, excluding model profiles and request tool definitions. Other agents retain their November 2026 full fixed-prompt counts.*
 
 ## Comparison with Codex CLI
 

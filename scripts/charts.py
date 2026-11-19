@@ -115,7 +115,8 @@ def main():
         for row in data["footprint"]
     ]
     prompt = [
-        dict(row, prompt_tokens=data["current_nib"]["fixed_prompt_tokens"]) if row["name"] == "nib" else row
+        dict(row, short="nib (shared)", prompt_tokens=data["current_nib"]["shared_prompt_tokens"])
+        if row["name"] == "nib" else row
         for row in data["footprint"]
     ]
     for theme, palette in PALETTES.items():
