@@ -35,7 +35,7 @@ nib 以 Run 为工作单位：模型写一段 JavaScript，一步完成读取、
 
 *2026 年 11 月 · gpt-6.1-terra、medium · 对比 Codex CLI 0.166.0 共 20 次运行，按 API 价格计费 · 内存为空闲 TUI。*
 
-[更多数据 →](docs/benchmarks.md)
+**通用提示词约 1.5k tokens**，含通用工具说明。[各模型家族的完整请求开销 →](docs/benchmarks.md#current-prompt-footprint)
 
 ## 安装
 

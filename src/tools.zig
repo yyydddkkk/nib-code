@@ -1,4 +1,5 @@
 const std = @import("std");
+const Tuning = @import("session/tuning.zig").Resolved;
 const sandbox = @import("sandbox.zig");
 const provider = @import("provider.zig");
 const files = @import("tools/files.zig");
@@ -41,7 +42,7 @@ const all = [_]Tool{
         .name = "sleep",
         .doc =
         \\  // Wait ms (integer 0..2147483647); cancellable, no process/thread or tool slot. Counts Run wall time, not JS budget. Run drains even unawaited sleeps.
-        \\  // For timed delays such as service readiness. Background Run/bash/agent results arrive automatically as messages; never sleep or poll for them. No independent work: brief reply without tools; Session waits.
+        \\  // For timed delays such as service readiness.
         \\  async sleep(ms) {}, // → null
         ,
     },
@@ -49,7 +50,6 @@ const all = [_]Tool{
         .name = "read",
         .run = files.read,
         .doc =
-        \\  // Locate with grep first, then read needed line ranges; batch large multi-file output or print snippets to stay within the Run display budget.
         \\  // Read requested lines of a UTF-8 file (max 16 MiB) verbatim. offset is 1-based; next_offset is null at EOF.
         \\  async read({ path, offset = 1, limit = 2000 }) {}, // → { text, next_offset }
         ,
@@ -116,11 +116,8 @@ const all = [_]Tool{
         .doc =
         \\  // cwd; merged stderr; group cleanup (nohup/& too).
         \\  // >16 MiB:redirect. >256 words except heredocs:script.
-        \\  // background:{id}, auto-message. detached requires background, spans Turns; stop/timeout/cancel/exit cleans up.
-        \\  // Auto-bg keeps await/output. No polling/logs. Idle:reply to wait.
-        \\  // After edit/write, rerun same command/cwd: older Run stops, returns {superseded_by}, not failure; no detached.
-        \\  // Full checks:finish code/tests/fixtures/fmt; fix and rerun.
-        \\  // Example: await tools.bash({command: "sh checks.sh"})
+        \\  // background returns {id}. detached requires background, spans Turns; stop/timeout/cancel/exit cleans up.
+        \\  // After edits, rerunning identical command/cwd replaces matching bash from older Runs ({superseded_by}, not failure); excludes detached.
         \\  async bash({ command, timeout_ms, background = false, detached = false }) {}, // → { exit_code, output }, { superseded_by } or { id }; timeout_ms: 1800000 (30 min), detached:0
         ,
     },
@@ -128,7 +125,7 @@ const all = [_]Tool{
         .name = "stop",
         .run = @import("tools/stop.zig").stop,
         .doc =
-        \\  // Requires a concrete reason; elapsed time/no output alone is not a failure. Canceling a long test discards progress and its completed validation result; restarting repeats work. With no independent work, reply without tools to wait locally. Cancel and join one background bash/agent/Run by id, cleaning up its process group. Completed tasks return stopped:false; unknown ids reject. Completion is still delivered once as a background message.
+        \\  // Requires a concrete reason; elapsed time/no output alone is not a failure. Canceling a long test discards progress and its completed validation result; restarting repeats work. Cancel and join one background bash/agent/Run by id, cleaning up its process group. Completed tasks return stopped:false; unknown ids reject. Completion is still delivered once.
         \\  async stop({ id, reason }) {}, // → { id, stopped, reason, notice? }
         ,
     },
@@ -138,7 +135,7 @@ const all = [_]Tool{
         .tool_delivery_only = true,
         .run = @import("tools/wait.zig").wait,
         .doc =
-        \\  // With no independent work left, block until background Run/bash/agent tasks finish (default: every pending one except detached) and return their results; a result returned here is not delivered again. May follow other work in the same Run. Never auto-backgrounded; cancellable.
+        \\  // Block until background Run/bash/agent tasks finish (default: pending non-detached tasks except the calling Run) and return their results; a result returned here is not delivered again. May follow other work in the same Run. Never auto-backgrounded; cancellable.
         \\  async wait(ids) {}, // ids: optional array of task ids → { ok, results: [{ id, kind, ok, output }], not_pending?: [id] }
         ,
     },
@@ -147,7 +144,7 @@ const all = [_]Tool{
         .run = model_function.llm,
         .doc =
         \\  // Pure single-step model call: judgments, classification, extraction; no tools/side effects. Limits: {{llm_limits}} prompt+input.
-        \\  // {{llm_options}}
+        \\  // {{llm_options}}default: provider small model; effort low/medium/high (else inherit); lower effort: faster; schema→data.
         \\  // Example: await Promise.all(["yes", "no"].map(input => tools.llm({prompt: "Classify the input", input})))
         \\  async llm({ prompt, input, schema, model, effort }) {}, // → { text, data, usage }
         ,
@@ -157,10 +154,9 @@ const all = [_]Tool{
         .root_only = true,
         .run = subagent.agent,
         .doc =
-        \\  // Default: work yourself. Unless requested, delegate only parallel independent read-only investigations with discardable results.
-        \\  // Serial edits/builds/tests/reviews:parent. No nesting; shared cwd, partial files possible.
+        \\  // No nesting; shared cwd, partial files possible.
         \\  // fork:parent history; model/effort switch loses cache. resume:a1 after completion; busy:wait, don't retry/replace. fork+resume rejects.
-        \\  // background:{id}, auto-delivered result message. No ps/log reads/sleep/reruns to check/wait. No independent work:brief reply without tools; Session waits. Failure:ok:false; args/cancel reject.
+        \\  // background returns {id}. Failure:ok:false; args/cancel reject.
         \\  async agent({ prompt, resume, fork = false, timeout_ms = 1800000, model, effort, background = false }) {}, // → { ok, id, text, usage, changes, error? } or { id }
         ,
     },
@@ -265,8 +261,7 @@ pub const Tools = struct {
     cfg: ?provider.Config = null,
     mcp_client: ?*@import("mcp.zig").Client = null,
     depth: u32 = 0,
-    delivery_tool: bool = false,
-    validation: @import("session/tuning.zig").Resolved.Validation = .single,
+    tuning: Tuning = .{},
     session_id: ?[]const u8 = null,
     forked: bool = false,
     fork_snapshot: ?@import("tools/agent/input.zig").Fork = null,
@@ -354,12 +349,29 @@ pub const Tools = struct {
         return apis[@intFromBool(!(t.depth == 0 or t.forked))][@intFromBool(mcp_enabled)][@intFromBool(t.waitEnabled())];
     }
 
+    pub fn backgroundMode(t: *const Tools) Tuning.BackgroundMode {
+        return t.tuning.backgroundMode(t.depth == 0 or t.forked);
+    }
+
     pub fn waitEnabled(t: *const Tools) bool {
-        return t.delivery_tool and (t.depth == 0 or t.forked);
+        return t.backgroundMode() == .tool;
     }
 
     pub fn documentation(t: *const Tools, a: std.mem.Allocator) ![]u8 {
         const cfg = t.cfg orelse return error.ToolConfigUnavailable;
+        const mcp_enabled = for (cfg.mcp_servers) |server| {
+            if (server.enabled) break true;
+        } else false;
+        const models = try modelOptions(a, cfg);
+        defer a.free(models);
+        return renderDocumentation(a, t.apiFor(mcp_enabled).docs, web_search.supported(cfg), cfg.limits, models);
+    }
+
+    pub fn commonDocumentation(a: std.mem.Allocator) ![]u8 {
+        return renderDocumentation(a, apis[0][0][0].docs, false, .{}, "");
+    }
+
+    fn modelOptions(a: std.mem.Allocator, cfg: provider.Config) ![]u8 {
         var models: std.ArrayList([]const u8) = .empty;
         defer models.deinit(a);
         switch (cfg.provider) {
@@ -376,19 +388,17 @@ pub const Tools = struct {
             if (std.mem.eql(u8, cfg.model, model)) break true;
         } else false;
         if (!known) try models.append(a, cfg.model);
-        const options = try std.fmt.allocPrint(a, "model: {f}; current: {f}; default: provider small model; effort low/medium/high (else inherit); lower effort: faster; schema→parsed data.", .{ std.json.fmt(models.items, .{}), std.json.fmt(cfg.model, .{}) });
-        defer a.free(options);
-        const limits = try std.fmt.allocPrint(a, "{d} concurrent/process, {d}/Run, {d} KiB", .{ cfg.limits.llm_concurrency, cfg.limits.llm_calls_per_run, cfg.limits.llm_input_kib });
+        return std.fmt.allocPrint(a, "model: {f}; current: {f}; ", .{ std.json.fmt(models.items, .{}), std.json.fmt(cfg.model, .{}) });
+    }
+
+    fn renderDocumentation(a: std.mem.Allocator, api_docs: []const u8, include_search: bool, defaults: provider.Limits, models: []const u8) ![]u8 {
+        const limits = try std.fmt.allocPrint(a, "{d} concurrent/process, {d}/Run, {d} KiB", .{ defaults.llm_concurrency, defaults.llm_calls_per_run, defaults.llm_input_kib });
         defer a.free(limits);
-        const mcp_enabled = for (cfg.mcp_servers) |server| {
-            if (server.enabled) break true;
-        } else false;
-        const api_docs = t.apiFor(mcp_enabled).docs;
-        const searchable_docs = if (web_search.supported(cfg)) api_docs else try std.mem.replaceOwned(u8, a, api_docs, search_doc ++ "\n", "");
+        const searchable_docs = if (include_search) api_docs else try std.mem.replaceOwned(u8, a, api_docs, search_doc ++ "\n", "");
         defer if (searchable_docs.ptr != api_docs.ptr) a.free(searchable_docs);
         const limited_docs = try std.mem.replaceOwned(u8, a, searchable_docs, "{{llm_limits}}", limits);
         defer a.free(limited_docs);
-        return std.mem.replaceOwned(u8, a, limited_docs, "{{llm_options}}", options);
+        return std.mem.replaceOwned(u8, a, limited_docs, "{{llm_options}}", models);
     }
 
     pub fn addUsage(t: *Tools, usage: provider.Usage) void {
@@ -706,20 +716,6 @@ test "llm map documentation example reaches the host byte for byte" {
     defer result.deinit(testing.allocator);
     try testing.expect(result.ok);
     try testing.expectEqualStrings("[{\"prompt\":\"Classify the input\",\"input\":\"yes\"},{\"prompt\":\"Classify the input\",\"input\":\"no\"}]", result.text);
-}
-
-test "bash documentation example keeps test output captured byte for byte" {
-    const doc = for (all) |tool| {
-        if (std.mem.eql(u8, tool.name, "bash")) break tool.doc;
-    } else unreachable;
-    const marker = "Example: ";
-    const start = std.mem.indexOf(u8, doc, marker).? + marker.len;
-    const end = std.mem.indexOfScalarPos(u8, doc, start, '\n').?;
-    var dummy: u8 = 0;
-    const result = try sandbox.eval(testing.allocator, testing.io, doc[start..end], .{}, .{ .ctx = &dummy, .names = &.{"bash"}, .call = EchoLlm.call }, null);
-    defer result.deinit(testing.allocator);
-    try testing.expect(result.ok);
-    try testing.expectEqualStrings("{\"command\":\"sh checks.sh\"}", result.text);
 }
 
 test "grep documentation RegExp example reaches the host byte for byte" {

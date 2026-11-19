@@ -60,8 +60,11 @@ _Avoid_: backend, API (too broad)
 Model-generated thought summaries and reasoning data needed by subsequent requests. Stored and returned according to the provider; readable content is shown to the user, while encrypted items serve only to continue the session.
 _Avoid_: thinking (synonymous here; use Reasoning consistently)
 
+**Model Family**:
+A model lineage identified from the model name, not the Provider. The Session log separates it from the applied Profile: Gemini and unknown models can both take the default Profile.
+
 **Profile**:
-The model family a Session's behavior is tuned for: codex (gpt-*, codex), deepseek, claude, or default. Resolved from the model name, never the provider, so a custom endpoint serving `deepseek-flash` gets the deepseek Profile. Today it selects which prompt patches apply; context policy and request parameters that differ by family belong here too ([ADR 0025](docs/adr/0025-model-profiles.md)). The resolved name is recorded in the Session log header.
+The strategy overrides applied for a Model Family. The default keeps the shared strategies. Profiles select Tuning defaults and scope prompt patches; they do not change the selected model, Provider capabilities, or tool contracts. See [Model Profiles](docs/model-profiles.md) and [ADR 0025](docs/adr/0025-model-profiles.md).
 _Avoid_: model config, preset
 
 **Tuning**:

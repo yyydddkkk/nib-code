@@ -228,7 +228,7 @@ fn imageParts(a: std.mem.Allocator, list: *std.ArrayList(WirePart), parts: []con
     };
 }
 
-fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: Config, messages: []const Message, tools_json: []const u8, max_tokens: ?u32) ![]u8 {
+pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: Config, messages: []const Message, tools_json: []const u8, max_tokens: ?u32) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const a = arena.allocator();

@@ -7,6 +7,8 @@ const JsonEvent = @import("session/events.zig").JsonEvent;
 const Session = @import("session.zig").Session;
 const Event = @import("session.zig").Event;
 
+pub const prompt_footprint = @import("session/prompt_footprint.zig");
+
 pub fn main(init: std.process.Init) void {
     var out_buf: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(init.io, &out_buf);
