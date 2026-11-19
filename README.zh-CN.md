@@ -28,14 +28,14 @@ nib 以 Run 为工作单位：模型写一段 JavaScript，一步完成读取、
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-memory-dark.svg">
-  <img src="docs/assets/bench-memory-light.svg" alt="十个空闲实例的总 RSS：nib 47 MB；pi 纯净版 1,134 MB；Codex CLI 1,164 MB；prime-agent 1,460 MB；Claude Code 1,750 MB；pi 日常扩展版 1,984 MB；dsh 5,459 MB。" width="880">
+  <img src="docs/assets/bench-memory-light.svg" alt="十个空闲实例的总 RSS：nib 0.19.0 46.2 MB；pi 纯净版 1,134 MB；Codex CLI 1,164 MB；prime-agent 1,460 MB；Claude Code 1,750 MB；pi 日常扩展版 1,984 MB；dsh 5,459 MB。" width="880">
 </picture>
 
-6 MB 静态二进制 · 无运行时依赖。
+**nib 0.19.0**：Linux x86-64 静态二进制 6.7 MB · 单实例空闲 RSS 4.6 MB · 无运行时依赖。内存图仅更新 nib 的实测值，其他 agent 沿用历史数据。
 
-*2026 年 11 月 · gpt-6.1-terra、medium · 对比 Codex CLI 0.166.0 共 20 次运行，按 API 价格计费 · 内存为空闲 TUI。*
+*任务基准：2026 年 11 月 · gpt-6.1-terra、medium · 对比 Codex CLI 0.166.0 共 20 次运行，按 API 价格计费。*
 
-**通用提示词约 1.5k tokens**，含通用工具说明。[各模型家族的完整请求开销 →](docs/benchmarks.md#current-prompt-footprint)
+**通用提示词为 1,493 tokens**，含通用工具说明。[各模型家族的完整请求开销 →](docs/benchmarks.md#current-prompt-footprint)
 
 ## 安装
 

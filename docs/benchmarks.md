@@ -1,8 +1,16 @@
 # Data
 
+## Current nib resource usage
+
+| Release | Installed size | Idle RSS | Total RSS of 10 idle instances |
+| --- | ---: | ---: | ---: |
+| nib 0.19.0 (Linux x86-64, static) | 6.7 MB | 4.6 MB | 46.2 MB |
+
+The installed size is for the extracted, stripped binary from the checksum-verified release archive. Idle RSS is the median of five trials with clean, signed-out TUIs in 140×40 PTYs, with no model requests. The ten-instance measurement sums each trial's RSS from Linux `/proc/<pid>/smaps_rollup`; shared resident pages can be counted in more than one process. Values use decimal MB. The README memory chart uses this nib measurement and retains the historical values for the other agents below.
+
 ## Current prompt footprint
 
-The **shared prompt is 1,493 tokens**. It includes the common system instructions and JavaScript tool API, but not selected strategy variants, patches, endpoint-only tool text, or outer request-tool definitions. It is a measure of shared text, not a request total.
+The **shared prompt in nib 0.19.0 is 1,493 tokens**. It includes the common system instructions and JavaScript tool API, but not selected strategy variants, patches, endpoint-only tool text, or outer request-tool definitions. It is a measure of shared text, not a request total.
 
 | Example | Family → Profile | System | Request tool definitions | Total fixed input |
 | --- | --- | ---: | ---: | ---: |

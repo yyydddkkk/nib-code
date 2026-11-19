@@ -28,14 +28,14 @@ Against Codex CLI on the same model:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-memory-dark.svg">
-  <img src="docs/assets/bench-memory-light.svg" alt="Total idle RSS for ten instances: nib 47 MB; pi clean 1,134 MB; Codex CLI 1,164 MB; prime-agent 1,460 MB; Claude Code 1,750 MB; pi with extensions 1,984 MB; dsh 5,459 MB." width="880">
+  <img src="docs/assets/bench-memory-light.svg" alt="Total idle RSS for ten instances: nib 0.19.0 46.2 MB; pi clean 1,134 MB; Codex CLI 1,164 MB; prime-agent 1,460 MB; Claude Code 1,750 MB; pi with extensions 1,984 MB; dsh 5,459 MB." width="880">
 </picture>
 
-6 MB static binary · no runtime dependencies.
+**nib 0.19.0:** 6.7 MB static Linux x86-64 binary · 4.6 MB idle RSS · no runtime dependencies. The chart uses fresh nib measurements; other agents retain their historical figures.
 
-*Nov 2026 · gpt-6.1-terra, medium · 20 runs vs Codex CLI 0.166.0 at API prices · memory of idle TUIs.*
+*Task benchmark: Nov 2026 · gpt-6.1-terra, medium · 20 runs vs Codex CLI 0.166.0 at API prices.*
 
-**Shared prompt: ~1.5k tokens**, including the common tool API. [Full request counts by model family →](docs/benchmarks.md#current-prompt-footprint)
+**Shared prompt: 1,493 tokens**, including the common tool API. [Full request counts by model family →](docs/benchmarks.md#current-prompt-footprint)
 
 ## Install
 

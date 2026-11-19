@@ -109,9 +109,14 @@ def main():
     data = json.loads((ROOT / "docs/benchmarks/data.json").read_text())
     output = ROOT / "docs/assets"
     output.mkdir(parents=True, exist_ok=True)
+    nib_ten_rss_mb = round(data["current_nib"]["ten_rss_kib"] * 1024 / 1_000_000, 1)
+    memory = [
+        dict(row, ten_rss_mb=nib_ten_rss_mb) if row["name"] == "nib" else row
+        for row in data["footprint"]
+    ]
     for theme, palette in PALETTES.items():
         charts = {
-            "memory": bars(data["footprint"], "ten_rss_mb", "MB", *palette),
+            "memory": bars(memory, "ten_rss_mb", "MB", *palette),
             "prompt": bars(data["footprint"], "prompt_tokens", "tokens", *palette),
             "cost": costs(data["comparison"]["task_cost_usd"], *palette),
             "versus": versus(data["comparison"], *palette),

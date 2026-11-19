@@ -1,5 +1,12 @@
 {
   "date": "2026-11",
+  "current_nib": {
+    "version": "0.19.0",
+    "platform": "x86_64-linux",
+    "installed_bytes": 6682784,
+    "idle_rss_kib": 4512,
+    "ten_rss_kib": 45148
+  },
   "comparison": {
     "model": "gpt-6.1-terra",
     "effort": "medium",
