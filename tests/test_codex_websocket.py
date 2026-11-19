@@ -407,7 +407,10 @@ def test_fast_requests(tmp):
 
 
 def test_tui_fast(tmp):
-    from test_interjections import Terminal
+    from test_interjections import Terminal, screen, wait_for
+
+    def rows(terminal):
+        return screen(terminal.read(), 120, 32)
 
     server = Mock("fast-toggle")
     home = tmp / "tui-fast"
@@ -419,15 +422,18 @@ def test_tui_fast(tmp):
                NIB_BASE_URL=f"http://127.0.0.1:{server.server_port}", TERM="xterm-256color")
     terminal = Terminal(tmp, env)
     try:
+        assert "Fast" not in rows(terminal)[-1]
         terminal.send("first\r")
         terminal.wait_turn("Answered first")
         terminal.send("/fast\r")
         terminal.until(b"Fast requested")
+        wait_for(lambda: " · Fast" in rows(terminal)[-1], "Fast in input footer")
         assert config.read_text() == "[codex]\nfast = true # keep\n"
         terminal.send("second\r")
         terminal.wait_turn("Answered second")
         terminal.send("/fast\r")
         terminal.until(b"Standard mode")
+        wait_for(lambda: "Fast" not in rows(terminal)[-1], "Fast hidden after toggle off")
         assert config.read_text() == "[codex]\nfast = false # keep\n"
         terminal.send("third\r")
         terminal.wait_turn("Answered third")
@@ -436,6 +442,15 @@ def test_tui_fast(tmp):
         assert all("previous_response_id" not in r["body"] for r in server.requests)
         assert [len([i for i in r["body"]["input"] if i.get("role") == "user"]) for r in server.requests] == [1, 2, 3]
         assert len(list((home / "sessions").glob("[0-9a-f]" * 32 + ".jsonl"))) == 1
+        terminal.send("/fast\r")
+        wait_for(lambda: " · Fast" in rows(terminal)[-1], "Fast enabled before restart")
+        terminal.close()
+        terminal = Terminal(tmp, env)
+        wait_for(lambda: "gpt-6.1-terra · Fast" in rows(terminal)[0], "persisted Fast in the startup title")
+        assert rows(terminal)[-1].endswith(" gpt-6.1-terra · Fast ──╯")
+        terminal.send("/new\r")
+        wait_for(lambda: any("new session " in row and " · Fast" in row for row in rows(terminal)),
+                 "Fast in the new-session notice")
     finally:
         terminal.close()
         server.close()
