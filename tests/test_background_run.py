@@ -16,6 +16,7 @@ import unittest
 
 from mock_agent import reply
 from test_agent import alive
+from test_agent_reuse import system
 from test_interjections import Terminal
 from test_llm import wait_for
 
@@ -101,6 +102,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     code = "await tools.wait(['r1'])"
         elif case == "done":
             pass
+        elif case == "wait-unavailable":
+            if index == 0:
+                code = "({exposed: 'wait' in tools, type: typeof tools.wait})"
         elif case == "resume":
             code = "await tools.sleep(150); 'resumed-result'" if index == 0 else None
         elif index == 0:
@@ -421,6 +425,9 @@ class BackgroundRunTests(unittest.TestCase):
         self.server.case = "wait-tool"
         self.env["NIB_TUNE"] = "delivery=tool"
         events, rows, _ = self.finish(self.launch())
+        prompt = system(self.server.requests[0])
+        self.assertIn("async wait(", prompt)
+        self.assertIn("call `await tools.wait()`", prompt)
         final = self.server.requests[-1]["messages"]
         self.assertEqual([m["content"] for m in final if m["role"] == "user"][1:], [])
         self.assertEqual(final[-1]["role"], "tool")
@@ -542,11 +549,17 @@ class BackgroundRunTests(unittest.TestCase):
         wait_for(lambda: not alive(pid))
 
     def test_user_delivery_has_no_wait_tool(self):
-        self.server.case = "wait-tool"
+        self.server.case = "wait-unavailable"
         self.env["NIB_TUNE"] = "delivery=user"
         events, _, _ = self.finish(self.launch())
-        runs = [e["run_end"] for e in events if "run_end" in e]
-        self.assertFalse(runs[1]["ok"], runs[1])
+        prompt = system(self.server.requests[0])
+        self.assertNotIn("async wait(", prompt)
+        self.assertNotIn("tools.wait(", prompt)
+        self.assertIn("reply briefly without tools", prompt)
+        run, = [e["run_end"] for e in events if "run_end" in e]
+        self.assertTrue(run["ok"], run)
+        self.assertEqual(json.loads(run["output"].removeprefix("result: ")),
+                         {"exposed": False, "type": "undefined"})
 
     def test_tool_delivery_falls_back_to_a_user_message_when_the_model_waits_by_replying(self):
         self.server.case = "wait"

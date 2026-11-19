@@ -8,6 +8,7 @@ import json
 import threading
 import unittest
 
+from change_helpers import checked_bash, wait_command
 from mock_llm_tool import content
 from test_agent_reuse import completions, settled, system
 from test_background_agent import BackgroundTests
@@ -836,6 +837,63 @@ class ForkTests:
 
 class ChatForkTests(ForkTests, unittest.TestCase):
     provider = "chat_completions"
+
+    def test_tool_delivery_fork_advertises_and_executes_wait(self):
+        self.env["NIB_MODEL"] = "deepseek-flash"
+        mock = self.mock()
+        mock.plan("parent:fork-wait", "await " + fork("fork-wait"))
+        mock.plan("child:fork-wait",
+                  "await tools.bash({command: 'printf fork-wait-result', background: true}); "
+                  "await tools.wait()")
+        events = self.finish(self.start("parent:fork-wait"))
+        self.assert_result(self.outputs(events)[0])
+
+        seed, waited, *_ = mock.observed("child:fork-wait")
+        prompt = system(seed["body"])
+        self.assertIn("async wait(", prompt)
+        self.assertIn("call `await tools.wait()`", prompt)
+        output = content(waited["messages"][-1])
+        self.assertTrue(output.startswith("result: "), output)
+        result = json.loads(output.removeprefix("result: "))
+        self.assertIs(result["ok"], True, result)
+        task, = result["results"]
+        self.assertEqual((task["id"], task["kind"]), ("b1", "bash"))
+        self.assertIs(task["ok"], True, task)
+        self.assertIn("fork-wait-result", task["output"])
+
+    def test_tool_delivery_ordinary_child_waits_without_tools(self):
+        self.env["NIB_MODEL"] = "deepseek-flash"
+        (self.home / "config.toml").write_text("[limits]\nrun_background_after_ms = 50\n")
+        mock = self.mock()
+        mock.plan("parent:ordinary-child", "await " + agent("ordinary-child"))
+        gate = self.cwd / "release-child-run"
+
+        def child(_items):
+            step = len(mock.observed("child:ordinary-child"))
+            if step == 1:
+                return "({exposed: 'wait' in tools, type: typeof tools.wait})", "Checking API"
+            if step == 2:
+                return checked_bash(wait_command(gate.name)) + "'child-run-result'", "Starting long Run"
+            gate.touch()
+            return None, "Done"
+
+        mock.handlers["child:ordinary-child"] = child
+        self.finish(self.start("parent:ordinary-child"))
+
+        seed, probed, registered, completed = mock.observed("child:ordinary-child")
+        prompt = system(seed["body"])
+        self.assertIn("Results are appended to a later Run's output", prompt)
+        self.assertIn("reply briefly without tools", prompt)
+        self.assertNotIn("async wait(", prompt)
+        self.assertNotIn("tools.wait(", prompt)
+        self.assertEqual(tool_value(probed), {"exposed": False, "type": "undefined"})
+        notice = content(registered["messages"][-1])
+        self.assertIn("continuing in background as r1", notice)
+        self.assertIn("reply briefly without tools", notice)
+        self.assertNotIn("tools.wait(", notice)
+        delivered = completed["messages"][-1]
+        self.assertEqual(delivered["role"], "user")
+        self.assertIn("child-run-result", content(delivered))
 
 
 class CodexForkTests(ForkTests, unittest.TestCase):
