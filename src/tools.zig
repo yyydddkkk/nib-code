@@ -131,7 +131,6 @@ const all = [_]Tool{
     },
     .{
         .name = "wait",
-        .root_only = true,
         .tool_delivery_only = true,
         .run = @import("tools/wait.zig").wait,
         .doc =
