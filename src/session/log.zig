@@ -105,7 +105,29 @@ pub const Record = struct {
 
 pub const Source = struct { step: usize, run: usize, code: []const u8, base: ?[]const u8 = null, arguments: []const u8, failed: bool };
 
+pub const ResumeAdaptation = struct {
+    header_model: ?[]const u8 = null,
+    family: ?[]const u8 = null,
+    profile: ?[]const u8 = null,
+
+    /// The retained Profile to display only when it differs or cannot be established.
+    pub fn notice(adaptation: ResumeAdaptation, requested_model: []const u8) ?[]const u8 {
+        const profile = adaptation.profile orelse {
+            const original_model = adaptation.header_model orelse return null;
+            return if (std.mem.eql(u8, original_model, requested_model)) null else "unknown";
+        };
+        const model_profile = @import("profile.zig");
+        const family = model_profile.Family.forModel(requested_model);
+        if (!std.mem.eql(u8, profile, @tagName(model_profile.Profile.forFamily(family)))) return profile;
+        if (adaptation.family) |recorded| {
+            if (!std.mem.eql(u8, recorded, @tagName(family))) return profile;
+        }
+        return null;
+    }
+};
+
 pub const Log = struct {
+    resume_adaptation: ResumeAdaptation = .{},
     tuning: Tuning = .{},
     mcp_servers: []const @import("../mcp/config.zig").Server = &.{},
     plugin_skills: []const @import("skills.zig").Skill = &.{},
@@ -147,7 +169,7 @@ pub const Log = struct {
         if (expected_parent) |parent| {
             if (!std.mem.eql(u8, parent, restored.parent_session_id orelse "")) return error.AgentSessionParentMismatch;
         }
-        var log: Log = .{ .tuning = restored.tuning, .file = file, .mcp_servers = restored.mcp_servers, .plugin_skills = restored.plugin_skills, .skills = restored.skills, .offset = data.len, .parent_session_id = restored.parent_session_id, .cache_key = restored.cache_key, .forked_from = restored.forked_from, .provider = restored.provider, .custom_provider = restored.custom_provider, .model = restored.model, .steps = restored.steps, .next_agent_id = restored.next_agent_id, .next_bash_id = restored.next_bash_id, .next_run_id = restored.next_run_id, .agent_sessions = restored.agent_sessions, .lost_background = restored.lost_background, .pending_background_bytes = restored.pending_background_bytes };
+        var log: Log = .{ .resume_adaptation = restored.resume_adaptation, .tuning = restored.tuning, .file = file, .mcp_servers = restored.mcp_servers, .plugin_skills = restored.plugin_skills, .skills = restored.skills, .offset = data.len, .parent_session_id = restored.parent_session_id, .cache_key = restored.cache_key, .forked_from = restored.forked_from, .provider = restored.provider, .custom_provider = restored.custom_provider, .model = restored.model, .steps = restored.steps, .next_agent_id = restored.next_agent_id, .next_bash_id = restored.next_bash_id, .next_run_id = restored.next_run_id, .agent_sessions = restored.agent_sessions, .lost_background = restored.lost_background, .pending_background_bytes = restored.pending_background_bytes };
         if (restored.needs_repair) {
             if (data[data.len - 1] != '\n') {
                 // Do not turn a valid JSON value missing its commit newline into a record.
@@ -388,7 +410,8 @@ fn settleBackground(pending_background: *std.ArrayList(Pending), id: []const u8)
     }
 }
 
-pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { plugin_skills: []const @import("skills.zig").Skill, tuning: Tuning, mcp_servers: []const @import("../mcp/config.zig").Server, skills: @import("skills.zig").Summary, needs_repair: bool, steps: usize, parent_session_id: ?[]const u8, cache_key: ?[]const u8, forked_from: ?ForkedFrom, provider: provider.Id, custom_provider: ?[]const u8, model: ?[]const u8, next_agent_id: u64, next_bash_id: u64, next_run_id: u64, agent_sessions: []const AgentSession, lost_background: []const @import("events.zig").Background, background_repairs: []const @import("events.zig").Background, pending_background_bytes: u64 } {
+pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, history: *std.ArrayList(provider.Message), tokens: *u64) !struct { resume_adaptation: ResumeAdaptation, plugin_skills: []const @import("skills.zig").Skill, tuning: Tuning, mcp_servers: []const @import("../mcp/config.zig").Server, skills: @import("skills.zig").Summary, needs_repair: bool, steps: usize, parent_session_id: ?[]const u8, cache_key: ?[]const u8, forked_from: ?ForkedFrom, provider: provider.Id, custom_provider: ?[]const u8, model: ?[]const u8, next_agent_id: u64, next_bash_id: u64, next_run_id: u64, agent_sessions: []const AgentSession, lost_background: []const @import("events.zig").Background, background_repairs: []const @import("events.zig").Background, pending_background_bytes: u64 } {
+    var resume_adaptation: ResumeAdaptation = .{};
     var parent_session_id: ?[]const u8 = null;
     var mcp_servers: []const @import("../mcp/config.zig").Server = &.{};
     var skills: @import("skills.zig").Summary = .{};
@@ -429,6 +452,12 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             cache_key = r.cache_key;
             tuning = if (r.tuning) |record| Tuning.fromLog(record) else .{};
             forked_from = r.forked_from;
+            // A fork header labels the child runtime, not the inherited system text.
+            resume_adaptation = .{
+                .header_model = r.model,
+                .family = if (r.forked_from == null) r.family else null,
+                .profile = if (r.forked_from == null) r.profile else null,
+            };
             id = r.provider orelse .chat_completions;
             custom_provider = r.custom_provider;
         }
@@ -505,7 +534,7 @@ pub fn replay(gpa: std.mem.Allocator, a: std.mem.Allocator, data: []const u8, hi
             try background_repairs.append(a, pending.event);
         } else try lost_background.append(a, pending.event);
     }
-    return .{ .tuning = tuning, .mcp_servers = mcp_servers, .plugin_skills = plugin_skills, .skills = skills, .steps = steps, .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .cache_key = cache_key, .forked_from = forked_from, .provider = id, .custom_provider = custom_provider, .model = model, .next_agent_id = next_agent_id, .next_bash_id = next_bash_id, .next_run_id = next_run_id, .agent_sessions = try agent_sessions.toOwnedSlice(a), .lost_background = try lost_background.toOwnedSlice(a), .background_repairs = try background_repairs.toOwnedSlice(a), .pending_background_bytes = pending_background_bytes };
+    return .{ .resume_adaptation = resume_adaptation, .tuning = tuning, .mcp_servers = mcp_servers, .plugin_skills = plugin_skills, .skills = skills, .steps = steps, .needs_repair = torn or data[data.len - 1] != '\n', .parent_session_id = parent_session_id, .cache_key = cache_key, .forked_from = forked_from, .provider = id, .custom_provider = custom_provider, .model = model, .next_agent_id = next_agent_id, .next_bash_id = next_bash_id, .next_run_id = next_run_id, .agent_sessions = try agent_sessions.toOwnedSlice(a), .lost_background = try lost_background.toOwnedSlice(a), .background_repairs = try background_repairs.toOwnedSlice(a), .pending_background_bytes = pending_background_bytes };
 }
 
 fn restoreId(id: []const u8, next_agent: *u64, next_bash: *u64, next_run: *u64) !void {

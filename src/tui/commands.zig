@@ -275,7 +275,11 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             var credential_arena: std.heap.ArenaAllocator = .init(gpa);
             defer credential_arena.deinit();
             const arena_a = credential_arena.allocator();
-            try app.report(.info, "Provider {s} · {s} · {s} · effort {s} · context {d}%\n{s}", .{ app.cfg.name(), app.cfg.model, auth.describe(arena_a, app.io, app.cfg), app.cfg.effectiveEffort(), app.context * 100 / @max(app.cfg.context_window, 1), if (app.last_summary) |summary| text.details(summary, app.last_turn_runs) else "No completed turn yet." });
+            const resume_line = if (session.log.resume_adaptation.notice(app.cfg.model)) |profile|
+                try std.fmt.allocPrint(arena_a, "{s} · retained session Profile: {s}\n", .{ app.cfg.model, profile })
+            else
+                "";
+            try app.report(.info, "Provider {s} · {s} · {s} · effort {s} · context {d}%\n{s}{s}", .{ app.cfg.name(), app.cfg.model, auth.describe(arena_a, app.io, app.cfg), app.cfg.effectiveEffort(), app.context * 100 / @max(app.cfg.context_window, 1), resume_line, if (app.last_summary) |summary| text.details(summary, app.last_turn_runs) else "No completed turn yet." });
         },
         .plugins => {
             var arena: std.heap.ArenaAllocator = .init(gpa);

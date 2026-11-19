@@ -246,6 +246,7 @@ pub const Session = struct {
             .profile = @tagName(profile),
             .tuning = try s.tools.tuning.toLog(a),
         });
+        s.log.resume_adaptation = .{};
     }
 
     /// Replaces this Session with a new one (`id == null`) or a logged one.
@@ -1034,9 +1035,50 @@ test "fork initialization copies history and resume retains independent identity
     try t.expectEqualStrings(fork.cache_key, session.cache_key);
     const resumed_encoded = try std.json.Stringify.valueAlloc(a, session.history.items, .{});
     try t.expectEqualStrings(expected_encoded, resumed_encoded);
+    try t.expectEqual(@as(?[]const u8, null), session.log.resume_adaptation.notice(cfg.model));
+    try t.expectEqualStrings("unknown", session.log.resume_adaptation.notice("deepseek-test").?);
     try session.reopen(null);
     try t.expect(!session.tools.forked);
     try t.expectEqualStrings(session.id, session.cache_key);
+}
+
+test "resumed adaptation uses the effective header and preserves system and tuning" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    const options: Session.Options = .{ .home = root, .user_home = root, .environ = &env };
+    const cfg: provider.Config = .{ .base_url = "invalid://local", .api_key = "mock", .model = "gpt-test" };
+    var deepseek = cfg;
+    deepseek.model = "deepseek-test";
+    const original = blk: {
+        var session = try Session.init(t.allocator, t.io, &client, cfg, options);
+        defer session.deinit();
+        try t.expect(session.switchConfig(deepseek) == .updated);
+        break :blk .{
+            .id = try a.dupe(u8, session.id),
+            .system = try a.dupe(u8, session.history.items[0].content.?),
+            .tuning = session.tools.tuning,
+        };
+    };
+    try t.expectEqual(Tuning.forProfile(.deepseek), original.tuning);
+    try env.put("NIB_TUNE", "delivery=user,validation=single");
+    var resumed_options = options;
+    resumed_options.resume_id = original.id;
+    var session = try Session.init(t.allocator, t.io, &client, cfg, resumed_options);
+    defer session.deinit();
+    try t.expectEqualStrings("deepseek", session.log.resume_adaptation.notice(cfg.model).?);
+    try t.expectEqualStrings(original.system, session.history.items[0].content.?);
+    try t.expectEqual(original.tuning, session.tools.tuning);
+    try t.expect(session.switchConfig(cfg) == .updated);
+    try t.expectEqual(@as(?[]const u8, null), session.log.resume_adaptation.notice(cfg.model));
 }
 
 test "disabled recording leaves the Session recorder absent" {

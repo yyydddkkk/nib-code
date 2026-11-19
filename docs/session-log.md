@@ -10,6 +10,8 @@ Within the same service, resume uses the currently selected model, including aft
 
 New systems concatenate base instructions, global `$NIB_HOME/AGENTS.md` (default `~/.nib/AGENTS.md`), project `AGENTS.md`, later taking precedence. Project root: first cwd ancestor with .git, otherwise cwd. Read only AGENTS.md. Resume keeps original logged system; changes affect new Sessions only.
 
+After resume, `/status` shows the current model and retained Session Profile when the model's family or Profile differs from the log header. If the header has no Profile, the line shows `unknown` only when its model differs from the current one. A fork's header describes its runtime, not the inherited system text, so its original Profile is treated as unknown.
+
 Codex custom `tool_calls` carry `type:"custom"`; `function.arguments` remains JSON {code}, complete raw JS including optional effort line. Old entries default function. Resume/replay require no migration. Raw Responses outputs/types/argument-byte definitions: [custom Run](codex.md#custom-run-tool).
 
 Plugin-enabled Sessions record an optional `plugin_skills` catalog (names, descriptions, locations, invocation policy and installed roots) alongside `mcp_servers`. Resume restores this catalog; child Sessions inherit it through configuration. Installed roots are retained after uninstall, so reinstalling a package does not change old Session references. Environment templates remain unresolved in MCP snapshots. Old logs without a catalog default to no plugin entries. See [plugins](plugins.md).

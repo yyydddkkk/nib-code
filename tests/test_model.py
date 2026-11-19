@@ -79,7 +79,88 @@ def test_model(tmp):
         second.close()
 
 
+def test_resume_profile_status(tmp):
+    tmp.mkdir()
+    home = tmp / "home"
+    home.mkdir()
+    mock = Mock("responses", custom_run=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("NIB_", "CODEX_"))}
+    env.update(HOME=str(home), NIB_HOME=str(home), NIB_PROVIDER="openai",
+               OPENAI_API_KEY=mock.key, TERM="xterm-256color")
+    (home / "config.toml").write_text(f'[openai]\nbase_url = "{mock.url}"\ncontext_window = 128000\n')
+    sessions = home / "sessions"
+    bin_path = Path(__file__).resolve().parents[1] / "zig-out/bin/nib"
+
+    def start(model):
+        previous = set(sessions.glob("*.jsonl"))
+        result = subprocess.run([str(bin_path), "ask", "again original"], cwd=tmp,
+                                env={**env, "NIB_MODEL": model}, capture_output=True,
+                                text=True, timeout=15)
+        assert result.returncode == 0, result.stderr
+        log, = set(sessions.glob("*.jsonl")) - previous
+        return log
+
+    def check_status(log, model, profile, send_turn=False):
+        terminal = Terminal(tmp, {**env, "NIB_MODEL": model,
+                                  "NIB_TUNE": "delivery=user,validation=single"})
+        try:
+            terminal.send(f"/resume {log.stem}\r")
+            terminal.until(f"resumed session {log.stem[:8]}".encode())
+            terminal.send("/status\r")
+            terminal.until(b"No completed turn yet.")
+            visible = "\n".join(screen(terminal.read(), 120, 32))
+            lines = [line.strip() for line in visible.splitlines() if "retained session Profile:" in line]
+            assert lines == ([] if profile is None else [f"{model} · retained session Profile: {profile}"]), visible
+            if send_turn:
+                before = len(log.read_bytes().splitlines())
+                terminal.send("again resumed\r")
+                wait_for(lambda: log.read_bytes().count(b"\n") > before, "resumed Step")
+                terminal.wait_turn("mock answer")
+                return mock.requests[-1][2]
+        finally:
+            terminal.close()
+
+    try:
+        original = start("deepseek-flash")
+        header_bytes = original.read_bytes().splitlines()[0]
+        header = json.loads(header_bytes)
+        system = mock.requests[-1][2]["instructions"].encode()
+        assert system == header["messages"][0]["content"].encode()
+        assert (header["family"], header["profile"]) == ("deepseek", "deepseek")
+        assert header["tuning"] == {"delivery": "tool", "validation": "none"}
+        check_status(original, "deepseek-pro", None)
+
+        target = "gpt-6.1-sol"
+        resumed = check_status(original, target, "deepseek", send_turn=True)
+        assert resumed["model"] == target
+        assert resumed["instructions"].encode() == system
+        records = original.read_bytes().splitlines()
+        assert records[0] == header_bytes
+        assert json.loads(records[-1])["model"] == target
+        # The latest Step now matches the request, but the header still wins.
+        check_status(original, target, "deepseek")
+
+        legacy = sessions / ("1" * 32 + ".jsonl")
+        del header["profile"]
+        del header["family"]
+        legacy.write_bytes(b"\n".join([json.dumps(header).encode(), *records[1:]]) + b"\n")
+        check_status(legacy, target, "unknown")
+        check_status(legacy, "deepseek-flash", None)
+        del header["model"]
+        legacy.write_bytes(b"\n".join([json.dumps(header).encode(), *records[1:]]) + b"\n")
+        check_status(legacy, "deepseek-flash", None)
+
+        fallback = start("gemini-flash")
+        assert json.loads(fallback.read_bytes().splitlines()[0])["profile"] == "default"
+        check_status(fallback, "gemini-pro", None)
+        check_status(fallback, "other-model", "default")  # different family, same Profile
+        assert not mock.errors, mock.errors
+    finally:
+        mock.close()
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-model-") as directory:
         test_model(Path(directory) / "model")
+        test_resume_profile_status(Path(directory) / "resume-profile")
     print("model switch: ok")
