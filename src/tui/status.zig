@@ -182,7 +182,6 @@ pub const Text = struct {
         if (s.signed_out) return if (width >= 14) "Not signed in" else "";
         const fast = s.fastRequested();
         const fast_only = if (fast and width >= 4) "Fast" else "";
-        if (s.cfg.simple) return fast_only;
         const model = s.cfg.model;
         const suffix = if (fast) " · Fast" else "";
         var line = if (s.context > 0)

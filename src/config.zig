@@ -896,10 +896,10 @@ test "Codex Fast preference is scoped and preserves the config file" {
     try t.expectEqualStrings("# header\r\n[codex] # keep\r\nfast = true\r\nmodel = \"gpt-6.1-terra\"\r\n[limits]\r\nmax_steps = 7\r\n", text);
     var detail: ?[]u8 = null;
     var env: Env = .init(a);
-    const codex_cfg = try resolve(a, &env, text, path, &detail);
+    const codex_cfg = try resolve(a, &env, text, path, &detail, null);
     try t.expectEqualStrings("priority", codex_cfg.codexServiceTier().?);
     try env.put("NIB_PROVIDER", "openai");
-    try t.expect(!(try resolve(a, &env, text, path, &detail)).codex_fast);
+    try t.expect(!(try resolve(a, &env, text, path, &detail, null)).codex_fast);
     for ([_][]const u8{ "[codex]\nfast = \"true\"", "[codex]\nfast = true\nfast = false", "[chat_completions]\nfast = true" }) |invalid| {
         try t.expectError(error.InvalidConfig, parse(a, a, invalid, path, &detail));
     }

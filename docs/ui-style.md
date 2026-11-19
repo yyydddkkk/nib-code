@@ -24,7 +24,7 @@ Changes line: the left side of the Turn footer after a successful Turn with dire
 
 Title line: an empty transcript shows dim `<project> · <branch> · <model> · <effort>` at its top-left (`nibcode · main · deepseek-flash · high`); the branch part is omitted without git, the effort part when the server picks it. Signed out shows `No provider · /provider to sign in` instead.
 
-When the selected Codex model is configured to request Fast mode, append `· Fast` to the empty-transcript title and new-Session notices. Show `Fast` in the right-aligned bottom-border metadata beside the model and context; keep the Fast label if only it fits. These labels describe the local setting, not a server-confirmed tier.
+When the selected Codex model is configured to request Fast mode, append `· Fast` to the empty-transcript title and new-Session notices. In Normal mode, show `Fast` in the right-aligned bottom-border metadata beside the model and context; keep the Fast label if only it fits. These labels describe the local setting, not a server-confirmed tier.
 
 Open command (only with `open` configured): paths that resolve to project files look like normal text and are underlined while hovered. A failed start shows the dim notice `Could not run <program>`.
 
@@ -55,7 +55,7 @@ Streaming: once the header and delimiter rows are complete the table renders ali
 
 `/simple` or Ctrl+S toggles a persisted reading mode without a notice, including during a Turn. Normal mode is the default. Kitty binds Ctrl+Shift+S to paste-from-selection by default; use Ctrl+S there. Ctrl+Shift+S also toggles Simple mode when delivered distinctly by the terminal. Raw mode disables IXON so Ctrl+S does not freeze output. `/help` lists `Ctrl+S simple mode`.
 
-Simple mode hides Turn footers; `/status` retains all details. Width, margins, turn spacing and the bordered input box match Normal mode, including the input flush with the last row. The input has no placeholder. Its bottom border is plain except for a right-aligned `Fast` when requested; at 80% context usage or above a dim ` context N% ` is right-aligned inside the corners of the top border.
+Simple mode hides Turn footers; `/status` retains all details. Width, margins, turn spacing and the bordered input box match Normal mode, including the input flush with the last row. The input has no placeholder. Its bottom border is always plain; at 80% context usage or above a dim ` context N% ` is right-aligned inside the corners of the top border.
 
 The signed-out hint, activity, menus, provider flows, notices, errors and warnings remain available.
 
