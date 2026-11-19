@@ -448,6 +448,10 @@ def test_tui_fast(tmp):
         terminal = Terminal(tmp, env)
         wait_for(lambda: "gpt-6.1-terra · Fast" in rows(terminal)[0], "persisted Fast in the startup title")
         assert rows(terminal)[-1].endswith(" gpt-6.1-terra · Fast ──╯")
+        terminal.send("/simple\r")
+        wait_for(lambda: rows(terminal)[-1] == "╰" + "─" * 118 + "╯", "plain input border in Simple mode")
+        terminal.send("/simple\r")
+        wait_for(lambda: rows(terminal)[-1].endswith(" gpt-6.1-terra · Fast ──╯"), "Fast shown again in Normal mode")
         terminal.send("/new\r")
         wait_for(lambda: any("new session " in row and " · Fast" in row for row in rows(terminal)),
                  "Fast in the new-session notice")

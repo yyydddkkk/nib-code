@@ -140,7 +140,7 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
                 const w = win.gwidth(label);
                 if (w <= win.width - 2) _ = win.child(.{ .x_off = win.width - 1 - w, .y_off = input_y, .height = 1, .width = w }).printSegment(.{ .text = label, .style = .{ .dim = true } }, .{ .wrap = .none });
             }
-        } else if (!s.fastRequested()) {
+        } else {
             const meta = text.footer(s, win.width - 7);
             if (meta.len > 0) {
                 const meta_w = win.gwidth(meta);
@@ -148,17 +148,6 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
                 put(win, meta_x - 1, input_y + input_h + 1, " ");
                 _ = win.child(.{ .x_off = meta_x, .y_off = input_y + input_h + 1, .width = meta_w, .height = 1 }).printSegment(.{ .text = meta, .style = .{ .dim = true } }, .{ .wrap = .none });
                 put(win, win.width - 4, input_y + input_h + 1, " ");
-            }
-        }
-        if (s.fastRequested()) {
-            const meta = text.footer(s, win.width - 7);
-            const y_footer = input_y + input_h + 1;
-            const w = win.gwidth(meta);
-            if (w > 0) {
-                const meta_x = win.width - 4 - w;
-                put(win, meta_x - 1, y_footer, " ");
-                _ = win.child(.{ .x_off = meta_x, .y_off = y_footer, .width = w, .height = 1 }).printSegment(.{ .text = meta, .style = .{ .dim = true } }, .{ .wrap = .none });
-                put(win, win.width - 4, y_footer, " ");
             }
         }
     } else if (win.width >= 3) {
@@ -505,7 +494,7 @@ test "empty screen has one guidance line and no zero statistics" {
     try testing.expect(std.mem.indexOf(u8, image, "0%") == null);
 }
 
-test "Fast stays on the right side of the input border in Normal and Simple modes" {
+test "Fast appears on the input border only in Normal mode" {
     const a = testing.allocator;
     for ([_]u16{ 11, 60, 120, 160 }) |width| {
         var screen = try vaxis.Screen.init(a, .{ .cols = width, .rows = 12, .x_pixel = 0, .y_pixel = 0 });
@@ -524,9 +513,15 @@ test "Fast stays on the right side of the input border in Normal and Simple mode
             draw(win, &.{}, &input, &scroll, &.{}, 0, .{ .cfg = cfg, .context = cfg.context_window }, &text);
             const image = try snapshot(a, &screen);
             defer a.free(image);
-            const meta = if (simple or width == 11) " Fast ──╯\n" else " gpt-6.1-sol · Fast · context 100% ──╯\n";
-            try testing.expect(std.mem.endsWith(u8, image, meta));
-            if (simple and width >= 60) try testing.expect(std.mem.indexOf(u8, image, " context 100% ╮") != null);
+            if (simple) {
+                const bottom_start = std.mem.lastIndexOfScalar(u8, image[0 .. image.len - 1], '\n').? + 1;
+                const bottom = image[bottom_start..];
+                try testing.expect(std.mem.indexOf(u8, bottom, "Fast") == null);
+                if (width >= 60) try testing.expect(std.mem.indexOf(u8, image, " context 100% ╮") != null);
+            } else {
+                const meta = if (width == 11) " Fast ──╯\n" else " gpt-6.1-sol · Fast · context 100% ──╯\n";
+                try testing.expect(std.mem.endsWith(u8, image, meta));
+            }
         }
         cfg.simple = false;
         for ([_]bool{ false, true }) |signed_out| {
