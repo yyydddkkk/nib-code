@@ -167,6 +167,9 @@ const File = struct {
     ui_value: ?Span = null,
     effort: ?[]const u8 = null,
     codex_settings: Settings = .{},
+    codex_body_start: ?usize = null,
+    fast_value: ?Span = null,
+    codex_fast: bool = false,
     chat_settings: Settings = .{},
     effort_value: ?Span = null,
     effort_line: ?Span = null,
@@ -347,6 +350,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
             if (section == .provider_dynamic) continue;
             if (seen_sections[index]) return p.bad("duplicate section '{s}'", .{name});
             seen_sections[index] = true;
+            if (section == .codex) file.codex_body_start = end;
             continue;
         }
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse return p.bad("expected key = value", .{});
@@ -443,7 +447,7 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
                 if (std.mem.eql(u8, key, name)) break :blk i;
             }
             return p.bad("unknown limits key '{s}'", .{key});
-        } else if (std.mem.eql(u8, key, "model")) 0 else if (std.mem.eql(u8, key, "base_url")) 1 else if (std.mem.eql(u8, key, "context_window")) 2 else if (section == .codex and std.mem.eql(u8, key, "transport")) 3 else if (section == .codex and std.mem.eql(u8, key, "reasoning_summary")) 4 else if (section == .codex and std.mem.eql(u8, key, "run_tool")) 5 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "protocol")) 6 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "api_key_env")) 7 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "vision")) 8 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "max_output")) 10 else return p.bad("unknown provider key '{s}'", .{key});
+        } else if (std.mem.eql(u8, key, "model")) 0 else if (std.mem.eql(u8, key, "base_url")) 1 else if (std.mem.eql(u8, key, "context_window")) 2 else if (section == .codex and std.mem.eql(u8, key, "transport")) 3 else if (section == .codex and std.mem.eql(u8, key, "reasoning_summary")) 4 else if (section == .codex and std.mem.eql(u8, key, "run_tool")) 5 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "protocol")) 6 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "api_key_env")) 7 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "vision")) 8 else if (section == .provider_dynamic and file.providers.items[current_provider].custom and std.mem.eql(u8, key, "max_output")) 10 else if (section == .codex and std.mem.eql(u8, key, "fast")) 9 else return p.bad("unknown provider key '{s}'", .{key});
         const group: usize = if (section) |id| @as(usize, @backingInt(id)) + 1 else 0;
         const keys = if (section == .provider_dynamic) &file.providers.items[current_provider].seen else &seen[group];
         if (keys[index]) return p.bad("duplicate key '{s}'", .{key});
@@ -471,6 +475,11 @@ fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []const u
                 9 => file.limits.run_output_bytes = n,
                 else => unreachable,
             }
+        } else if (section == .codex and index == 9) {
+            if (parsed != .boolean) return p.bad("fast must be true or false", .{});
+            file.codex_fast = parsed.boolean;
+            const value_start = start + @intFromPtr(value.ptr) - @intFromPtr(raw.ptr);
+            file.fast_value = .{ .start = value_start, .end = value_start + consumed };
         } else if (section != null and index == 8) {
             if (parsed != .boolean) return p.bad("vision must be true or false", .{});
             settings.vision = parsed.boolean;
@@ -600,6 +609,7 @@ fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8, de
         detail.* = try a.dupe(u8, "NIB_CODEX_TRANSPORT: expected websocket or sse");
         return error.InvalidConfig;
     } else file.codex_settings.transport;
+    cfg.codex_fast = id == .codex and file.codex_fast;
     cfg.simple = file.simple;
     cfg.open = if (file.open) |value| try a.dupe(u8, value) else null;
     cfg.codex_run_tool = if (env.get("NIB_CODEX_RUN_TOOL")) |v| std.meta.stringToEnum(@FieldType(provider.Config, "codex_run_tool"), v) orelse {
@@ -804,6 +814,29 @@ fn appendModel(a: Allocator, entries: *std.ArrayList(ModelEntry), service: []con
     try entries.append(a, .{ .provider = service, .model = model });
 }
 
+pub fn saveCodexFast(a: Allocator, io: std.Io, home_path: []const u8, enabled: bool) !void {
+    var scratch: std.heap.ArenaAllocator = .init(a);
+    defer scratch.deinit();
+    const tmp = scratch.allocator();
+    const path = try std.fs.path.join(tmp, &.{ home_path, "config.toml" });
+    const text = try read(tmp, io, path);
+    var detail: ?[]u8 = null;
+    const file = try parse(tmp, tmp, text, path, &detail);
+    if (file.codex_fast == enabled) return;
+    const value = if (enabled) "true" else "false";
+    const newline = if (std.mem.indexOf(u8, text, "\r\n") != null) "\r\n" else "\n";
+    const updated = if (file.fast_value) |span|
+        try std.fmt.allocPrint(tmp, "{s}{s}{s}", .{ text[0..span.start], value, text[span.end..] })
+    else blk: {
+        const start = file.codex_body_start orelse text.len;
+        const separator = if (start > 0 and text[start - 1] != '\n') newline else "";
+        const header = if (file.codex_body_start == null) "[codex]" else "";
+        try std.Io.Dir.cwd().createDirPath(io, home_path);
+        break :blk try std.fmt.allocPrint(tmp, "{s}{s}{s}{s}fast = {s}{s}{s}", .{ text[0..start], separator, header, if (header.len > 0) newline else "", value, newline, text[start..] });
+    };
+    _ = try atomic_file.replace(io, tmp, path, updated, .{ .permissions = .fromMode(0o600), .sync = true });
+}
+
 pub fn saveEffort(a: Allocator, io: std.Io, home_path: []const u8, value: []const u8) !void {
     const effort = knownEffort(value) orelse return error.InvalidReasoningEffort;
     const path = try std.fs.path.join(a, &.{ home_path, "config.toml" });
@@ -846,6 +879,35 @@ pub fn saveEffort(a: Allocator, io: std.Io, home_path: []const u8, value: []cons
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, home_path);
     _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = .fromMode(0o600), .sync = true });
+}
+
+test "Codex Fast preference is scoped and preserves the config file" {
+    const t = std.testing;
+    var home_dir = t.tmpDir(.{});
+    defer home_dir.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &home_dir.sub_path });
+    const path = try std.fs.path.join(a, &.{ root, "config.toml" });
+    try home_dir.dir.writeFile(t.io, .{ .sub_path = "config.toml", .data = "# header\r\n[codex] # keep\r\nmodel = \"gpt-6.1-terra\"\r\n[limits]\r\nmax_steps = 7\r\n" });
+    try saveCodexFast(a, t.io, root, true);
+    const text = try read(a, t.io, path);
+    try t.expectEqualStrings("# header\r\n[codex] # keep\r\nfast = true\r\nmodel = \"gpt-6.1-terra\"\r\n[limits]\r\nmax_steps = 7\r\n", text);
+    var detail: ?[]u8 = null;
+    var env: Env = .init(a);
+    const codex_cfg = try resolve(a, &env, text, path, &detail);
+    try t.expectEqualStrings("priority", codex_cfg.codexServiceTier().?);
+    try env.put("NIB_PROVIDER", "openai");
+    try t.expect(!(try resolve(a, &env, text, path, &detail)).codex_fast);
+    for ([_][]const u8{ "[codex]\nfast = \"true\"", "[codex]\nfast = true\nfast = false", "[chat_completions]\nfast = true" }) |invalid| {
+        try t.expectError(error.InvalidConfig, parse(a, a, invalid, path, &detail));
+    }
+    try home_dir.dir.deleteFile(t.io, "config.toml");
+    try saveCodexFast(a, t.io, root, true);
+    try t.expectEqualStrings("[codex]\nfast = true\n", try read(a, t.io, path));
+    try saveCodexFast(a, t.io, root, false);
+    try t.expectEqualStrings("[codex]\nfast = false\n", try read(a, t.io, path));
 }
 
 test "TOML sections comments strings and scalar values" {

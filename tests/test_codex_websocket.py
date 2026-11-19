@@ -81,7 +81,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         server.handshakes.append(dict(self.headers))
         assert self.path == "/codex/responses"
         assert self.headers["OpenAI-Beta"] == "responses_websockets=2026-02-06"
-        assert self.headers["x-codex-routing-hint"] == "model=gpt-6.1-terra"
         assert self.headers["authorization"] == "Bearer fake-ws-access"
         assert self.headers["chatgpt-account-id"] == "fake-ws-account"
         if server.mode == "handshake":
@@ -204,7 +203,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if is_prediction(body):
             return self.send_error(400)
         self.server.posts += 1
-        self.server.requests.append(dict(transport="sse", body=body))
+        self.server.requests.append(dict(transport="sse", body=body, routing=self.headers.get("x-codex-routing-hint")))
         events, _ = response(body["input"], "sse-response", self.server.mode, body)
         data = "".join("data: " + json.dumps(ev) + "\n\n" for ev in events).encode()
         self.send_response(200)
@@ -218,7 +217,7 @@ def response(inputs, response_id, mode, body):
     tools = [i for i in inputs if i.get("type") in ("function_call_output", "custom_tool_call_output")]
     prompt = next((i["content"] for i in reversed(inputs) if i.get("role") == "user"), "")
     summary = "Summarize the conversation above" in prompt
-    if not tools and not summary and prompt != "resumed":
+    if not tools and not summary and prompt != "resumed" and mode != "fast-toggle":
         args = {"code": 'console.log("mock result🙂")'}
         if mode.startswith("background"):
             args["code"] = "await tools.sleep(1500); 'background-result🙂'"
@@ -232,7 +231,7 @@ def response(inputs, response_id, mode, body):
             args["code"] = 'console.log(await tools.agent({prompt: "resumed", fork: true}))'
         item = dict(codex_run(body, args, "call1"), id="fc1", status="completed")
     else:
-        text = "finished🙂" if not summary else "Earlier summary"
+        text = f"Answered {prompt}" if mode == "fast-toggle" else "Earlier summary" if summary else "finished🙂"
         if mode.startswith("background") and "background-result" not in prompt:
             text = "Waiting."
         item = dict(type="message", role="assistant", phase="final_answer", id="msg1", status="completed",
@@ -387,6 +386,61 @@ def test_tui_cancel(tmp):
         terminal.close()
         server.close()
 
+def test_fast_requests(tmp):
+    for mode, transport, expected in (("normal", "websocket", ["websocket", "websocket"]),
+                                      ("normal", "sse", ["sse", "sse"]),
+                                      ("protocol", "websocket", ["websocket", "websocket", "sse"])):
+        home = tmp / f"fast-{mode}-{transport}"
+        home.mkdir()
+        (home / "config.toml").write_text("[codex]\nfast = true\n")
+        server, _, _, _ = run_case(tmp, mode, home=home, extra=dict(NIB_CODEX_TRANSPORT=transport))
+        assert [r["transport"] for r in server.requests] == expected, server.requests
+        for request in server.requests:
+            assert request["body"]["service_tier"] == "priority", request
+            assert request["body"]["reasoning"]["effort"] == "medium", request
+            if request["transport"] == "sse":
+                assert request["routing"] == "model=gpt-6.1-terra;tier=priority", request
+        for headers in server.handshakes:
+            assert headers["x-codex-routing-hint"] == "model=gpt-6.1-terra;tier=priority", headers
+        if expected == ["websocket", "websocket"]:
+            assert server.requests[1]["body"]["previous_response_id"] == "resp-1-1"
+
+
+def test_tui_fast(tmp):
+    from test_interjections import Terminal
+
+    server = Mock("fast-toggle")
+    home = tmp / "tui-fast"
+    home.mkdir()
+    config = home / "config.toml"
+    config.write_text("[codex]\nfast = false # keep\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("NIB_", "CODEX_"))}
+    env.update(NIB_HOME=str(home), CODEX_HOME=str(tmp / "auth"), NIB_PROVIDER="codex", NIB_MODEL="gpt-6.1-terra",
+               NIB_BASE_URL=f"http://127.0.0.1:{server.server_port}", TERM="xterm-256color")
+    terminal = Terminal(tmp, env)
+    try:
+        terminal.send("first\r")
+        terminal.wait_turn("Answered first")
+        terminal.send("/fast\r")
+        terminal.until(b"Fast requested")
+        assert config.read_text() == "[codex]\nfast = true # keep\n"
+        terminal.send("second\r")
+        terminal.wait_turn("Answered second")
+        terminal.send("/fast\r")
+        terminal.until(b"Standard mode")
+        assert config.read_text() == "[codex]\nfast = false # keep\n"
+        terminal.send("third\r")
+        terminal.wait_turn("Answered third")
+        assert server.connections == 3
+        assert [r["body"].get("service_tier") for r in server.requests] == [None, "priority", None]
+        assert all("previous_response_id" not in r["body"] for r in server.requests)
+        assert [len([i for i in r["body"]["input"] if i.get("role") == "user"]) for r in server.requests] == [1, 2, 3]
+        assert len(list((home / "sessions").glob("[0-9a-f]" * 32 + ".jsonl"))) == 1
+    finally:
+        terminal.close()
+        server.close()
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="nib-ws-") as directory:
         tmp = Path(directory)
@@ -395,6 +449,10 @@ def main():
         server, steps, session, home = run_case(tmp, "normal")
         assert server.connections == 1 and len(server.requests) == 2
         first, second = [r["body"] for r in server.requests]
+        assert server.handshakes[0]["x-codex-routing-hint"] == "model=gpt-6.1-terra"
+        assert "service_tier" not in first and "service_tier" not in second
+        test_fast_requests(tmp)
+        test_tui_fast(tmp)
         assert "previous_response_id" not in first and second["previous_response_id"] == "resp-1-1"
         assert [i["type"] for i in second["input"]] == ["custom_tool_call_output"]
         assert second["client_metadata"]["x-codex-turn-state"] == "mock-turn"
