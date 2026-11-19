@@ -144,7 +144,7 @@ const all = [_]Tool{
         .run = model_function.llm,
         .doc =
         \\  // Pure single-step model call: judgments, classification, extraction; no tools/side effects. Limits: {{llm_limits}} prompt+input.
-        \\  // {{llm_options}}default: provider small model; effort low/medium/high (else inherit); schema→data.
+        \\  // {{llm_options}}default: provider small model; effort low/medium/high (else inherit); lower effort: faster; schema→data.
         \\  // Example: await Promise.all(["yes", "no"].map(input => tools.llm({prompt: "Classify the input", input})))
         \\  async llm({ prompt, input, schema, model, effort }) {}, // → { text, data, usage }
         ,
