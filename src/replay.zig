@@ -371,10 +371,12 @@ const Report = struct {
     end: ?End = null,
 };
 
-fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8) !Report {
+fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8, outputs_dir: ?[]const u8) !Report {
     const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, recording.end orelse .ok, script != null, original.child);
     defer evaluated.deinit(a);
-    const formatted = try output.format(a, evaluated.outcome, recording.run_output_bytes);
+    const expect_saved = if (original.expected) |exp| std.mem.indexOf(u8, exp, "[full output") != null else false;
+    const save: ?output.Save = if (expect_saved) if (outputs_dir) |dir| .{ .io = io, .dir = dir, .write = false } else null else null;
+    const formatted = try output.formatSaved(a, evaluated.outcome, recording.run_output_bytes, save);
     const referenced = if (original.source_reference) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, original.key.step, original.key.run }) else formatted;
     const text = try output.stepLimitOutput(a, referenced, original.remaining_steps);
     const incomplete = recording.incomplete or evaluated.incomplete or original.expected == null;
@@ -409,8 +411,10 @@ pub fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Wri
     const home = try config.home(a, init.environ_map);
     const main_name = try std.fmt.allocPrint(a, "{s}.jsonl", .{options.id});
     const calls_name = try std.fmt.allocPrint(a, "{s}.calls.jsonl", .{options.id});
+    const outputs_name = try std.fmt.allocPrint(a, "{s}.outputs", .{options.id});
     const main_path = try std.fs.path.join(a, &.{ home, "sessions", main_name });
     const calls_path = try std.fs.path.join(a, &.{ home, "sessions", calls_name });
+    const outputs_dir = try std.fs.path.join(a, &.{ home, "sessions", outputs_name });
     const data = try std.Io.Dir.cwd().readFileAlloc(init.io, main_path, a, .unlimited);
     const runs = try loadMain(a, data);
     const calls = std.Io.Dir.cwd().readFileAlloc(init.io, calls_path, a, .unlimited) catch |err| switch (err) {
@@ -441,7 +445,7 @@ pub fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Wri
                 undetermined += 1;
                 continue;
             };
-            const report = try replayOne(a, init.io, original, recording, null);
+            const report = try replayOne(a, init.io, original, recording, null, outputs_dir);
             try reports.append(a, report);
             if (report.divergence) |d| try differences.append(a, .{ .run = report.run, .divergence = d });
             if (report.match) |match| {
@@ -461,7 +465,7 @@ pub fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Wri
         const key = options.key.?;
         const original = findRun(runs, key) orelse return error.ReplayRunNotFound;
         const recording = recordingFor(recordings, key) orelse return error.ReplayMetadataNotFound;
-        const report = try replayOne(a, init.io, original, recording.*, script);
+        const report = try replayOne(a, init.io, original, recording.*, script, outputs_dir);
         if (options.json) {
             try writeJson(stdout, report);
         } else {
@@ -614,7 +618,7 @@ test "optional incomplete metadata distinguishes pending and settled ordinary er
     try t.expect(!recordings[1].incomplete);
     try t.expect(!recordings[2].incomplete);
     const pending: Run = .{ .key = .{ .step = 1, .run = 0 }, .code = "tools.read(); throw new Error('boom')", .expected = "Error: boom" };
-    const report = try replayOne(arena.allocator(), t.io, pending, recordings[0], null);
+    const report = try replayOne(arena.allocator(), t.io, pending, recordings[0], null, null);
     try t.expect(report.incomplete);
     try t.expect(report.match == null);
     try t.expect(report.divergence != null);

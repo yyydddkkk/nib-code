@@ -971,6 +971,12 @@ class BackgroundBashTests:
         self.assert_accounting(mock, events)
         self.assertGreater(len(content(message).encode("utf-8")), len(content(message)))
         self.assertIn("中文🙂", content(message))
+        saved_match = re.search(r"\[full output: ([^\]]+)\]", content(message))
+        self.assertIsNotNone(saved_match, content(message)[-240:])
+        saved_text = Path(saved_match.group(1)).read_text()
+        self.assertTrue(saved_text.startswith("exit_code: 0\n\nhead:"))
+        self.assertIn(":tail", saved_text)
+        self.assertGreater(len(saved_text.encode("utf-8")), 16 * 1024)
 
     def test_nonzero_exit_is_result(self):
         mock = self.mock("nonzero")

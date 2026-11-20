@@ -12,8 +12,11 @@ pub const Entry = struct {
 
 pub const Capture = struct {
     limit: usize,
+    full_limit: usize = 0,
     head: std.ArrayList(u8) = .empty,
     tail: std.ArrayList(u8) = .empty,
+    full: std.ArrayList(u8) = .empty,
+    full_truncated: bool = false,
     cursor: usize = 0,
     bytes: usize = 0,
     calls: usize = 0,
@@ -23,9 +26,20 @@ pub const Capture = struct {
     pub fn deinit(self: *Capture, gpa: std.mem.Allocator) void {
         self.head.deinit(gpa);
         self.tail.deinit(gpa);
+        self.full.deinit(gpa);
     }
 
     pub fn append(self: *Capture, gpa: std.mem.Allocator, text: []const u8) !void {
+        if (self.full_limit > 0 and !self.full_truncated) {
+            if (self.full.items.len == 0 and self.bytes + text.len > self.limit) {
+                try self.appendFull(gpa, self.head.items);
+                if (!self.full_truncated) try self.appendFull(gpa, self.tail.items[self.cursor..]);
+                if (!self.full_truncated) try self.appendFull(gpa, self.tail.items[0..self.cursor]);
+            }
+            if ((self.full.items.len > 0 or self.bytes + text.len > self.limit) and !self.full_truncated) {
+                try self.appendFull(gpa, text);
+            }
+        }
         self.calls += 1;
         const entry: Entry = .{ .first = self.calls, .last = self.calls, .start = self.bytes, .end = self.bytes + text.len };
         self.bytes = entry.end;
@@ -56,11 +70,25 @@ pub const Capture = struct {
         }
     }
 
+    fn appendFull(self: *Capture, gpa: std.mem.Allocator, text: []const u8) !void {
+        if (text.len == 0 or self.full_truncated) return;
+        const rem = self.full_limit -| self.full.items.len;
+        if (text.len <= rem) {
+            try self.full.appendSlice(gpa, text);
+            return;
+        }
+        try self.full.appendSlice(gpa, text[0..rem]);
+        self.full.items.len = trimEnd(self.full.items).len;
+        self.full_truncated = true;
+    }
+
     pub const Snapshot = struct {
         logs: []u8,
         entries: []Entry,
         head_bytes: usize,
         tail_start: usize,
+        full: []const u8 = "",
+        full_truncated: bool = false,
     };
 
     pub fn snapshot(self: *Capture, gpa: std.mem.Allocator) !Snapshot {
@@ -95,7 +123,10 @@ pub const Capture = struct {
             }
             try entries.append(gpa, entry);
         }
-        return .{ .logs = logs, .entries = try entries.toOwnedSlice(gpa), .head_bytes = head_bytes, .tail_start = tail_start };
+        const entry_slice = try entries.toOwnedSlice(gpa);
+        errdefer gpa.free(entry_slice);
+        const full = if (self.full.items.len > 0) try gpa.dupe(u8, self.full.items) else "";
+        return .{ .logs = logs, .entries = entry_slice, .head_bytes = head_bytes, .tail_start = tail_start, .full = full, .full_truncated = self.full_truncated };
     }
 };
 
@@ -177,5 +208,40 @@ test "metadata keeps first and last calls with exact intervening byte range" {
             try testing.expectEqual(@as(usize, 33), middle.first);
             try testing.expectEqual(calls - 32, middle.last);
         }
+    }
+}
+
+test "full_limit spills only past limit and caps at a valid UTF-8 boundary" {
+    var capture: Capture = .{ .limit = 8, .full_limit = 20 };
+    defer capture.deinit(testing.allocator);
+    try capture.append(testing.allocator, "1234");
+    try capture.append(testing.allocator, "5678");
+    {
+        const snap = try capture.snapshot(testing.allocator);
+        defer testing.allocator.free(snap.logs);
+        defer testing.allocator.free(snap.entries);
+        defer testing.allocator.free(snap.full);
+        try testing.expectEqualStrings("", snap.full);
+        try testing.expect(!snap.full_truncated);
+    }
+    try capture.append(testing.allocator, "90你");
+    {
+        const snap = try capture.snapshot(testing.allocator);
+        defer testing.allocator.free(snap.logs);
+        defer testing.allocator.free(snap.entries);
+        defer testing.allocator.free(snap.full);
+        try testing.expectEqualStrings("1234567890你", snap.full);
+        try testing.expect(!snap.full_truncated);
+    }
+    try capture.append(testing.allocator, "你你你");
+    {
+        const snap = try capture.snapshot(testing.allocator);
+        defer testing.allocator.free(snap.logs);
+        defer testing.allocator.free(snap.entries);
+        defer testing.allocator.free(snap.full);
+        try testing.expect(snap.full_truncated);
+        try testing.expect(snap.full.len <= 20);
+        try testing.expect(std.unicode.utf8ValidateSlice(snap.full));
+        try testing.expectEqualStrings("1234567890你你你", snap.full);
     }
 }

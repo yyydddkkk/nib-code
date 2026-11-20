@@ -38,6 +38,7 @@ pub const Limits = struct {
     stack_bytes: usize = 1024 * 1024,
     timeout_ms: i64 = 5 * 60 * 1000,
     max_log_bytes: usize = 64 * 1024,
+    max_full_log_bytes: usize = 16 * 1024 * 1024,
 };
 
 pub const ToolResult = union(enum) {
@@ -81,6 +82,8 @@ pub const Outcome = struct {
     log_head_bytes: usize = 0,
     log_tail_start: usize = 0,
     log_truncated: bool = false,
+    full_logs: []const u8 = "",
+    full_logs_truncated: bool = false,
     tool_bytes: u64 = 0,
     stopped: []const u8 = "",
 
@@ -90,6 +93,7 @@ pub const Outcome = struct {
         gpa.free(o.text);
         gpa.free(o.logs);
         gpa.free(o.log_entries);
+        gpa.free(o.full_logs);
         gpa.free(o.stopped);
     }
 };
@@ -131,7 +135,7 @@ pub fn eval(
         .gpa = gpa,
         .io = io,
         .host = host,
-        .logs = .{ .limit = limits.max_log_bytes },
+        .logs = .{ .limit = limits.max_log_bytes, .full_limit = limits.max_full_log_bytes },
         .js_remaining_ns = std.Io.Duration.fromMilliseconds(limits.timeout_ms).toNanoseconds(),
         .cancel = cancel,
     };
@@ -224,6 +228,8 @@ pub fn eval(
         .log_head_bytes = captured.head_bytes,
         .log_tail_start = captured.tail_start,
         .log_truncated = st.logs.bytes > limits.max_log_bytes,
+        .full_logs = captured.full,
+        .full_logs_truncated = captured.full_truncated,
     };
 }
 

@@ -129,7 +129,28 @@ pub const Background = struct {
             };
             const prefix = try std.fmt.allocPrint(gpa, "[background {s} {s} finished]\n", .{ @tagName(job.kind), job.id });
             defer gpa.free(prefix);
-            const formatted = try output.formatMessage(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes);
+            const outputs_dir = try t.outputsDir(gpa);
+            defer if (outputs_dir) |dir| gpa.free(dir);
+            const raw_full: ?[]u8 = switch (job.kind) {
+                .bash => if (parsed.value.object.get("output")) |out_val| switch (out_val) {
+                    .string => |text| blk: {
+                        const code = if (parsed.value.object.get("exit_code")) |c| switch (c) {
+                            .integer => |n| n,
+                            else => @as(i64, -1),
+                        } else @as(i64, -1);
+                        break :blk try std.fmt.allocPrint(gpa, "exit_code: {d}\n\n{s}", .{ code, text });
+                    },
+                    else => null,
+                } else null,
+                .agent => if (parsed.value.object.get("text")) |text_val| switch (text_val) {
+                    .string => |text| try gpa.dupe(u8, text),
+                    else => null,
+                } else null,
+                .run => unreachable,
+            };
+            defer if (raw_full) |raw| gpa.free(raw);
+            const save: ?output.Save = if (outputs_dir) |dir| .{ .io = t.io, .dir = dir } else null;
+            const formatted = try output.formatMessageSaved(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save, raw_full);
             defer gpa.free(formatted);
             if (job.kind == .agent) {
                 t.agent_sessions.mutex.lockUncancelable(t.io);

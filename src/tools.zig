@@ -348,6 +348,12 @@ pub const Tools = struct {
         return apis[@intFromBool(!(t.depth == 0 or t.forked))][@intFromBool(mcp_enabled)][@intFromBool(t.waitEnabled())];
     }
 
+    pub fn outputsDir(t: *const Tools, a: std.mem.Allocator) !?[]u8 {
+        const data_home = t.data_home orelse return null;
+        const session_id = t.session_id orelse return null;
+        return try std.fmt.allocPrint(a, "{s}/sessions/{s}.outputs", .{ data_home, session_id });
+    }
+
     pub fn backgroundMode(t: *const Tools) Tuning.BackgroundMode {
         return t.tuning.backgroundMode(t.depth == 0 or t.forked);
     }

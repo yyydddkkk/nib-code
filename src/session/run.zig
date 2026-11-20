@@ -129,7 +129,8 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     const remaining_steps = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
     const failed = !o.ok and !cancel.load(.acquire) and !std.mem.eql(u8, o.text, "Error: run timed out");
     try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .base = base, .arguments = call.function.arguments, .failed = failed });
-    const formatted = try output_format.format(a, o, s.cfg.limits.run_output_bytes);
+    const save: ?output_format.Save = if (try s.tools.outputsDir(a)) |dir| .{ .io = s.io, .dir = dir } else null;
+    const formatted = try output_format.formatSaved(a, o, s.cfg.limits.run_output_bytes, save);
     const referenced = if (failed) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, s.log.steps + 1, timing.run_index }) else formatted;
     const output = try output_format.stepLimitOutput(a, referenced, remaining_steps);
     const run_ms = timing.elapsed();

@@ -22,9 +22,11 @@ Logged `tool_bytes` counts host→JS UTF-8 results (serialized JSON success, err
 
 Configure `[limits].run_output_bytes` or `NIB_RUN_OUTPUT_BYTES` (16384–16777216). New system prompts reflect effective settings; resumed Sessions retain original system. Minimum preserves heading/marker room; increases affect neither console capture nor JS results. Locate with grep then read ranges; batch long multi-file bodies or print excerpts.
 
+When a Run or background task message exceeds the display budget (or console capture exceeds 64 KiB), nib saves the full UTF-8 output (up to 16 MiB) under `$NIB_HOME/sessions/<session_id>.outputs/<content-hash>.txt` (directory `0700`, file `0600`) and appends `[full output: <path>]` (or `[full output (first 16 MiB): <path>]`) inside the display budget. Untruncated outputs write nothing. Models can inspect omitted sections directly with `tools.read` or `tools.grep` without re-running commands.
+
 ## Capture limits
 
-`src/sandbox/console.zig` shares a 64 KiB body cap across the Run: fixed first 32 KiB plus rolling last 32 KiB. Single huge calls and cumulative overflow share it. UTF-8 trimming removes incomplete characters without extra body budget; JS tool returns remain unchanged.
+`src/sandbox/console.zig` shares a 64 KiB display capture cap across the Run: fixed first 32 KiB plus rolling last 32 KiB, while spilling the full stream up to 16 MiB only once a Run exceeds 64 KiB so truncated Runs can save omitted middle bytes. Single huge calls and cumulative overflow share the display cap. UTF-8 trimming removes incomplete characters without extra body budget; JS tool returns remain unchanged.
 
 Call details are bounded too: retain all up to 64 calls, otherwise first/last 32, merging middle calls into a range with original byte positions. Example for 10000 calls:
 

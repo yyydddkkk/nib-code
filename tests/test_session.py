@@ -662,7 +662,12 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         output = run_end["output"]
         assert "bytes omitted" in output and len(output.encode("utf-8")) <= 16384, output[:100]
         assert output.startswith('[entry 1 of 1 (result)]\n"' + 'x' * 100), output[:100]
-        assert output.endswith('x' * 100 + '"\n'), output[-110:]
+        assert ('x' * 100 + '"\n[full output: ') in output, output[-240:]
+        saved_match = re.search(r"\[full output: ([^\]]+)\]", output)
+        assert saved_match, output[-240:]
+        saved_text = Path(saved_match.group(1)).read_text()
+        assert saved_text.startswith('result: "' + 'x' * 100) and saved_text.endswith('x' * 100 + '"\n')
+        assert len(saved_text) > 32768
         requests = read_requests(requests_path)
         assert requests[-1]["messages"][-1]["content"] == output
         limited_id = limited[0]["start"]["session_id"]
@@ -683,6 +688,10 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         assert output.startswith("[entry 1 of 3 (console)]\nleft short-left\n")
         assert "[entry 2 of 3 (console)]\nmiddle " in output
         assert "-middle-tail\n[entry 3 of 3 (console)]\nright short-right\n" in output
+        saved_entries = re.search(r"\[full output: ([^\]]+)\]", output)
+        assert saved_entries, output[-240:]
+        saved_entries_text = Path(saved_entries.group(1)).read_text()
+        assert "left short-left\nmiddle " + middle + "\nright short-right\n" == saved_entries_text
         omitted = re.search(r"\[(\d+) of (\d+) bytes omitted\]", output)
         assert omitted and 0 < int(omitted[1]) < int(omitted[2]), output[:100]
         assert int(omitted[2]) == len(("middle " + middle + "\n").encode("utf-8"))

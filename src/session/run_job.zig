@@ -111,7 +111,8 @@ pub const Job = struct {
         const o = job.outcome.?;
         const cwd = try std.process.currentPathAlloc(job.t.io, job.gpa);
         defer job.gpa.free(cwd);
-        const formatted = try output.format(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes);
+        const save: ?output.Save = if (try job.t.outputsDir(a)) |dir| .{ .io = job.t.io, .dir = dir } else null;
+        const formatted = try output.formatSaved(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save);
         const failed = job.state == .failed;
         const text = if (failed)
             try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, job.step, job.timing.run_index })

@@ -1,7 +1,15 @@
 const std = @import("std");
 const sandbox = @import("../sandbox.zig");
+const atomic_file = @import("../tools/atomic_file.zig");
 
 pub const max_bytes = 16 * 1024;
+pub const max_saved_bytes = 16 * 1024 * 1024;
+
+pub const Save = struct {
+    io: std.Io,
+    dir: []const u8,
+    write: bool = true,
+};
 
 test "configured display budget leaves JS data intact" {
     const t = std.testing;
@@ -75,19 +83,26 @@ fn omittedLines(text: []const u8, cut_start: usize, cut_end: usize) ?[2]usize {
 }
 
 pub fn format(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize) ![]u8 {
+    return formatSaved(gpa, o, limit, null);
+}
+
+pub fn formatSaved(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize, save: ?Save) ![]u8 {
     if (o.hook.len > 0) {
         var original = o;
         original.hook = "";
-        const body = try format(gpa, original, limit / 2);
+        const body = try formatSaved(gpa, original, limit / 2, save);
         defer gpa.free(body);
-        const payload = try renderLimit(gpa, .{ .ok = true, .text = @constCast(o.hook), .logs = @constCast("") }, limit - body.len - 1);
+        const payload = try renderSaved(gpa, .{ .ok = true, .text = @constCast(o.hook), .logs = @constCast("") }, limit - body.len - 1, save);
         defer gpa.free(payload);
         return std.fmt.allocPrint(gpa, "{s}\n{s}", .{ body, payload });
     }
-    const suffix = if (o.stopped.len > 0) o.stopped else if (!o.ok) "[Run script failed. Correct the script and continue the task; this error is not a reason to end the Turn.]" else return renderLimit(gpa, o, limit);
-    const body = try renderLimit(gpa, o, limit - suffix.len - 1);
-    defer gpa.free(body);
-    return std.fmt.allocPrint(gpa, "{s}\n{s}", .{ body, suffix });
+    const suffix: ?[]const u8 = if (o.stopped.len > 0) o.stopped else if (!o.ok) "[Run script failed. Correct the script and continue the task; this error is not a reason to end the Turn.]" else null;
+    if (suffix) |s| {
+        const body = try renderSaved(gpa, o, limit - s.len - 1, save);
+        defer gpa.free(body);
+        return std.fmt.allocPrint(gpa, "{s}\n{s}", .{ body, s });
+    }
+    return renderSaved(gpa, o, limit, save);
 }
 
 pub fn stepLimitOutput(a: std.mem.Allocator, output: []const u8, remaining_steps: ?usize) ![]const u8 {
@@ -97,9 +112,98 @@ pub fn stepLimitOutput(a: std.mem.Allocator, output: []const u8, remaining_steps
 }
 
 pub fn formatMessage(gpa: std.mem.Allocator, prefix: []const u8, json: []const u8, limit: usize) ![]u8 {
-    const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(json), .logs = @constCast("") }, limit - prefix.len);
+    return formatMessageSaved(gpa, prefix, json, limit, null, null);
+}
+
+pub fn formatMessageSaved(gpa: std.mem.Allocator, prefix: []const u8, json: []const u8, limit: usize, save: ?Save, raw_full: ?[]const u8) ![]u8 {
+    const budget = limit - prefix.len;
+    if (json.len <= budget) return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, json });
+    const footer: ?[]u8 = if (save) |target| blk: {
+        const full = raw_full orelse json;
+        const partial = full.len > max_saved_bytes;
+        const slice = if (partial) trimEnd(full[0..max_saved_bytes]) else full;
+        break :blk saveBytes(gpa, target, slice, partial) catch null;
+    } else null;
+    defer if (footer) |f| gpa.free(f);
+    if (footer) |f| if (f.len + 2 < budget / 2) {
+        const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(json), .logs = @constCast("") }, budget - f.len - 2);
+        defer gpa.free(payload);
+        const nl: []const u8 = if (payload.len > 0 and payload[payload.len - 1] == '\n') "" else "\n";
+        return std.fmt.allocPrint(gpa, "{s}{s}{s}{s}\n", .{ prefix, payload, nl, f });
+    };
+    const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(json), .logs = @constCast("") }, budget);
     defer gpa.free(payload);
     return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, payload });
+}
+
+fn renderSaved(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize, save: ?Save) ![]u8 {
+    const logs = std.mem.trimEnd(u8, o.logs, "\n");
+    const value: []const u8 = if (o.ok and std.mem.eql(u8, o.text, "undefined")) "" else o.text;
+    const sep: []const u8 = if (logs.len > 0 and value.len > 0) "\n" else "";
+    const label: []const u8 = if (o.ok and value.len > 0) "result: " else "";
+    if (!o.log_truncated and logs.len + value.len + sep.len + label.len <= limit) {
+        if (logs.len == 0 and value.len == 0) return gpa.dupe(u8, "(no output)");
+        return std.fmt.allocPrint(gpa, "{s}{s}{s}{s}", .{ logs, sep, label, value });
+    }
+    const footer: ?[]u8 = if (save) |target| saveOutcome(gpa, o, target) catch null else null;
+    defer if (footer) |f| gpa.free(f);
+    if (footer) |f| if (f.len + 2 < limit / 2) {
+        const body = try renderLimit(gpa, o, limit - f.len - 2);
+        defer gpa.free(body);
+        const nl: []const u8 = if (body.len > 0 and body[body.len - 1] == '\n') "" else "\n";
+        return std.fmt.allocPrint(gpa, "{s}{s}{s}\n", .{ body, nl, f });
+    };
+    return renderLimit(gpa, o, limit);
+}
+
+fn saveOutcome(gpa: std.mem.Allocator, o: sandbox.Outcome, target: Save) !?[]u8 {
+    const raw_logs: []const u8 = if (o.full_logs.len > 0) o.full_logs else if (!o.log_truncated) o.logs else return null;
+    const logs = std.mem.trimEnd(u8, raw_logs, "\n");
+    const value: []const u8 = if (o.ok and std.mem.eql(u8, o.text, "undefined")) "" else o.text;
+    const sep: []const u8 = if (logs.len > 0 and value.len > 0) "\n" else "";
+    const label: []const u8 = if (o.ok and value.len > 0) "result: " else "";
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var partial = o.full_logs_truncated;
+    for ([_][]const u8{ logs, sep, label, value }) |part| {
+        if (part.len == 0) continue;
+        const rem = max_saved_bytes -| out.items.len;
+        if (part.len <= rem) {
+            try out.appendSlice(gpa, part);
+        } else {
+            try out.appendSlice(gpa, part[0..rem]);
+            out.items.len = trimEnd(out.items).len;
+            partial = true;
+            break;
+        }
+    }
+    if (out.items.len > 0 and out.items[out.items.len - 1] != '\n' and out.items.len < max_saved_bytes) {
+        try out.append(gpa, '\n');
+    }
+    return try saveBytes(gpa, target, out.items, partial);
+}
+
+fn saveBytes(gpa: std.mem.Allocator, target: Save, data: []const u8, partial: bool) ![]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    const file = try std.fmt.allocPrint(gpa, "{s}.txt", .{std.fmt.bytesToHex(digest[0..16].*, .lower)});
+    defer gpa.free(file);
+    const path = try std.fs.path.join(gpa, &.{ target.dir, file });
+    defer gpa.free(path);
+    if (target.write) {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDir(target.io, target.dir, .fromMode(0o700)) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            error.FileNotFound => try cwd.createDirPath(target.io, target.dir),
+            else => return err,
+        };
+        const present = if (cwd.statFile(target.io, path, .{})) |stat| stat.size == data.len else |_| false;
+        if (!present) _ = try atomic_file.replace(target.io, gpa, path, data, .{ .permissions = .fromMode(0o600), .sync = false });
+    }
+    return if (partial)
+        std.fmt.allocPrint(gpa, "[full output (first 16 MiB): {s}]", .{path})
+    else
+        std.fmt.allocPrint(gpa, "[full output: {s}]", .{path});
 }
 
 fn renderLimit(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize) ![]u8 {
@@ -593,4 +697,74 @@ test "budget holds for every size around the marker with line ranges" {
         defer testing.allocator.free(out);
         try testing.expect(out.len <= max_bytes);
     }
+}
+
+test "formatSaved writes full truncated output once and skips small outputs" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/outputs", .{tmp.sub_path});
+    defer testing.allocator.free(dir);
+    const save: Save = .{ .io = testing.io, .dir = dir };
+
+    const small = try evaluate("console.log('short');", .{});
+    defer small.deinit(testing.allocator);
+    const small_out = try formatSaved(testing.allocator, small, max_bytes, save);
+    defer testing.allocator.free(small_out);
+    try testing.expectEqualStrings("short", small_out);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, dir, .{}));
+
+    const big = try evaluate("console.log('HEAD\\n' + 'x'.repeat(40000) + '\\nMIDDLE-NEEDLE\\n' + 'y'.repeat(40000) + '\\nTAIL');", .{});
+    defer big.deinit(testing.allocator);
+    try testing.expect(big.log_truncated);
+    const out1 = try formatSaved(testing.allocator, big, max_bytes, save);
+    defer testing.allocator.free(out1);
+    try testing.expect(out1.len <= max_bytes);
+    const prefix = "[full output: ";
+    const start = std.mem.indexOf(u8, out1, prefix).? + prefix.len;
+    const end = std.mem.indexOfScalarPos(u8, out1, start, ']').?;
+    const saved_path = out1[start..end];
+    const saved_data = try std.Io.Dir.cwd().readFileAlloc(testing.io, saved_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(saved_data);
+    try testing.expect(std.mem.startsWith(u8, saved_data, "HEAD\n"));
+    try testing.expect(std.mem.indexOf(u8, saved_data, "\nMIDDLE-NEEDLE\n") != null);
+    try testing.expect(std.mem.endsWith(u8, saved_data, "\nTAIL\n"));
+
+    // Identical output deduplicates to the exact same formatted text and path, and dry-run matches without writing.
+    const out2 = try formatSaved(testing.allocator, big, max_bytes, .{ .io = testing.io, .dir = dir, .write = false });
+    defer testing.allocator.free(out2);
+    try testing.expectEqualStrings(out1, out2);
+
+    var partial = big;
+    partial.full_logs_truncated = true;
+    const partial_out = try formatSaved(testing.allocator, partial, max_bytes, .{ .io = testing.io, .dir = dir, .write = false });
+    defer testing.allocator.free(partial_out);
+    try testing.expect(partial_out.len <= max_bytes);
+    try testing.expect(std.mem.indexOf(u8, partial_out, "[full output (first 16 MiB): ") != null);
+}
+
+test "formatMessageSaved writes raw full background output only when truncated" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/bg-outputs", .{tmp.sub_path});
+    defer testing.allocator.free(dir);
+    const save: Save = .{ .io = testing.io, .dir = dir };
+
+    const short_msg = try formatMessageSaved(testing.allocator, "[background bash b1 finished]\n", "{\"exit_code\":0,\"output\":\"ok\"}", max_bytes, save, "exit_code: 0\n\nok");
+    defer testing.allocator.free(short_msg);
+    try testing.expect(std.mem.indexOf(u8, short_msg, "[full output:") == null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, dir, .{}));
+
+    const long_body = try testing.allocator.alloc(u8, 24 * 1024);
+    defer testing.allocator.free(long_body);
+    @memset(long_body, 'a');
+    @memcpy(long_body[12000..12006], "NEEDLE");
+    const msg = try formatMessageSaved(testing.allocator, "[background bash b1 finished]\n", long_body, max_bytes, save, "exit_code: 1\n\nline1\nNEEDLE\nline3\n");
+    defer testing.allocator.free(msg);
+    try testing.expect(msg.len <= max_bytes);
+    const prefix = "[full output: ";
+    const start = std.mem.indexOf(u8, msg, prefix).? + prefix.len;
+    const end = std.mem.indexOfScalarPos(u8, msg, start, ']').?;
+    const saved = try std.Io.Dir.cwd().readFileAlloc(testing.io, msg[start..end], testing.allocator, .unlimited);
+    defer testing.allocator.free(saved);
+    try testing.expectEqualStrings("exit_code: 1\n\nline1\nNEEDLE\nline3\n", saved);
 }
