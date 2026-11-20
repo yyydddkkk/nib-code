@@ -38,7 +38,7 @@ pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .new = .{ .help = "new session" },
     .@"resume" = .{ .args = "<id>", .help = "resume a session", .choices = .sessions, .needs_arg = true },
     .undo = .{ .help = "undo last edited Turn; edit/write only", .while_busy = true },
-    .compact = .{ .help = "compact earlier history" },
+    .compact = .{ .args = "[focus]", .help = "compact earlier history" },
     .provider = .{ .args = "[service]", .help = "sign in and switch service", .choices = .services, .needs_arg = true },
     .model = .{ .args = "<model>", .help = "switch model and service", .choices = .models, .needs_arg = true },
     .effort = .{ .group = .send, .args = "[level]", .help = "reasoning effort", .choices = .efforts },
@@ -491,7 +491,7 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
         },
         .compact => {
             app.dropPrediction();
-            app.turn = try Turn.spawn(gpa, session, app.loop, try gpa.dupe(u8, line), true);
+            app.turn = try Turn.spawn(gpa, session, app.loop, try gpa.dupe(u8, arg), true);
             app.live_steps = 0;
             app.turn_runs = 0;
             app.activity = .start(app.io, .compacting);

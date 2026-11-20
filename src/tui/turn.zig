@@ -87,7 +87,7 @@ pub const Turn = struct {
         const sink: Sink = .{ .ctx = t, .emit = emit, .onModelActivity = modelActivity, .onToolActivity = toolActivity, .onUserInserted = userInserted };
         if (compact) {
             errdefer t.session.tools.background.stop(t.gpa);
-            _ = try t.session.compact(sink, &t.cancel, detail);
+            _ = try t.session.compactWithFocus(t.text, sink, &t.cancel, detail);
         } else try t.session.turnWithImages(t.text, t.images, sink, &t.cancel, detail);
     }
 

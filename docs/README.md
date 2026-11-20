@@ -61,7 +61,10 @@ Tool descriptions and system prompts state facts and costs for models to weigh, 
   - [0020 Providers are data; at most three wire protocols](adr/0020-providers.md)
   - [0021 Images: attach by path or clipboard, store by reference, view separate from read](adr/0021-images.md)
   - [0022 Provider sign-in: /provider, credential store, nib-owned Codex OAuth](adr/0022-provider-sign-in.md)
+  - [0023 Two sandboxed hook events](adr/0023-hooks.md)
   - [0024 Opt-in MCP tools](adr/0024-mcp-tools.md)
+  - [0025 Model profiles](adr/0025-model-profiles.md)
+  - [0026 Tuning](adr/0026-tuning.md)
   - [0027 Opt-in plugin packages](adr/0027-plugin-packages.md)
 - [ask-json.md](ask-json.md): ask --json NDJSON events, progress, usage
 - [session-log.md](session-log.md): logs, resume/cancellation, timing, measurement definitions
@@ -78,14 +81,14 @@ Tool descriptions and system prompts state facts and costs for models to weigh, 
 - [developing.md](developing.md): feature worktrees and daily `nib-dev` installs from local `dev`
 - [ci.md](ci.md): PR gate, full validation, and release-metadata fast path
 - [releasing.md](releasing.md): stable release preparation and publication
-- [releases/](releases/): release notes ([0.4.0](releases/0.4.0.md), [0.3.0](releases/0.3.0.md), [0.2.0](releases/0.2.0.md))
+- [releases/](releases/): release notes (latest: [0.19.0](releases/0.19.0.md))
 
 ## Choices without ADRs
 
 These are easily reversible; a note suffices:
 
 - **Unified user directory `NIB_HOME` (default ~/.nib).** Like ~/.codex / ~/.claude, keep global instructions, nonsecret configuration, and Sessions together for discovery/backup. No XDG paths or automatic migration. `config.toml` uses a small custom TOML subset rather than a dependency for a few scalar keys. No API keys/tokens in editable, backed-up configuration; Codex owns its login. TUI `/effort` saves confirmed choices automatically, atomically updating top-level effort while preserving other lines; default deletes the key, CLI overrides do not persist. Defer project configuration and another merge policy; use `AGENTS.md` for project conventions. Format/precedence: [config.md](config.md).
-- Providers support Codex Responses (default, gpt-6.2-sol) and Chat Completions (DeepSeek); see [0011](adr/0011-provider-wire-protocols.md).
+- Built-in providers (Codex, Anthropic, OpenAI, DeepSeek, xAI) and custom endpoints share three wire protocols; see [0011](adr/0011-provider-wire-protocols.md), [0020](adr/0020-providers.md), and [providers.md](providers.md).
 - TUI uses libvaxis. / commands: `/help`, `/new`, `/resume <id>`, `/compact`, `/effort [level]`, `/copy`, `/reflect [focus]`, `/js <code>`, `/tasks`, `/stop <id>`, `/undo`, `/status`, defined in one `src/tui/commands.zig` table generating help, command candidates, and argument candidates. Typing / lists prefix matches above input: ↑↓ select, Tab completes, Enter executes (commands needing arguments complete first and wait), Esc closes. `/resume` lists Sessions with user messages in the current directory, newest first; empty Sessions are excluded, also by -c. `/help` and `/copy` work during Turns; `/copy` uses terminal OSC 52 and has no effect without terminal support.
 
   Layout: transcript, one reserved status row, / menu, rounded input flush with the last row, hints. The status row holds the activity line when busy, browsing history, or showing temporary feedback, and is blank otherwise; while it has text, a blank row above it separates it from the transcript. Busy shows spinner, phase (waiting for model / generating response / writing Run / running tools / waiting for background / retrying / compacting), cumulative Turn time, and Esc to cancel; history shows ↑ history · PgDn to return; copy feedback shares the row. These states may coexist. Input uses at least one line and at most 1/3 screen height, scrolling internally to keep the cursor visible; empty input shows muted Message nib · / for commands. The bottom border shows model and context percentage from available usage, with a quiet elapsed-time Turn footer sharing its row with any file-change summary; Run/Step counts, token usage, tool data, detailed timing, and cache data live in /status. Update after each request's usage and complete Step commit, without waiting for Turn end; ctx estimates latest committed context and refreshes after compaction. Do not infer unreported tokens from streamed text. Omit fields right-to-left when space runs out, truncating model names only if needed and preserving corners. Below 8 rows hide hints; below 6 rows or 8 columns degrade to › . Hints list only implemented send/newline/command/ctrl+o actions.
@@ -108,7 +111,6 @@ Ideas not implemented now. Each records why deferred and when to reconsider, avo
 Second-phase input plans:
 
 - **Withdraw individual uninserted messages.** Step-boundary interjections, end continuation, and Esc restoration exist; individual queued-message selection/withdrawal awaits real demand for finer control.
-- **@ file references.** Reuse / menu and `walk.zig`, inserting paths only. First finish compatibility between the single candidate menu and new layout, then add triggers/path filters.
 - **Cross-process input history `~/.nib/history.jsonl` and ctrl+r search.** Current scope is in-process drafts and Session-log resume. Persistent history needs sensitive-input handling, retention, and multiprocess appends; search needs separate interaction state, designed together in phase two.
 - **ctrl+g edits drafts through $EDITOR.** Needs terminal suspension/restoration, temporary cleanup, and reimport after paste expansion; integrate once the draft model stabilizes in phase two.
 
@@ -116,6 +118,7 @@ Run tool concurrency, nib ask --json, and `tools.agent` are implemented; see ADR
 
 ## Measurements
 
+- [Current prompt footprint, binary size, RSS, and comparisons](benchmarks.md)
 - [Native tool scheduling benchmark](scheduler-benchmark.md): model-free ReleaseFast phase timings, recording controls, observer overhead, and worker-reuse decision.
 
 Observations, not goals or prohibitions. Numbers change; prefer latest measurements and date updates.
@@ -128,16 +131,15 @@ For SQL analysis, `python3 scripts/stats_db.py` builds a private, rebuildable SQ
 
 Tool/bash statistics estimate JS/static-shell call sites, not actual loop/dynamic execution counts. Errors count diagnostic signatures per Run (categories may overlap), with interruptions separate; source/read bodies are not matched as failures. Caught JS tool errors and bash exit_code 127 may classify without failing a Run. Synthetic-log tests: `python3 tests/test_stats.py`; real Step metadata/mock counts: tests/test_session.py.
 
+Microbenchmarks (historical 2026-11-01 baselines; see [benchmarks.md](benchmarks.md) for current binary size, RSS, and prompt footprint):
+
 | Item | Measurement | Alert threshold | Method |
 |---|---|---|---|
-| Source lines (`src/` + `build.zig`, including tests) | 3766 (2026-11-01, after concurrency, NDJSON, subagents) | — | `wc -l build.zig src/**/*.zig` (zsh) |
 | TUI frame draw, 5000 entries, 100×24 | Bottom following 102.5 → 29.7 µs; 1200 lines up 1149.5 → 57.2 µs (2026-11-01, ReleaseFast, before → after height cache) | — | After warmup, median of 5 group means, 32 frames/group, draw only (feat/tui-polish report) |
 | nib js '1+1' mean including startup | 1.6 ms (2026-11-01, ReleaseFast) | — | Average of 100 iterations |
 | Tool Promise.all / successive await: two sleep 0.3 | 307 / 611 ms (2026-11-01, Debug) | — | `src/tools.zig` tests, ADR 0009 |
 | Child startup to NDJSON start (including log sync, no TLS) | Debug median 11.82 ms; ReleaseFast median 1.30 ms (2026-11-01) | — | `tests/test_session.py`, 10 runs, ADR 0010 |
 | Above command peak RSS | 3.7 MB (2026-11-01) | — | `/usr/bin/time -f %M` |
-| Binary size (ReleaseFast, stripped) | 1.9 MB (2026-11-01) | — | ls -l after strip |
-| Idle TUI PSS (one Turn, no TLS) | 3.08 MB/process, 30.8 MB for 10 (2026-11-01, ReleaseFast) | — | 10 TUIs each completing one local-mock Turn; read `/proc/<pid>/smaps_rollup` Pss |
 | One HTTPS request peak RSS (including TLS) | 7.6 MB (2026-11-01, ReleaseFast) | — | `/usr/bin/time -f %M nib ask hi` (invalid key, 401) |
 
 See [tui-ux.md](tui-ux.md) for background-task management, waiting phases, and recovery notices.

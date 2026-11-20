@@ -110,7 +110,17 @@ pub fn edit(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     defer gpa.free(data);
 
     const count = std.mem.count(u8, data, v.old_text);
-    if (count == 0) return fail(gpa, "old_text not found in {s}", .{v.path});
+    if (count == 0) {
+        const changed = if (dir.statFile(t.io, path, .{})) |stat| t.file_state.changed(t.io, path, stat) else |_| false;
+        const closest = closestLine(data, v.old_text);
+        if (changed and closest != null)
+            return fail(gpa, "old_text not found in {s}; file changed since last read/write; closest line: L{d}", .{ v.path, closest.? });
+        if (changed)
+            return fail(gpa, "old_text not found in {s}; file changed since last read/write", .{v.path});
+        if (closest) |line_no|
+            return fail(gpa, "old_text not found in {s}; closest line: L{d}", .{ v.path, line_no });
+        return fail(gpa, "old_text not found in {s}", .{v.path});
+    }
     if (count > 1 and !v.all)
         return fail(gpa, "old_text matches {d} times in {s}; include more surrounding text or pass all: true", .{ count, v.path });
 
@@ -170,6 +180,28 @@ pub fn write(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
     return .{ .ok = try std.fmt.allocPrint(gpa, "{{\"bytes\":{d}}}", .{v.content.len}) };
 }
 
+fn closestLine(data: []const u8, old_text: []const u8) ?usize {
+    var needle: []const u8 = "";
+    var old_lines = std.mem.splitScalar(u8, old_text, '\n');
+    while (old_lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) {
+            needle = trimmed;
+            break;
+        }
+    }
+    if (needle.len == 0) return null;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    var line_no: usize = 1;
+    var substring_hit: ?usize = null;
+    while (lines.next()) |line| : (line_no += 1) {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.eql(u8, trimmed, needle)) return line_no;
+        if (substring_hit == null and needle.len >= 8 and std.mem.indexOf(u8, trimmed, needle) != null) substring_hit = line_no;
+    }
+    return substring_hit;
+}
+
 const testing = std.testing;
 const callTool = tools.callTool;
 const freeResult = tools.freeResult;
@@ -212,6 +244,39 @@ test "write then edit" {
     const content = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(1024));
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("one 2 2\n", content);
+}
+
+test "edit reports factual hints when old_text is not found" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "h.txt", .data = "alpha\n    beta_target()\ngamma\n" });
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/h.txt", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    const home = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer testing.allocator.free(home);
+    var t: Tools = .{ .io = testing.io, .home = home };
+    defer t.file_state.deinit(testing.allocator);
+
+    const read_args = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\"}}", .{path});
+    defer testing.allocator.free(read_args);
+    const rr = try read(&t, testing.allocator, read_args);
+    defer freeResult(rr);
+    try testing.expect(rr == .ok);
+
+    // Wrong indentation: closest line hint without claiming external change.
+    const indent_args = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"old_text\":\"\\tbeta_target()\\n\",\"new_text\":\"x\"}}", .{path});
+    defer testing.allocator.free(indent_args);
+    const ir = try edit(&t, testing.allocator, indent_args);
+    defer freeResult(ir);
+    try testing.expect(std.mem.indexOf(u8, ir.err, "closest line: L2") != null);
+    try testing.expect(std.mem.indexOf(u8, ir.err, "file changed") == null);
+
+    // External modification: reports both external change and closest line.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "h.txt", .data = "changed\nalpha\n    beta_target()\ngamma\n" });
+    const cr = try edit(&t, testing.allocator, indent_args);
+    defer freeResult(cr);
+    try testing.expect(std.mem.indexOf(u8, cr.err, "file changed since last read/write") != null);
+    try testing.expect(std.mem.indexOf(u8, cr.err, "closest line: L3") != null);
 }
 
 test "read slices lines and reports errors" {

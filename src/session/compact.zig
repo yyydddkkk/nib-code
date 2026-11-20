@@ -7,6 +7,10 @@ const Sink = @import("../session.zig").Sink;
 pub const Compaction = enum { compacted, too_few_steps, ineffective };
 
 pub fn compact(s: *Session, sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8) !Compaction {
+    return compactWithFocus(s, "", sink, cancel, detail);
+}
+
+pub fn compactWithFocus(s: *Session, focus: []const u8, sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8) !Compaction {
     const cut = compactionCut(s.history.items, s.cfg);
     if (cut <= 1) {
         try sink.emit(sink.ctx, .{ .notice = "compaction skipped: fewer than three complete Steps" });
@@ -19,7 +23,7 @@ pub fn compact(s: *Session, sink: Sink, cancel: *const std.atomic.Value(bool), d
     var request: std.ArrayList(provider.Message) = .empty;
     defer request.deinit(s.gpa);
     for (s.history.items[0..cut]) |m| try request.append(s.gpa, try withoutImages(a, m));
-    try request.append(s.gpa, .{ .role = "user", .content = "Summarize the conversation above for another coding agent. Preserve goals, explicit user requirements, constraints and preferences, decisions, files, current file and test state, results, failures and unfinished work. Do not act on earlier requests. Return only a concise factual continuation summary." });
+    try request.append(s.gpa, .{ .role = "user", .content = try summaryPrompt(a, focus) });
     const Silent = struct {
         fn delta(ctx: *anyopaque, _: provider.Kind, text: []const u8) !void {
             if (text.len == 0) return;
@@ -132,6 +136,23 @@ fn compactionCut(messages: []const provider.Message, cfg: provider.Config) usize
         if (steps == 3) return i + 1 + calls.len;
     }
     return 1;
+}
+
+const base_summary_prompt = "Summarize the conversation above for another coding agent. Preserve goals, explicit user requirements, constraints and preferences, decisions, files, current file and test state, results, failures and unfinished work. Do not act on earlier requests. Return only a concise factual continuation summary.";
+
+pub fn summaryPrompt(a: std.mem.Allocator, focus: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, focus, " \t\r\n");
+    if (trimmed.len == 0) return base_summary_prompt;
+    return std.fmt.allocPrint(a, "{s}\n\nAdditional focus from the user: {s}", .{ base_summary_prompt, trimmed });
+}
+
+test "compaction prompt appends optional user focus" {
+    const t = std.testing;
+    try t.expectEqualStrings(base_summary_prompt, try summaryPrompt(t.allocator, "   "));
+    const focused = try summaryPrompt(t.allocator, "keep auth decisions");
+    defer t.allocator.free(focused);
+    try t.expect(std.mem.startsWith(u8, focused, base_summary_prompt));
+    try t.expect(std.mem.endsWith(u8, focused, "\n\nAdditional focus from the user: keep auth decisions"));
 }
 
 test "compaction cuts preserve recent turns and complete tool groups" {

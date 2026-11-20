@@ -357,6 +357,7 @@ pub const Session = struct {
 
     pub const Compaction = compaction.Compaction;
     pub const compact = compaction.compact;
+    pub const compactWithFocus = compaction.compactWithFocus;
     const autoCompact = compaction.autoCompact;
     pub const Ran = runner.Ran;
     pub const run = runner.run;
