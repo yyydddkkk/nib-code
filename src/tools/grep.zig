@@ -65,6 +65,7 @@ pub fn search(io: std.Io, gpa: std.mem.Allocator, options: Options, walk_options
         .slots = try a.alloc([]const Match, files.len),
         .regex = compiled,
         .needle = if (options.literal and !options.ignore_case) options.pattern else null,
+        .required_literal = requiredLiteral(options),
         .context = options.context,
         .limit = limit,
         .cancel = walk_options.cancel,
@@ -106,6 +107,7 @@ const Shared = struct {
     slots: [][]const Match,
     regex: regex.Regex,
     needle: ?[]const u8,
+    required_literal: ?[]const u8,
     context: usize,
     limit: usize,
     cancel: ?*const std.atomic.Value(bool),
@@ -146,6 +148,10 @@ const Shared = struct {
         const data = std.Io.Dir.cwd().readFileAlloc(s.io, file.absolute, s.gpa, .limited(max_file)) catch return &.{};
         defer s.gpa.free(data);
         if (std.mem.indexOfScalar(u8, data[0..@min(data.len, 8192)], 0) != null) return &.{};
+
+        if (s.required_literal) |needle| {
+            if (std.mem.indexOf(u8, data, needle) == null) return &.{};
+        }
 
         var lines: std.ArrayList(LineMatch) = .empty;
         defer lines.deinit(s.gpa);
@@ -290,6 +296,32 @@ fn escape(a: std.mem.Allocator, literal: []const u8) ![]const u8 {
     return out.items;
 }
 
+// shortcut: only whole-word ASCII literals and anchored ASCII prefixes, use a regex parser for broader extraction.
+fn requiredLiteral(options: Options) ?[]const u8 {
+    if (options.literal or options.ignore_case) return null;
+    const pattern = options.pattern;
+
+    if (pattern.len >= 7 and std.mem.startsWith(u8, pattern, "\\b") and
+        std.mem.endsWith(u8, pattern, "\\b"))
+    {
+        const word = pattern[2 .. pattern.len - 2];
+        for (word) |byte| if (!asciiWord(byte)) return null;
+        return word;
+    }
+
+    if (pattern.len < 4 or pattern[0] != '^') return null;
+    if (std.mem.indexOfScalar(u8, pattern, '|') != null) return null;
+    var end: usize = 1;
+    while (end < pattern.len and (asciiWord(pattern[end]) or pattern[end] == ' ')) : (end += 1) {}
+    if (end < 4) return null;
+    if (end < pattern.len and std.mem.indexOfScalar(u8, ".[(\\$", pattern[end]) == null) return null;
+    return pattern[1..end];
+}
+
+fn asciiWord(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_';
+}
+
 const testing = std.testing;
 
 fn fixture(tmp: *testing.TmpDir) !void {
@@ -336,6 +368,34 @@ test "grep finds regex matches in path order, skipping ignored and binary files"
     var capped = try run(root, .{ .pattern = "alpha", .limit = 1 });
     defer capped.deinit();
     try testing.expect(capped.result.truncated);
+}
+
+test "grep prefilters only required case-sensitive literals" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "text",
+        .data = "中文\npub fn findThing(\nSessionState\nSession\nSESSION\nbeta\nalph\n",
+    });
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/text", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+
+    const cases: []const struct { options: Options, required: ?[]const u8, lines: []const usize } = &.{
+        .{ .options = .{ .pattern = "^pub fn find[A-Za-z_]*\\(" }, .required = "pub fn find", .lines = &.{2} },
+        .{ .options = .{ .pattern = "\\bSession\\b" }, .required = "Session", .lines = &.{4} },
+        .{ .options = .{ .pattern = "\\bMissing\\b" }, .required = "Missing", .lines = &.{} },
+        .{ .options = .{ .pattern = "\\bsession\\b", .ignore_case = true }, .required = null, .lines = &.{ 4, 5 } },
+        .{ .options = .{ .pattern = "^alpha|beta" }, .required = null, .lines = &.{6} },
+        .{ .options = .{ .pattern = "^alpha?" }, .required = null, .lines = &.{7} },
+        .{ .options = .{ .pattern = "^alpha{0,2}" }, .required = null, .lines = &.{7} },
+    };
+    for (cases) |case| {
+        try testing.expectEqualDeep(case.required, requiredLiteral(case.options));
+        var result = try run(path, case.options);
+        defer result.deinit();
+        try testing.expectEqual(case.lines.len, result.result.matches.len);
+        for (case.lines, result.result.matches) |expected, hit| try testing.expectEqual(expected, hit.line);
+    }
 }
 
 test "grep handles UTF-8, literals, case and context" {
