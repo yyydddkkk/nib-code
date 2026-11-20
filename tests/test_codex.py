@@ -164,8 +164,11 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert headers["chatgpt-account-id"] == "fake-account-initial"
         assert headers["openai-beta"] == "responses=experimental" and headers["originator"] == "nib"
         assert body["model"] == "gpt-6.2-sol" and body["store"] is False and body["stream"] is True
-        assert "You are nib" in body["instructions"]
-        assert "effort-specific" not in body["instructions"] and "run's effort" not in body["instructions"]
+        assert body["instructions"] == "You are a helpful assistant."
+        assert body["input"][0]["role"] == "developer"
+        system_text = body["input"][0]["content"]
+        assert "You are nib" in system_text
+        assert "effort-specific" not in system_text and "run's effort" not in system_text
         assert "reasoning.encrypted_content" in body["include"]
         assert "messages" not in body
         assert body["tools"][1]["type"] == "function" and body["tools"][1]["name"] == "rerun"
@@ -178,7 +181,7 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         assert_cache_key([request], session)
         history, records = replay(tmp / f"nib/sessions/{session}.jsonl")
         assert records[0]["provider"] == "codex" and records[0]["model"] == "gpt-6.2-sol"
-        base = body["instructions"].split("\n\nInstructions below apply in order; later instructions take priority.\n", 1)[0]
+        base = system_text.split("\n\nInstructions below apply in order; later instructions take priority.\n", 1)[0]
         assert records[0]["system_sha"] == hashlib.sha256(base.encode()).hexdigest()[:12]
         reasoning = history[-1]["reasoning"]
         assert reasoning["provider"] == "codex"
@@ -349,7 +352,8 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
             assert report["errors"]["provider_failure"]["count"] == 1, report
             assert report["overall"]["steps"] == 0 and report["usage"]["total_tokens"] == 0, report
             ask("plain text", "--resume", failed_id)
-            assert requests()[-1]["body"]["input"] == [{"role": "user", "content": "plain text"}], requests()[-1]
+            resumed_input = requests()[-1]["body"]["input"]
+            assert len(resumed_input) == 2 and resumed_input[0]["role"] == "developer" and resumed_input[1] == {"role": "user", "content": "plain text"}, requests()[-1]
         retrying = subprocess.Popen([str(BIN), "ask", "--json", "stream retry cancel"], cwd=cwd, env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:

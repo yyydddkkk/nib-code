@@ -79,7 +79,7 @@ def record(fields):
 
 def serve(handler, body, provider):
     messages = body.get("messages", []) if provider == "chat_completions" else body.get("input", [])
-    systems = [content(m) for m in messages if m.get("role") == "system"]
+    systems = [content(m) for m in messages if m.get("role") == "system" or (m.get("role") == "developer" and content(m) == SYSTEM)]
     if body.get("instructions") == SYSTEM:
         systems.append(SYSTEM)
     if SYSTEM not in systems:

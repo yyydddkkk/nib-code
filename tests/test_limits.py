@@ -122,7 +122,11 @@ class AgentLimits(unittest.TestCase):
         self.assertNotIn("This Turn may use at most", system)
         for request in records(self.requests):
             body = request["body"]
-            sent_system = body["instructions"] if self.provider == "codex" else body["messages"][0]["content"]
+            if self.provider == "codex":
+                items = body.get("input", [])
+                sent_system = items[0]["content"] if items and items[0].get("role") == "developer" else body["instructions"]
+            else:
+                sent_system = body["messages"][0]["content"]
             self.assertNotIn("This Turn may use at most", sent_system)
         runs = [e["run_end"]["output"] for e in events if "run_end" in e]
         self.assertEqual(len(runs), 59)
@@ -134,7 +138,11 @@ class AgentLimits(unittest.TestCase):
         self.assertIn(instruction, system)
         for request in records(self.requests):
             body = request["body"]
-            sent_system = body["instructions"] if self.provider == "codex" else body["messages"][0]["content"]
+            if self.provider == "codex":
+                items = body.get("input", [])
+                sent_system = items[0]["content"] if items and items[0].get("role") == "developer" else body["instructions"]
+            else:
+                sent_system = body["messages"][0]["content"]
             self.assertIn(instruction, sent_system)
         self.assertNotIn("Steps left in this Turn]", outputs[0])
         self.assertTrue(outputs[1].endswith("[3 Steps left in this Turn]"))

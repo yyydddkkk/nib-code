@@ -52,6 +52,9 @@ def completions(messages):
 def system(body):
     if "messages" in body:
         return "\n".join(content(m) for m in body["messages"] if m.get("role") == "system")
+    items = body.get("input", [])
+    if items and items[0].get("role") == "developer":
+        return content(items[0])
     return body["instructions"]
 
 

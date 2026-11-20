@@ -290,6 +290,32 @@ fn toolOutputImages(cfg: p.Config) bool {
     return cfg.provider == .codex or cfg.provider == .openai;
 }
 
+const default_instructions = "You are a helpful assistant.";
+
+/// GPT-6.2+ appends top-level `instructions` after `input` outside prompt caching;
+/// reusable system prompts go in a leading `developer` input message instead.
+pub fn usesDeveloperSystem(cfg: p.Config) bool {
+    if (cfg.provider != .codex and cfg.provider != .openai) return false;
+    var name = cfg.model;
+    if (std.mem.indexOfScalar(u8, name, '/')) |slash| name = name[slash + 1 ..];
+    if (name.len < 5 or !std.ascii.eqlIgnoreCase(name[0..4], "gpt-")) return false;
+    var i: usize = 4;
+    const major_start = i;
+    while (i < name.len and std.ascii.isDigit(name[i])) : (i += 1) {}
+    if (i == major_start) return false;
+    const major = std.fmt.parseInt(u32, name[major_start..i], 10) catch return false;
+    var minor: u32 = 0;
+    if (i < name.len and name[i] == '.') {
+        i += 1;
+        const minor_start = i;
+        while (i < name.len and std.ascii.isDigit(name[i])) : (i += 1) {}
+        if (i == minor_start) return false;
+        minor = std.fmt.parseInt(u32, name[minor_start..i], 10) catch return false;
+    }
+    if (i < name.len and name[i] != '-' and name[i] != '.') return false;
+    return major > 6 or (major == 6 and minor >= 2);
+}
+
 pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key: []const u8, messages: []const p.Message, tools_json: []const u8, max_tokens: ?u32) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -298,11 +324,19 @@ pub fn requestBody(gpa: std.mem.Allocator, io: std.Io, cfg: p.Config, cache_key:
     const w = &input.writer;
     try w.writeByte('[');
     var separator: []const u8 = "";
-    var instructions: []const u8 = "You are a helpful assistant.";
+    const developer_system = usesDeveloperSystem(cfg);
+    var instructions: []const u8 = default_instructions;
     var pending_images: std.ArrayList(InputItem) = .empty;
     for (messages, 0..) |m, index| {
         if (std.mem.eql(u8, m.role, "system")) {
-            instructions = m.content orelse instructions;
+            if (developer_system) {
+                if (m.content) |text| if (text.len > 0) {
+                    try w.print("{s}{f}", .{ separator, std.json.fmt(.{ .role = "developer", .content = text }, .{}) });
+                    separator = ",";
+                };
+            } else {
+                instructions = m.content orelse instructions;
+            }
             continue;
         }
         if (m.reasoning) |r| if (r.compatible(cfg)) {
@@ -700,6 +734,45 @@ test "Codex catalog context windows" {
     try std.testing.expectEqual(@as(u64, 500_000), try contextWindow("gpt-6.1-sol"));
     try std.testing.expectEqual(@as(u64, 272_000), try contextWindow("gpt-6-sol"));
     try std.testing.expectError(error.UnknownCodexModelContextWindow, contextWindow("unknown"));
+}
+
+test "GPT-6.2+ on Codex and OpenAI sends system prompt as leading developer input for caching" {
+    const t = std.testing;
+    const messages = [_]p.Message{
+        .{ .role = "system", .content = "Reusable system prompt." },
+        .{ .role = "user", .content = "hello" },
+    };
+    const cases = [_]struct { provider: p.Id, model: []const u8, developer: bool }{
+        .{ .provider = .codex, .model = "gpt-6.2-sol", .developer = true },
+        .{ .provider = .codex, .model = "gpt-6.2-astra", .developer = true },
+        .{ .provider = .openai, .model = "gpt-6.2-sol", .developer = true },
+        .{ .provider = .openai, .model = "openai/gpt-6.3-pro", .developer = true },
+        .{ .provider = .codex, .model = "gpt-7-sol", .developer = true },
+        .{ .provider = .codex, .model = "gpt-6.1-sol", .developer = false },
+        .{ .provider = .codex, .model = "gpt-6-sol", .developer = false },
+        .{ .provider = .codex, .model = "gpt-5.6-sol", .developer = false },
+        .{ .provider = .xai, .model = "grok-4.7", .developer = false },
+        .{ .provider = .custom, .model = "gpt-6.2-sol", .developer = false },
+    };
+    for (cases) |case| {
+        const body = try requestBody(t.allocator, t.io, .{ .provider = case.provider, .base_url = "", .api_key = "", .model = case.model }, "cache", &messages, "[]", null);
+        defer t.allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, body, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const input = object.get("input").?.array.items;
+        if (case.developer) {
+            try t.expectEqualStrings(default_instructions, object.get("instructions").?.string);
+            try t.expectEqual(@as(usize, 2), input.len);
+            try t.expectEqualStrings("developer", input[0].object.get("role").?.string);
+            try t.expectEqualStrings("Reusable system prompt.", input[0].object.get("content").?.string);
+            try t.expectEqualStrings("user", input[1].object.get("role").?.string);
+        } else {
+            try t.expectEqualStrings("Reusable system prompt.", object.get("instructions").?.string);
+            try t.expectEqual(@as(usize, 1), input.len);
+            try t.expectEqualStrings("user", input[0].object.get("role").?.string);
+        }
+    }
 }
 
 test "Codex reasoning mapping and readable summaries" {

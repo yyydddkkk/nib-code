@@ -67,6 +67,8 @@ NIB_THINKING=on defaults medium; NIB_REASONING_EFFORT explicitly selects support
 
 ## Effort and prompt caching
 
+Starting with GPT-6.2 (`gpt-6.2-sol`, `gpt-6.2-astra`), the Responses API appends top-level `instructions` after `input`, outside prompt caching. Local Codex `gpt-6.2-sol` WebSocket logs confirmed every Step lost an amount equal to `instructions` (~2k–6.3k tokens) from `cached_tokens`, while `gpt-6.1-sol` hit ~98%. For GPT-6.2+ on Codex and OpenAI, `src/provider/responses.zig` places the reusable system prompt in `input[0]` with `role: "developer"` and sends a short static `instructions` placeholder, keeping the system prompt in the cached prefix and out of incremental WebSocket deltas.
+
 Measured local ~/.nib/sessions Codex/gpt-6.1-sol logs: compare adjacent same-Turn Steps, grouped by actual effort change, measuring later-Step prompt_cache_hit_tokens / prompt_tokens against prior hit rate.
 
 | Adjacent-Step effort | Later-Step samples | Median cache hits | Mean |

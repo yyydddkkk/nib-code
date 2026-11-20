@@ -159,9 +159,9 @@ class LlmTests:
         self.assertFalse(body.get("tools"), body)
         self.assertTrue(body.get("prompt_cache_key", "").endswith(":llm"), body)
         messages = body.get("messages", body.get("input", []))
-        systems = [content(m) for m in messages if m.get("role") == "system"]
-        if body.get("instructions"):
-            systems.append(body["instructions"])
+        systems = [content(m) for m in messages if m.get("role") == "system" or (m.get("role") == "developer" and content(m) == SYSTEM)]
+        if body.get("instructions") == SYSTEM:
+            systems.append(SYSTEM)
         self.assertEqual(systems, [SYSTEM], body)
         self.assertNotIn("MUST_NOT_LEAK", json.dumps(body))
         prompts = [m for m in messages if content(m).startswith("llm_mock:")]

@@ -381,7 +381,8 @@ def test_tui_cancel(tmp):
         terminal.send("resumed\r")
         wait_for(lambda: len(server.requests) == 5, "full request after compaction")
         assert server.connections == 2 and "previous_response_id" not in server.requests[-1]["body"]
-        assert server.requests[-1]["body"]["input"][0]["content"].startswith("Earlier session summary:")
+        non_dev = [m for m in server.requests[-1]["body"]["input"] if m.get("role") != "developer"]
+        assert non_dev[0]["content"].startswith("Earlier session summary:")
     finally:
         terminal.close()
         server.close()

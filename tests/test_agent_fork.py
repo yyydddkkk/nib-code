@@ -257,6 +257,9 @@ class ForkTests:
         if self.provider == "codex":
             self.assertTrue(child["raw_fields"]["instructions"].encode("utf-8") ==
                             parent["raw_fields"]["instructions"].encode("utf-8"), "system wire bytes differ")
+            if body.get("input") and body["input"][0].get("role") == "developer":
+                self.assertEqual(child["raw_messages"][0].encode("utf-8"),
+                                 parent["raw_messages"][0].encode("utf-8"), "developer system wire bytes differ")
         else:
             child_system = [raw_json_values(raw)["content"].encode("utf-8")
                             for raw, item in zip(child["raw_messages"], child["messages"]) if item.get("role") == "system"]
