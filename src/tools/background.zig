@@ -111,8 +111,9 @@ pub const Background = struct {
             const t = job.t;
             const gpa = job.gpa;
             const bg = &t.background;
+            const state = taskState(gpa, result);
             bg.mutex.lockUncancelable(t.io);
-            job.state = taskState(gpa, result);
+            job.state = state;
             bg.mutex.unlock(t.io);
             if (t.background.cancel.load(.acquire)) {
                 if (job.kind == .agent) t.agent_sessions.release(t.io, job.id);
@@ -122,11 +123,7 @@ pub const Background = struct {
             defer gpa.free(json);
             const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
             defer parsed.deinit();
-            const ok = switch (job.kind) {
-                .run => unreachable,
-                .agent => parsed.value.object.get("ok").?.bool,
-                .bash => if (parsed.value.object.get("exit_code")) |code| code == .integer and code.integer == 0 else parsed.value.object.contains("superseded_by"),
-            };
+            const ok = std.mem.eql(u8, state, "done") or std.mem.eql(u8, state, "superseded");
             const prefix = try std.fmt.allocPrint(gpa, "[background {s} {s} finished]\n", .{ @tagName(job.kind), job.id });
             defer gpa.free(prefix);
             const outputs_dir = try t.outputsDir(gpa);
@@ -134,6 +131,10 @@ pub const Background = struct {
             const raw_full: ?[]u8 = switch (job.kind) {
                 .bash => if (parsed.value.object.get("output")) |out_val| switch (out_val) {
                     .string => |text| blk: {
+                        if (std.mem.eql(u8, state, "timed_out")) {
+                            const elapsed = parsed.value.object.get("elapsed_ms").?.integer;
+                            break :blk try std.fmt.allocPrint(gpa, "timed out after {d} ms\n\n{s}", .{ elapsed, text });
+                        }
                         const code = if (parsed.value.object.get("exit_code")) |c| switch (c) {
                             .integer => |n| n,
                             else => @as(i64, -1),
@@ -883,8 +884,9 @@ fn taskState(gpa: std.mem.Allocator, result: @import("../sandbox.zig").ToolResul
         if (std.mem.indexOf(u8, result.err, "canceled") != null) return "canceled";
         return "failed";
     }
-    const parsed = std.json.parseFromSlice(struct { superseded_by: ?[]const u8 = null, ok: ?bool = null, exit_code: ?i64 = null }, gpa, result.ok, .{ .ignore_unknown_fields = true }) catch return "failed";
+    const parsed = std.json.parseFromSlice(struct { superseded_by: ?[]const u8 = null, ok: ?bool = null, exit_code: ?i64 = null, timed_out: bool = false }, gpa, result.ok, .{ .ignore_unknown_fields = true }) catch return "failed";
     defer parsed.deinit();
+    if (parsed.value.timed_out) return "timed_out";
     if (parsed.value.superseded_by != null) return "superseded";
     return if (parsed.value.ok orelse (parsed.value.exit_code != null and parsed.value.exit_code.? == 0)) "done" else "failed";
 }

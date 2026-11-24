@@ -81,11 +81,17 @@ Indices are 0-based creation order across all Run tools, not per-tool/background
 
 Default 5-minute Run timeout accumulates QuickJS segments (initial script, jobs, result parse/resolve, serialization, error conversion), excluding tool/sleep waits, never resetting per await. It interrupts JS loops; bash/fetch/agent own deadlines. Check cancellation at ≤20 ms while waiting; Esc/SIGINT/SIGTERM remain effective with paused budgets.
 
+## Bash working directory
+
+`tools.bash({ command, cwd })` uses the Session directory by default. Relative `cwd` paths are resolved from that directory. The directory must exist; invalid directories and unknown options reject before launch. `cwd` applies only to that command, including background commands. It does not change the Session directory or add a writable sandbox root. Bash start records log the resolved directory, which is also used to match [superseded commands](tool-delegation.md#identical-commands-supersede-stale-execution).
+
 ## Bash execution deadlines
 
 Ordinary foreground/explicit-background bash without timeout_ms defaults to 1800000 ms (30 minutes). Automatic Run backgrounding changes delivery only, never deadlines. Cold-cache concurrent smoke tests hit the old 120-second limit on first zig build test; reruns still took 130 seconds. Increase 15-fold to agent’s 30-minute budget for cold builds/contention while bounding ordinary commands. This is budget policy, not guaranteed completion; known longer work needs explicit timeout_ms.
 
 Explicit positive timeout_ms applies from command start. Reject negatives; zero only with background:true, detached:true. Detached defaults zero for Session services. Timeout/stop/cancellation/Turn failure/Session exit clean groups; ordinary Turn cleanup waits for non-detached results, normal shell exits clean groups including nohup/& descendants; the call returns when the shell exits, draining output for at most 500 ms more, so daemons that left the group (setsid, services) keep running and cannot hold the call open. Output cap remains 16 MiB.
+
+A command timeout resolves to `{ timed_out: true, elapsed_ms, exit_code: null, output }`, including stdout and stderr captured before the process group was stopped. It does not fail the JS Run; the script can inspect the result and decide what to do. An explicit background command delivers the same result with a failed completion (`ok: false`) and `timed_out` task status. Cancellation and whole-Run timeouts are unchanged. The usual output display limits apply to what is shown, and output redirected by the command is not read back.
 
 ## Delays and polling within Runs
 
@@ -117,7 +123,7 @@ Normal Run completion drains scheduled sleep even without await; it is not cross
 
 Model Runs exceeding `[limits].run_background_after_ms` (default 10000) while waiting for tools/sleep automatically move wholesale to background with Session r1… ids. Current Steps receive explicit registration notices: captured output retained, final messages automatic; models can continue useful work without ps/log cat/tail/sleep/empty Runs/timeout reruns or premature redirected-log reads. Capture tests directly unless exceeding 16 MiB. Registration does not mean execution success. Continuous JS is not moved midway and retains JS budgets; waits/main-thread polling are about 20 ms.
 
-Keep original Sandbox/Promises/arguments/results: const r = await tools.bash(...); if (r.exit_code) ... still receives full `{ exit_code, output }`, never ids. Drain, budgets, deadlines, capture stay unchanged. Capture pre/post-threshold console together, displayed once in final results; early notices contain no partial console.
+Keep original Sandbox/Promises/arguments/results: `await tools.bash(...)` receives its normal command result (including a structured timeout), never an automatic Run ID. Drain, budgets, deadlines, capture stay unchanged. Capture pre/post-threshold console together, displayed once in final results; early notices contain no partial console.
 
 Background Runs own cancellation, llm limits, changes, timing, recording buffers; Session agent/background-bash concurrency, ids, observations, usage stay shared. At most 8 automatic Runs independently of 8 background bash; at capacity new Runs wait foreground without failure/background queuing. Each Sandbox still executes ≤8 tools. Backgrounding consumes no extra Step; subsequent model requests consume Steps normally.
 
