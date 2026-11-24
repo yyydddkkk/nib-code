@@ -2,6 +2,9 @@ const std = @import("std");
 const tools = @import("../tools.zig");
 const sandbox = @import("../sandbox.zig");
 const Profile = @import("profile.zig").Profile;
+const Tuning = @import("tuning.zig").Resolved;
+
+const known_next = "When the next command or read is already known and only depends on this tool's result, do it in the same Run. For example, after a successful edit, run the relevant existing check if one is already known; on failure, return the first useful diagnostic. Do not invent checks to fill the Run.";
 
 pub const tools_json =
     \\[{"type":"function","function":{"name":"run",
@@ -30,16 +33,17 @@ pub const patches = [_]Patch{
     },
 };
 
-pub fn patchLines(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map, profile: Profile) ![]const u8 {
-    return renderPatches(a, &patches, environ, profile);
+fn patchLines(a: std.mem.Allocator, environ: ?*const std.process.Environ.Map, profile: Profile, continuation: Tuning.Continuation) ![]const u8 {
+    return renderPatches(a, &patches, environ, profile, continuation);
 }
 
-fn renderPatches(a: std.mem.Allocator, list: []const Patch, environ: ?*const std.process.Environ.Map, profile: Profile) ![]const u8 {
+fn renderPatches(a: std.mem.Allocator, list: []const Patch, environ: ?*const std.process.Environ.Map, profile: Profile, continuation: Tuning.Continuation) ![]const u8 {
     const off = if (environ) |e| e.get("NIB_PATCHES_OFF") orelse "" else "";
     var out: std.ArrayList(u8) = .empty;
     for (list) |patch| {
         if (!patch.applies_to.contains(profile) or patchDisabled(off, patch.id)) continue;
-        try out.print(a, "- {s}\n", .{patch.text});
+        const text = if (continuation == .@"known-next" and std.mem.eql(u8, patch.id, "expected-continuation")) known_next else patch.text;
+        try out.print(a, "- {s}\n", .{text});
     }
     return out.toOwnedSlice(a);
 }
@@ -95,9 +99,7 @@ pub const system_template =
     \\When the task is done, answer the user directly without calling the tool.
 ;
 
-const Validation = @import("tuning.zig").Resolved.Validation;
-
-fn validationRuleText(variant: Validation) []const u8 {
+fn validationRuleText(variant: Tuning.Validation) []const u8 {
     return switch (variant) {
         .single => "- Before full builds/tests, finish implementation, known regression tests, expected results/fixtures and formatting; aim for one full validation. On failure, fix the failures and revalidate. Keep all necessary checks.\n",
         .@"existing-only" => "- Run the project's existing tests or checks when they exist. Unless the user asks, do not write new test scripts or install toolchains only to verify your work.\n",
@@ -161,7 +163,7 @@ pub fn renderCommon(a: std.mem.Allocator, cwd: []const u8) ![]u8 {
 pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.Tools, profile: Profile, environ: ?*const std.process.Environ.Map) ![]u8 {
     const docs = try host.documentation(a);
     defer a.free(docs);
-    const lines = try patchLines(a, environ, profile);
+    const lines = try patchLines(a, environ, profile, host.tuning.continuation);
     defer a.free(lines);
     const bytes = if (host.cfg) |cfg| cfg.limits.run_output_bytes else @import("output.zig").max_bytes;
     const mode = host.backgroundMode();
@@ -256,12 +258,12 @@ test "prompt patches can be disabled individually or all at once" {
     const gpa = std.testing.allocator;
     var env: std.process.Environ.Map = .init(gpa);
     defer env.deinit();
-    const all_on = try patchLines(gpa, &env, .default);
+    const all_on = try patchLines(gpa, &env, .default, .generic);
     defer gpa.free(all_on);
     for (patches) |patch| try std.testing.expect(std.mem.indexOf(u8, all_on, patch.text) != null);
     for (patches) |disabled| {
         try env.put("NIB_PATCHES_OFF", disabled.id);
-        const one_off = try patchLines(gpa, &env, .default);
+        const one_off = try patchLines(gpa, &env, .default, .generic);
         defer gpa.free(one_off);
         for (patches) |patch| {
             try std.testing.expectEqual(
@@ -271,7 +273,7 @@ test "prompt patches can be disabled individually or all at once" {
         }
     }
     try env.put("NIB_PATCHES_OFF", "no-shell-search, all");
-    const none = try patchLines(gpa, &env, .default);
+    const none = try patchLines(gpa, &env, .default, .generic);
     defer gpa.free(none);
     try std.testing.expectEqualStrings("", none);
 }
@@ -299,6 +301,32 @@ test "system prompt omits only the disabled patch" {
     }
 }
 
+test "known-next changes only the enabled continuation line" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var host: tools.Tools = .{
+        .io = t.io,
+        .home = ".",
+        .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" },
+        .tuning = Tuning.forProfile(.deepseek),
+    };
+    const baseline = try renderSystem(a, "/work", &host, .deepseek, null);
+    const generic = patches[2].text;
+    const start = std.mem.indexOf(u8, baseline, generic).?;
+    const expected = try std.mem.concat(a, u8, &.{ baseline[0..start], known_next, baseline[start + generic.len ..] });
+    var detail: []const u8 = "";
+    host.tuning = try host.tuning.override(a, "continuation=known-next", &detail);
+    try t.expectEqualStrings(expected, try renderSystem(a, "/work", &host, .deepseek, null));
+
+    var env: std.process.Environ.Map = .init(a);
+    try env.put("NIB_PATCHES_OFF", "expected-continuation");
+    const disabled = try renderSystem(a, "/work", &host, .deepseek, &env);
+    host.tuning.continuation = .generic;
+    try t.expectEqualStrings(disabled, try renderSystem(a, "/work", &host, .deepseek, &env));
+}
+
 test "patches apply only to their profiles" {
     const t = std.testing;
     const list = [_]Patch{
@@ -313,14 +341,14 @@ test "patches apply only to their profiles" {
         .{ .default, "- A\n- C\n" },
     };
     for (expected) |case| {
-        const lines = try renderPatches(t.allocator, &list, null, case[0]);
+        const lines = try renderPatches(t.allocator, &list, null, case[0], .generic);
         defer t.allocator.free(lines);
         try t.expectEqualStrings(case[1], lines);
     }
     var env: std.process.Environ.Map = .init(t.allocator);
     defer env.deinit();
     try env.put("NIB_PATCHES_OFF", "codex-only");
-    const off = try renderPatches(t.allocator, &list, &env, .codex);
+    const off = try renderPatches(t.allocator, &list, &env, .codex, .generic);
     defer t.allocator.free(off);
     try t.expectEqualStrings("- A\n- C\n", off);
 }
@@ -447,7 +475,7 @@ test "common footprint uses shared text without selected policy or endpoint tool
         try t.expect(std.mem.indexOf(u8, text, backgroundDelivery(mode)) == null);
         try t.expect(std.mem.indexOf(u8, text, backgroundWait(mode)) == null);
     }
-    for (std.meta.tags(Validation)) |variant| {
+    for (std.meta.tags(Tuning.Validation)) |variant| {
         const guidance = validationRuleText(variant);
         if (guidance.len != 0) try t.expect(std.mem.indexOf(u8, text, guidance) == null);
     }
@@ -461,7 +489,7 @@ test "validation variants preserve delivery and remove only validation guidance"
     const a = arena.allocator();
     for ([_]bool{ false, true }) |delivery| {
         var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" }, .tuning = .{ .delivery = if (delivery) .tool else .user } };
-        inline for (std.meta.tags(Validation)) |variant| {
+        inline for (std.meta.tags(Tuning.Validation)) |variant| {
             host.tuning.validation = variant;
             const system = try renderSystem(a, "/work", &host, .default, null);
             try t.expect(std.mem.indexOf(u8, system, "Full checks") == null);
