@@ -55,7 +55,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.server.turns += 1
                 gate = self.server.turn_gates.get(self.server.turns)
-                text = f"answer {self.server.turns}"
+                text = gate.text if gate else f"answer {self.server.turns}"
         if gate:
             gate.body = body
             gate.received.set()
@@ -110,18 +110,21 @@ def settle(gate):
 
 def test_prediction(tmp):
     first, late, over, after = Gate("run the tests"), Gate("late guess", True), Gate("late third", True), Gate("after four")
-    gate4 = Gate("", True)
-    with fixture(tmp, [first, late, over, after], {4: gate4}) as (terminal, mock):
-        terminal.send("hello\r")
-        terminal.wait_turn("answer 1")
+    user = "Let me know when the fix is ready for tests"
+    reply = "The fix is ready. Should I start the test suite?"
+    gate4 = Gate("answer 4", True)
+    with fixture(tmp, [first, late, over, after], {1: Gate(reply), 4: gate4}) as (terminal, mock):
+        terminal.send(user + "\r")
+        terminal.wait_turn(reply)
         wait_for(lambda: shown(terminal, "run the tests"), "ghost text")
         assert not shown(terminal, "Ask about this project")
         request = first.body["messages"]
         assert [m["role"] for m in request] == ["system", "user"], request
         instruction = request[0]["content"]
+        assert "You are an input predictor, not the agent" in instruction
         assert "'I' refers to the user" in instruction and "'you' refers to the agent" in instruction
         assert "Use the assistant's last reply only as context" in instruction
-        assert "hello" in request[1]["content"] and "answer 1" in request[1]["content"]
+        assert user in request[1]["content"] and reply in request[1]["content"]
         assert not request[1]["content"].startswith("Predict") and not first.body.get("tools")
 
         terminal.send("x")
@@ -164,7 +167,24 @@ def test_prediction(tmp):
         assert not shown(terminal, "late third")
 
 
+def test_greeting_prediction(tmp):
+    reply = "你好！有什么我可以帮你的吗？"
+    prediction = Gate("NONE")
+    with fixture(tmp, [prediction], {1: Gate(reply)}) as (terminal, _):
+        terminal.send("你好\r")
+        terminal.wait_turn(reply)
+        assert prediction.received.wait(5)
+        instruction, context = (m["content"] for m in prediction.body["messages"])
+        assert "Do not answer the user, echo the assistant's reply, or continue it" in instruction
+        assert "A greeting followed by a generic offer to help is not enough" in instruction
+        assert "output exactly NONE" in instruction
+        assert "User's last message:\n你好\n\nAssistant's last reply:\n" + reply in context
+        settle(prediction)
+        assert shown(terminal, "Ask about this project") and not shown(terminal, "NONE")
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-prediction-") as directory:
         test_prediction(Path(directory) / "prediction")
+        test_greeting_prediction(Path(directory) / "greeting")
         print("test_prediction: ok")

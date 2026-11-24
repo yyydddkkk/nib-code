@@ -18,12 +18,12 @@ const max_recent_bytes = 3 * 1024;
 const max_tokens = 256;
 
 const instruction =
-    \\Predict the user's next message to this coding agent: the exact text they would type, in their language.
-    \\Write as the user: 'I' refers to the user, and 'you' refers to the agent.
-    \\Use the assistant's last reply only as context; do not continue it or promise work on the agent's behalf.
-    \\Match the length and tone of their recent messages; be short if they are short.
-    \\If the assistant's reply ends with a question or a proposal awaiting a decision, predict the user's answer.
-    \\One line, at most 80 characters. If unsure, output exactly NONE. Return only the text.
+    \\Predict the user's next message to the coding agent. You are an input predictor, not the agent.
+    \\Write only what the user would type, in their language and style. 'I' refers to the user; 'you' refers to the agent.
+    \\Use the assistant's last reply only as context. Do not answer the user, echo the assistant's reply, or continue it.
+    \\Predict an answer to the assistant's question or proposal only when the conversation gives a concrete clue.
+    \\If unsure, output exactly NONE. A greeting followed by a generic offer to help is not enough to predict a message.
+    \\Return one line of at most 80 characters, with no labels or commentary.
 ;
 
 const no_reply = [_][]const u8{ "none", "nothing", "(nothing)", "no reply", "no reply needed", "no response", "n/a", "na", "无", "无需回复", "不需要回复", "无需回应" };
