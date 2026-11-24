@@ -109,34 +109,37 @@ def settle(gate):
 
 
 def test_prediction(tmp):
-    first, late, over, after = Gate("run the tests"), Gate("late guess", True), Gate("late third", True), Gate("after four")
-    user = "Once the fix is ready, the next step is the test suite"
-    reply = "The fix is ready. What should I do next?"
+    suggested = "Check CI"
+    first, late, over, after = Gate(suggested), Gate("late guess", True), Gate("late third", True), Gate("after four")
+    user = "Fix the login crash. CI is red and I need this ready to merge."
+    reply = "The crash is fixed locally. CI hasn't been checked yet."
     gate4 = Gate("answer 4", True)
     with fixture(tmp, [first, late, over, after], {1: Gate(reply), 4: gate4}) as (terminal, mock):
         terminal.send(user + "\r")
         terminal.wait_turn(reply)
-        wait_for(lambda: shown(terminal, "run the tests"), "ghost text")
+        wait_for(lambda: shown(terminal, suggested), "ghost text")
         assert not shown(terminal, "Ask about this project")
         request = first.body["messages"]
         assert [m["role"] for m in request] == ["system", "user"], request
         instruction = request[0]["content"]
         assert "You are an input predictor, not the agent" in instruction
+        assert "Suggest the most likely useful next message" in instruction
+        assert "need not have stated the next step explicitly" in instruction
         assert "'I' refers to the user" in instruction and "'you' refers to the agent" in instruction
         assert "Use the assistant's last reply only as context" in instruction
         assert user in request[1]["content"] and reply in request[1]["content"]
         assert not request[1]["content"].startswith("Predict") and not first.body.get("tools")
 
         terminal.send("x")
-        wait_for(lambda: not shown(terminal, "run the tests"), "typing hides ghost")
+        wait_for(lambda: not shown(terminal, suggested), "typing hides ghost")
         terminal.send("\x7f")
-        wait_for(lambda: shown(terminal, "run the tests"), "cleared input shows ghost")
+        wait_for(lambda: shown(terminal, suggested), "cleared input shows ghost")
         terminal.send("\t")
-        wait_for(lambda: shown(terminal, "run the tests"), "tab keeps text")
+        wait_for(lambda: shown(terminal, suggested), "tab keeps text")
         assert mock.turns == 1, "Tab must not send"
-        terminal.send("\x7f" * len("run the tests"))
+        terminal.send("\x7f" * len(suggested))
         wait_for(lambda: shown(terminal, "Ask about this project"), "consumed prediction stays gone")
-        assert not shown(terminal, "run the tests")
+        assert not shown(terminal, suggested)
 
         # A prediction arriving while the user types waits for an empty input.
         terminal.send("second\r")
@@ -171,7 +174,7 @@ def test_abstains(tmp):
     cases = {
         "greeting": ("你好", "你好！有什么我可以帮你的吗？"),
         "completed": ("把输入预测的角色写清楚", "已明确预测器的角色，测试通过，PR 已提交。"),
-        "choice": ("帮我看看构建速度", "缓存和并行编译都值得试。你想先试哪个？"),
+        "choice": ("帮我把构建时间导出", "这两个文件名都可以：report-a.txt 和 report-b.txt。你想用哪个？"),
     }
     for case, (user, reply) in cases.items():
         prediction = Gate("NONE")
@@ -181,11 +184,9 @@ def test_abstains(tmp):
             assert prediction.received.wait(5)
             instruction, context = (m["content"] for m in prediction.body["messages"])
             assert "Do not answer the user, echo the assistant's reply, or continue it" in instruction
-            assert "Default to NONE" in instruction and "output exactly NONE" in instruction
-            assert "the user's own words strongly support" in instruction
-            assert "Do not pick an option for them" in instruction
-            assert "Never invent agreement, praise, or thanks" in instruction
-            assert "a completed-work report alone does not justify a prediction" in instruction
+            assert "picking an option for the user rather than predicting their choice, output exactly NONE" in instruction
+            assert "output exactly NONE if there is no reasonably likely next message" in instruction
+            assert "don't invent a polite acknowledgment after a completion report" in instruction
             assert f"User's last message:\n{user}\n\nAssistant's last reply:\n{reply}" in context
             settle(prediction)
             assert shown(terminal, "Ask about this project") and not shown(terminal, "NONE")

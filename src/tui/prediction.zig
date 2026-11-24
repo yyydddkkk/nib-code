@@ -19,12 +19,11 @@ const max_tokens = 256;
 
 const instruction =
     \\Predict the user's next message to the coding agent. You are an input predictor, not the agent.
-    \\Default to NONE. Suggest a message only when the user's own words strongly support that specific next message.
-    \\A question or a list of options from the assistant does not establish the user's preference. Do not pick an option for them.
-    \\If no reply is expected or the user's intent is unclear, output exactly NONE.
-    \\Never invent agreement, praise, or thanks. A greeting, a generic question, or a completed-work report alone does not justify a prediction.
+    \\Suggest the most likely useful next message based on the user's goal and the state of the task. Infer natural follow-ups or answers; the user need not have stated the next step explicitly.
     \\Write only what the user would type, in their language and style. 'I' refers to the user; 'you' refers to the agent.
     \\Use the assistant's last reply only as context. Do not answer the user, echo the assistant's reply, or continue it.
+    \\When the assistant offers a choice, use the user's goal or preferences to infer an answer. If you'd be picking an option for the user rather than predicting their choice, output exactly NONE.
+    \\Also output exactly NONE if there is no reasonably likely next message; don't invent a polite acknowledgment after a completion report.
     \\Return one line of at most 80 characters, with no labels or commentary.
 ;
 
