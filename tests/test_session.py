@@ -281,6 +281,30 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         assert compacted[1]["content"].startswith("Earlier session summary:")
         ask("three", "-c", workdir=other, window="6656")
         assert read_requests(requests_path)[-2]["messages"] == compacted + [{"role": "user", "content": "three"}]
+
+        large_home = {"NIB_HOME": str(tmp / "large-compact-home")}
+        ask("one", workdir=other, window="6656", overrides=large_home)
+        ask("one", "--continue", workdir=other, window="6656", overrides=large_home)
+        before = len(read_requests(requests_path))
+        result = ask("output_limit_test", "--continue", workdir=other, window="6656", overrides=large_home)
+        requests = read_requests(requests_path)[before:]
+        original, summary_request, continuation = requests[:3]
+        assert original["has_tools"] == "run" and not summary_request["has_tools"], requests
+        summarizing = summary_request["messages"][:-1]
+        assert summarizing[:len(original["messages"])] == original["messages"]
+        assert summarizing[-2]["tool_calls"][0]["id"] == summarizing[-1]["tool_call_id"]
+        assert len(summarizing[-1]["content"]) > 10_000
+        assert continuation["roles"] == ["system", "user"] and continuation["has_tools"] == "run"
+        assert continuation["messages"][0] == original["messages"][0]
+        assert continuation["messages"][1]["content"].startswith("Earlier session summary:")
+        compact_log = next(Path(large_home["NIB_HOME"]).glob("sessions/*.jsonl"))
+        _, records = replay(compact_log)
+        replacement_index = next(i for i, r in enumerate(records) if r["from"] == 1
+                                 and r["messages"][0]["content"].startswith("Earlier session summary:"))
+        before_tokens, after_tokens = map(int, re.search(rb"~(\d+) \xe2\x86\x92 ~(\d+) tokens", result.stderr).groups())
+        assert before_tokens != records[replacement_index - 1]["context_tokens"]
+        assert after_tokens == records[replacement_index]["context_tokens"] < before_tokens
+
         def events(result):
             assert result.stderr == b"", result.stderr
             assert result.stdout.endswith(b"\n")

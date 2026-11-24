@@ -398,23 +398,35 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
         before = len(requests())
         compact_dir = tmp / "compact"
         compact_dir.mkdir()
+        compact_window = {"NIB_CONTEXT_WINDOW": "6144"}
+        compact_events = []
         for index in range(3):
-            compact = ask(f"compact {index}", overrides={"NIB_CONTEXT_WINDOW": "4096"}, workdir=compact_dir,
+            compact = ask(f"compact {index}", overrides=compact_window, workdir=compact_dir,
                 *(["--continue"] if index else []))
             if index == 0:
                 compact_id = compact[0]["start"]["session_id"]
             assert compact[0]["start"]["session_id"] == compact_id
+            compact_events.extend(compact)
         assert compact_id not in (session, tool_id, parent_id, child_id)
         assert_cache_key(requests()[before:], compact_id)
         summaries = [r["body"] for r in requests()[before:] if not r["body"].get("tools")]
         assert summaries and all(body["reasoning"]["effort"] == "low" and body["model"] == "gpt-6.2-sol" for body in summaries), summaries
         assert all("max_tokens" not in body and "max_output_tokens" not in body for body in summaries)
         assert all("Keep the summary within" in body["input"][-1]["content"] for body in summaries)
+        assert any("compacted context:" in event.get("notice", "") for event in compact_events), compact_events
+        small_dir = tmp / "compact-no-room"
+        small_dir.mkdir()
+        ask("compact first", overrides=compact_window, workdir=small_dir)
+        before = len(requests())
+        no_room = ask("compact second", "--continue", overrides={"NIB_CONTEXT_WINDOW": "4096"}, workdir=small_dir)
+        assert any("no room for a summary" in event.get("notice", "") for event in no_room), no_room
+        assert all(r["body"].get("tools") for r in requests()[before:])
+
         for scenario in ("summary empty", "summary truncated"):
             failure_dir = tmp / scenario.replace(" ", "-")
             failure_dir.mkdir()
-            ask(scenario, overrides={"NIB_CONTEXT_WINDOW": "4096"}, workdir=failure_dir)
-            continued = ask("continue after summary failure", "--continue", overrides={"NIB_CONTEXT_WINDOW": "4096"}, workdir=failure_dir)
+            ask(scenario, overrides=compact_window, workdir=failure_dir)
+            continued = ask("continue after summary failure", "--continue", overrides=compact_window, workdir=failure_dir)
             assert any("automatic compaction failed, continuing" in event.get("notice", "") for event in continued), continued
             assert "end" in continued[-1]
         print("Codex child configuration and automatic compaction with the same model and minimal reasoning passed")

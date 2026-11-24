@@ -616,14 +616,15 @@ pub const Session = struct {
             if (s.cfg.limits.max_steps) |max_steps| {
                 if (step_index >= max_steps) return s.finishStepLimit(pending, sink, cancel, detail, max_steps);
             }
-            const size = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg);
-            // The first fork request must send the inherited cache prefix before compaction can rewrite it.
-            if (!(s.tools.forked and s.log.steps == 0) and size >= s.cfg.context_window - s.cfg.context_window / 4 and size >= s.compact_backoff)
-                try s.autoCompact(sink, cancel, detail);
-            if (cancel.load(.acquire)) return error.Canceled;
             try tools.Tools.poll(&s.tools);
             var inserted = if (held) inbox.Batch{} else try s.insertInbox(pending, sink, false);
             defer inserted.deinit(s.gpa);
+            const pending_tokens = compaction.estimateTokens(pending.items, s.cfg);
+            const size = s.context_tokens + pending_tokens;
+            // The first fork request must send the inherited cache prefix before compaction can rewrite it.
+            if (!(s.tools.forked and s.log.steps == 0) and size >= compaction.threshold(s.cfg.context_window) and size >= s.compact_backoff)
+                try s.autoCompact(pending_tokens, sink, cancel, detail);
+            if (cancel.load(.acquire)) return error.Canceled;
             var folded: inbox.Batch = .{};
             defer folded.deinit(s.gpa);
             const background_output_bytes = s.log.pending_background_bytes;

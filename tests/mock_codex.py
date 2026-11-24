@@ -174,7 +174,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             event("response.output_item.done", output_index=index, item=item)
             output.append(item)
         compacted = any(content(item).startswith("Earlier session summary:") for item in users)
-        tokens = 100 if summary or compacted else int(os.environ.get("MOCK_PROMPT_TOKENS", "3300"))
+        tokens = (100 if summary or compacted else 4700 if prompt.startswith(("compact ", "summary ", "continue after summary"))
+                  else int(os.environ.get("MOCK_PROMPT_TOKENS", "3300")))
         if prompt == "stream truncated":
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
