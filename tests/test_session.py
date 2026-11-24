@@ -750,7 +750,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             ask("fallback route", overrides={"NIB_HOME": str(home), "NIB_MODEL": model})
             route = replay(next((home / "sessions").glob("*.jsonl")))[1][0]
             assert (route["model"], route["family"], route["profile"]) == (model, family, "default"), route
-            assert route["tuning"] == {"delivery": "user", "validation": "single"}, route
+            assert route["tuning"] == {"delivery": "user", "validation": "single", "continuation": "generic"}, route
             sent = read_requests(requests_path)[-1]
             assert sent["model"] == model, sent["model"]
             assert "async wait(ids)" not in sent["messages"][0]["content"]

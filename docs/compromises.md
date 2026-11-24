@@ -15,6 +15,11 @@ Prompt patches are centralized in `src/session/prompt.zig`'s `patches`; each app
 
 ### expected-continuation baseline and measurement
 
+`NIB_TUNE=continuation=known-next` is an experimental replacement for the
+`expected-continuation` wording. It asks for an already-known dependent check
+in the same Run without requiring validation or inventing checks. The `generic`
+default preserves the shipped wording; disabling the patch omits both variants.
+
 After implementation review and before enabling the patch, `python3 scripts/stats.py --json` on local `~/.nib/sessions` found 180 Sessions (including children), 3404 Steps; 2849 adjacent candidate Steps after success, with mechanical follow-ups **442/2849 = 15.51%** and candidate-Step time **4,425,959/68,366,301 ms = 6.47%** (all 2849 candidates timed). Sample sources: complete recordings 1592, static extraction 1257, mixed 0; hit sources 280, 162, 0 respectively. Denominator: adjacent same-Turn Steps whose predecessor has at least one Run and all Runs explicitly succeeded, not all Steps; cancellation, filtering, and compaction replacements break pairs.
 
 Measure with `python3 scripts/stats.py --since YYYY-MM-DD --group-by patches` (optionally `--json`). Reuse the conservative write-to-validation classifier, preferring actual tools and `args.command` from complete recordings, otherwise static extraction. Hits require only bash/read with all bash commands validating/checking status. Unclear dynamic/static extraction, compound shell, redirects, and git merge do not hit. Thus this baseline differs from manually counted 316/1757 (about 18%, about 16% of time), including different historical sample scope. Time-share denominator is total candidate-Step duration with `ms`, not model time. Old-log/group differences are signals, not direct causal evidence of patch effects.

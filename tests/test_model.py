@@ -127,7 +127,7 @@ def test_resume_profile_status(tmp):
         system = mock.requests[-1][2]["instructions"].encode()
         assert system == header["messages"][0]["content"].encode()
         assert (header["family"], header["profile"]) == ("deepseek", "deepseek")
-        assert header["tuning"] == {"delivery": "tool", "validation": "none"}
+        assert header["tuning"] == {"delivery": "tool", "validation": "none", "continuation": "generic"}
         check_status(original, "deepseek-pro", None)
 
         target = "gpt-6.1-sol"

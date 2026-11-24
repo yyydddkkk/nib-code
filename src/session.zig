@@ -1142,7 +1142,7 @@ test "tuning follows the model, NIB_TUNE and the log" {
         try session.commit(session.history.items.len, &.{ .{ .role = "user", .content = "hi" }, .{ .role = "assistant", .content = "yo" } }, 10, null);
     }
     {
-        try env.put("NIB_TUNE", "delivery=user,validation=existing-only");
+        try env.put("NIB_TUNE", "delivery=user,validation=existing-only,continuation=known-next");
         var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env, .resume_id = id });
         defer session.deinit();
         try t.expectEqual(Tuning.Delivery.tool, session.tools.tuning.delivery);
@@ -1155,10 +1155,11 @@ test "tuning follows the model, NIB_TUNE and the log" {
         defer session.deinit();
         try t.expectEqual(Tuning.Delivery.user, session.tools.tuning.delivery);
         try t.expectEqual(Tuning.Validation.@"existing-only", session.tools.tuning.validation);
+        try t.expectEqual(Tuning.Continuation.@"known-next", session.tools.tuning.continuation);
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "do not write new test scripts") != null);
         const path = try std.fmt.allocPrint(a, "{s}/sessions/{s}.jsonl", .{ root, session.id });
         const data = try std.Io.Dir.cwd().readFileAlloc(t.io, path, a, .unlimited);
-        try t.expect(std.mem.indexOf(u8, data, "\"tuning\":{\"delivery\":\"user\",\"validation\":\"existing-only\"}") != null);
+        try t.expect(std.mem.indexOf(u8, data, "\"tuning\":{\"delivery\":\"user\",\"validation\":\"existing-only\",\"continuation\":\"known-next\"}") != null);
     }
     try env.put("NIB_TUNE", "delivery=nope");
     try t.expectError(error.InvalidTuning, Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env }));

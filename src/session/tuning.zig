@@ -6,11 +6,13 @@ const Profile = @import("profile.zig").Profile;
 pub const Resolved = struct {
     delivery: Delivery = .user,
     validation: Validation = .single,
+    continuation: Continuation = .generic,
 
     /// How background completions and mid-Turn user messages reach the model:
     /// `user` inserts user messages at the next Step; `tool` appends them to the next tool result.
     pub const Delivery = enum { user, tool };
     pub const Validation = enum { single, @"existing-only", none };
+    pub const Continuation = enum { generic, @"known-next" };
 
     pub const BackgroundMode = enum {
         user,
@@ -136,11 +138,11 @@ test "NIB_TUNE rejects unknown names and malformed entries" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const cases = [_]struct { spec: []const u8, message: []const u8 }{
-        .{ .spec = "nope=tool", .message = "NIB_TUNE: unknown tuning 'nope'; tunings: delivery, validation" },
+        .{ .spec = "nope=tool", .message = "NIB_TUNE: unknown tuning 'nope'; tunings: delivery, validation, continuation" },
         .{ .spec = "validation=huge", .message = "NIB_TUNE: validation has no variant 'huge'; variants: single, existing-only, none" },
         .{ .spec = "delivery=huge", .message = "NIB_TUNE: delivery has no variant 'huge'; variants: user, tool" },
         .{ .spec = "delivery", .message = "NIB_TUNE: expected <tuning>=<variant>, got 'delivery'" },
-        .{ .spec = "delivery=tool,x=y", .message = "NIB_TUNE: unknown tuning 'x'; tunings: delivery, validation" },
+        .{ .spec = "delivery=tool,x=y", .message = "NIB_TUNE: unknown tuning 'x'; tunings: delivery, validation, continuation" },
     };
     for (cases) |case| {
         var detail: []const u8 = "";
@@ -154,9 +156,10 @@ test "the log record round-trips and tolerates unknown names" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const record = try (Resolved{ .delivery = .tool, .validation = .none }).toLog(a);
+    const record = try (Resolved{ .delivery = .tool, .validation = .none, .continuation = .@"known-next" }).toLog(a);
     try t.expectEqual(Resolved.Delivery.tool, Resolved.fromLog(record).delivery);
     try t.expectEqual(Resolved.Validation.none, Resolved.fromLog(record).validation);
+    try t.expectEqual(Resolved.Continuation.@"known-next", Resolved.fromLog(record).continuation);
     var future: std.json.ArrayHashMap([]const u8) = .{};
     try future.map.put(a, "delivery", "gone");
     try future.map.put(a, "other", "x");
@@ -165,4 +168,5 @@ test "the log record round-trips and tolerates unknown names" {
     var old: std.json.ArrayHashMap([]const u8) = .{};
     try old.map.put(a, "delivery", "tool");
     try t.expectEqual(Resolved.Validation.single, Resolved.fromLog(old).validation);
+    try t.expectEqual(Resolved.Continuation.generic, Resolved.fromLog(old).continuation);
 }
