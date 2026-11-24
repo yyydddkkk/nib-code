@@ -118,6 +118,9 @@ def test_prediction(tmp):
         assert not shown(terminal, "Ask about this project")
         request = first.body["messages"]
         assert [m["role"] for m in request] == ["system", "user"], request
+        instruction = request[0]["content"]
+        assert "'I' refers to the user" in instruction and "'you' refers to the agent" in instruction
+        assert "Use the assistant's last reply only as context" in instruction
         assert "hello" in request[1]["content"] and "answer 1" in request[1]["content"]
         assert not request[1]["content"].startswith("Predict") and not first.body.get("tools")
 
