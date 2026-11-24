@@ -10,6 +10,7 @@ pub const foreground_progress_threshold_ms = 3000;
 
 const Args = struct {
     command: []const u8,
+    cwd: ?[]const u8 = null,
     timeout_ms: ?i64 = null,
     background: bool = false,
     detached: bool = false,
@@ -19,6 +20,7 @@ const Args = struct {
     }
 
     fn validationError(a: Args) ?[]const u8 {
+        if (a.cwd) |path| if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return "cwd must be a non-empty path without NUL bytes";
         if (a.detached and !a.background) return "detached requires background: true";
         if (a.timeoutMs() < 0) return "timeout_ms must not be negative";
         if (a.timeoutMs() == 0 and !a.detached) return "timeout_ms: 0 requires detached: true";
@@ -26,9 +28,42 @@ const Args = struct {
     }
 };
 
+const WorkingDir = struct {
+    path: [:0]const u8,
+    dir: ?std.Io.Dir = null,
+
+    fn open(t: *Tools, gpa: std.mem.Allocator, path: ?[]const u8) !WorkingDir {
+        const requested = path orelse return .{ .path = try std.process.currentPathAlloc(t.io, gpa) };
+        if (policy.checkCredentials(requested, t.codexHome(), t.data_home) == .deny) return error.CredentialAccessDenied;
+        const dir = try std.Io.Dir.cwd().openDir(t.io, requested, .{});
+        errdefer dir.close(t.io);
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const real = buf[0..try dir.realPath(t.io, &buf)];
+        if (policy.checkCredentials(real, t.codexHome(), t.data_home) == .deny) return error.CredentialAccessDenied;
+        const auth_path = try std.fs.path.join(gpa, &.{ real, "auth.json" });
+        defer gpa.free(auth_path);
+        const canonical_auth = try tools.normalizedPath(t.io, gpa, auth_path);
+        defer gpa.free(canonical_auth);
+        try t.checkCredentialPath(gpa, canonical_auth);
+        return .{ .path = try gpa.dupeSentinel(u8, real, 0), .dir = dir };
+    }
+
+    fn close(cwd: WorkingDir, t: *Tools, gpa: std.mem.Allocator) void {
+        if (cwd.dir) |dir| dir.close(t.io);
+        gpa.free(cwd.path);
+    }
+
+    fn failure(gpa: std.mem.Allocator, path: ?[]const u8, err: anyerror) !sandbox.ToolResult {
+        return fail(gpa, "cannot use cwd {f}: {s}", .{ std.json.fmt(path orelse ".", .{}), @errorName(err) });
+    }
+};
+
 pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
-    const a = std.json.parseFromSlice(Args, gpa, args, .{ .ignore_unknown_fields = true }) catch
-        return fail(gpa, "expected {{ command: string, timeout_ms?: number, background?: boolean, detached?: boolean }}", .{});
+    const expected = "expected {{ command: string, cwd?: string, timeout_ms?: number, background?: boolean, detached?: boolean }}";
+    const a = std.json.parseFromSlice(Args, gpa, args, .{}) catch |err| return switch (err) {
+        error.UnknownField => fail(gpa, "unknown bash parameter; " ++ expected, .{}),
+        else => fail(gpa, expected, .{}),
+    };
     defer a.deinit();
     if (a.value.validationError()) |message| return fail(gpa, "{s}", .{message});
 
@@ -44,6 +79,8 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
             fail(gpa, "refused by nib: {s}. If it is really needed, ask the user to run it.", .{why}),
     }
 
+    const cwd = WorkingDir.open(t, gpa, a.value.cwd) catch |err| return WorkingDir.failure(gpa, a.value.cwd, err);
+    defer cwd.close(t, gpa);
     if (a.value.background) {
         const result = t.background.start(t, gpa, .bash, args, a.value.command) catch |err| return switch (err) {
             error.BackgroundBashLimit => fail(gpa, "background bash limit is {d} running commands; retry after a background result arrives", .{@import("background.zig").Background.bash_limit}),
@@ -51,25 +88,25 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         };
         return .{ .ok = result };
     }
-    return execute(t, gpa, a.value.command, a.value.timeoutMs(), t.cancelFlag(), null, null);
+    return execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null);
 }
 
 pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), progress: @import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution) !sandbox.ToolResult {
-    const parsed = try std.json.parseFromSlice(Args, gpa, args, .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(Args, gpa, args, .{});
     defer parsed.deinit();
     if (parsed.value.validationError()) |message| return fail(gpa, "{s}", .{message});
     var value = progress;
     value.prompt = parsed.value.command;
     value.detached = parsed.value.detached;
-    return execute(t, gpa, value.prompt, parsed.value.timeoutMs(), cancel, value, execution);
+    const cwd = WorkingDir.open(t, gpa, parsed.value.cwd) catch |err| return WorkingDir.failure(gpa, parsed.value.cwd, err);
+    defer cwd.close(t, gpa);
+    return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution);
 }
 
-fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution) !sandbox.ToolResult {
+fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution) !sandbox.ToolResult {
     const id = if (progress) |value| value.id else try t.progress.reserveBash(gpa, t.io);
     sandbox.tool_identity = .{ .id = id, .background = progress != null };
-    const cwd = try std.process.currentPathAlloc(t.io, gpa);
-    defer gpa.free(cwd);
-    var active: @import("bash/registry.zig").Command = .{ .id = id, .run = if (progress) |value| value.run else t.runId(), .command = command, .cwd = cwd, .detached = if (progress) |value| value.detached else false, .started = .now(t.io, .awake) };
+    var active: @import("bash/registry.zig").Command = .{ .id = id, .run = if (progress) |value| value.run else t.runId(), .command = command, .cwd = cwd.path, .detached = if (progress) |value| value.detached else false, .started = .now(t.io, .awake) };
     try t.bash_commands.start(t, gpa, &active);
     var registered = true;
     defer {
@@ -90,6 +127,7 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, timeout_ms: i
     const argv = try t.sandboxedArgv(launch.allocator(), &.{ "bash", "-c", script });
     const executed = process.run(gpa, t.io, .{ .spawn = .{
         .argv = argv,
+        .cwd = if (cwd.dir) |dir| .{ .dir = dir } else .inherit,
         .environ_map = t.environ,
         .stdin = .ignore,
         .stdout = .pipe,
@@ -113,7 +151,12 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, timeout_ms: i
     if (result.stop) |err| {
         state = if (err == error.TimedOut) .timed_out else .canceled;
         return switch (err) {
-            error.TimedOut => fail(gpa, "timed out after {d} ms", .{timeout_ms}),
+            error.TimedOut => .{ .ok = try std.json.Stringify.valueAlloc(gpa, .{
+                .timed_out = true,
+                .elapsed_ms = tracker.elapsedMs(),
+                .exit_code = @as(?u8, null),
+                .output = stdout,
+            }, .{}) },
             error.Canceled => fail(gpa, "canceled", .{}),
         };
     }
@@ -151,8 +194,12 @@ const Tracker = struct {
         tr.tick();
     }
 
+    fn elapsedMs(tr: *const Tracker) u64 {
+        return @intCast(@max(tr.started.untilNow(tr.t.io).raw.toMilliseconds(), 0));
+    }
+
     fn tick(tr: *Tracker) void {
-        tr.tickAt(@intCast(@max(tr.started.untilNow(tr.t.io).raw.toMilliseconds(), 0)));
+        tr.tickAt(tr.elapsedMs());
     }
 
     fn tickAt(tr: *Tracker, elapsed_ms: u64) void {
@@ -182,7 +229,7 @@ const Tracker = struct {
     fn finish(tr: *Tracker, state: @FieldType(@import("../session/events.zig").Progress, "state")) void {
         if (tr.value == null) tr.tickAt(foreground_progress_threshold_ms);
         var value = tr.value orelse return;
-        value.elapsed_ms = @intCast(@max(tr.started.untilNow(tr.t.io).raw.toMilliseconds(), 0));
+        value.elapsed_ms = tr.elapsedMs();
         value.state = state;
         value.exit_code = tr.exit_code;
         tr.value = value;
@@ -219,6 +266,22 @@ test "bash executes a 300-line Python heredoc" {
     try testing.expectEqualStrings("{\"exit_code\":0,\"output\":\"298\\n\"}", r.ok);
 }
 
+test "bash rejects unknown options and invalid working directories before launching" {
+    const cases = .{
+        .{ "{\"command\":\"true\",\"cwwd\":\"/tmp\"}", "unknown bash parameter" },
+        .{ "{\"command\":\"true\",\"cwd\":\"\"}", "cwd must be a non-empty path" },
+        .{ "{\"command\":\"true\",\"cwd\":\"/tmp\\u0000ignored\"}", "cwd must be a non-empty path" },
+        .{ "{\"command\":\"true\",\"cwd\":\"build.zig\"}", "cannot use cwd \"build.zig\": NotDir" },
+        .{ "{\"command\":\"true\",\"cwd\":\"missing-directory\",\"background\":true}", "cannot use cwd \"missing-directory\": FileNotFound" },
+        .{ "{\"command\":\"true\",\"cwd\":\".codex\"}", "cannot use cwd \".codex\": CredentialAccessDenied" },
+    };
+    inline for (cases) |case| {
+        const result = try callTool("bash", case[0]);
+        defer freeResult(result);
+        try testing.expectStringStartsWith(result.err, case[1]);
+    }
+}
+
 test "bash rejects more than 256 shell words in the command portion" {
     var command: std.ArrayList(u8) = .empty;
     defer command.deinit(testing.allocator);
@@ -243,7 +306,7 @@ test "bash refuses credential references inside heredoc bodies" {
 test "bash timeout kills the whole process group" {
     const r = try callTool("bash", "{\"command\":\"(sleep 7.3 &) ; sleep 7.3\",\"timeout_ms\":200}");
     defer freeResult(r);
-    try testing.expectEqualStrings("timed out after 200 ms", r.err);
+    try expectTimeout(r, 200, "");
     // SIGKILL is asynchronous: give the orphaned sleep a moment to die.
     for (0..20) |_| {
         const left = try std.process.run(testing.allocator, testing.io, .{ .argv = &.{ "pgrep", "-f", "sleep 7.3" } });
@@ -263,16 +326,26 @@ test "bash cancel" {
     try testing.expectEqualStrings("canceled", r.err);
 }
 
-test "bash timeout" {
-    const r = try callTool("bash", "{\"command\":\"sleep 5\",\"timeout_ms\":100}");
+fn expectTimeout(result: sandbox.ToolResult, timeout_ms: u64, output: []const u8) !void {
+    try testing.expect(result == .ok);
+    const parsed = try std.json.parseFromSlice(struct { timed_out: bool, elapsed_ms: u64, exit_code: ?u8, output: []const u8 }, testing.allocator, result.ok, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.timed_out);
+    try testing.expect(parsed.value.elapsed_ms >= timeout_ms);
+    try testing.expectEqual(null, parsed.value.exit_code);
+    try testing.expectEqualStrings(output, parsed.value.output);
+}
+
+test "bash timeout returns captured stdout and stderr" {
+    const r = try callTool("bash", "{\"command\":\"echo before; printf diagnostic >&2; sleep 5; echo after\",\"timeout_ms\":250}");
     defer freeResult(r);
-    try testing.expectEqualStrings("timed out after 100 ms", r.err);
+    try expectTimeout(r, 250, "before\ndiagnostic");
 }
 
 test "bash timeout still applies after output pipes close" {
     const result = try callTool("bash", "{\"command\":\"exec 1>&- 2>&-; sleep 5\",\"timeout_ms\":80}");
     defer freeResult(result);
-    try testing.expectEqualStrings("timed out after 80 ms", result.err);
+    try expectTimeout(result, 80, "");
 }
 
 test "bash receives ordinary environment without API keys" {
@@ -427,7 +500,7 @@ test "bash has a finite 30 minute default and honors explicit timeouts in every 
     var execution: @import("../sandbox/timing.zig").Execution = .{};
     const result = try executeBackground(&t, testing.allocator, "{\"command\":\"sleep 5\",\"background\":true,\"detached\":true,\"timeout_ms\":25}", &cancel, .{ .id = progress, .kind = .bash, .background = true, .prompt = "" }, &execution);
     defer freeResult(result);
-    try testing.expectEqualStrings("timed out after 25 ms", result.err);
+    try expectTimeout(result, 25, "");
     try testing.expect(execution.start_ms_epoch > 0);
     try testing.expect(execution.end_ms_epoch >= execution.start_ms_epoch + 25);
 }

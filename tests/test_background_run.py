@@ -114,7 +114,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           "print('stderr-after', file=sys.stderr)")
                 code = "await tools.bash(" + json.dumps({"command": shlex.join([sys.executable, "-c", script])}) + ")"
             elif case == "timeout":
-                code = "await tools.bash(" + json.dumps({"command": "echo $$ > worker.pid; sleep 30", "timeout_ms": 500}) + ")"
+                code = ("const r = await tools.bash({command: 'echo $$ > worker.pid; echo before; sleep 30; echo after', "
+                        "timeout_ms: 500}); if (!r.timed_out || r.exit_code !== null) throw new Error('expected timeout'); r")
             elif case == "recovery":
                 code = "await tools.write({path:'changed.txt',content:'partial work'}); await tools.bash({command:'echo $$ > worker.pid; sleep 30'})"
             elif case in ("cancel", "crash", "stop", "wait-cancel"):
@@ -645,8 +646,11 @@ class BackgroundRunTests(unittest.TestCase):
         events, rows, _ = self.finish(self.launch())
         self.assertIn("continuing in background as r1", next(e["run_end"]["output"] for e in events if "run_end" in e))
         result = self.results(rows)[0]
-        self.assertFalse(result["background_ok"])
-        self.assertIn("timed out after 500 ms", result["content"])
+        self.assertTrue(result["background_ok"])  # The Run inspected the timed-out command and completed.
+        payload = json.loads(result["content"].split("\n", 1)[1].removeprefix("result: "))
+        self.assertIs(payload["timed_out"], True)
+        self.assertGreaterEqual(payload["elapsed_ms"], 500)
+        self.assertEqual(payload["output"], "before\n")
         self.assertFalse(alive(int((self.cwd / "worker.pid").read_text())))
 
     def test_cancel_cleans_process_and_resume_marks_lost(self):

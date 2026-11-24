@@ -114,11 +114,12 @@ const all = [_]Tool{
         .name = "bash",
         .run = bash.bash,
         .doc =
-        \\  // cwd; merged stderr; group cleanup (nohup/& too).
+        \\  // cwd defaults to the Session directory; relative paths start there. Sandbox roots unchanged.
+        \\  // Merged stderr. Timeout returns {timed_out:true, elapsed_ms, exit_code:null, output}. Groups cleaned up (nohup/& too).
         \\  // >16 MiB:redirect. >256 words except heredocs:script.
-        \\  // background returns {id}. detached requires background, spans Turns; stop/timeout/cancel/exit cleans up.
-        \\  // After edits, rerunning identical command/cwd replaces matching bash from older Runs ({superseded_by}, not failure); excludes detached.
-        \\  async bash({ command, timeout_ms, background = false, detached = false }) {}, // → { exit_code, output }, { superseded_by } or { id }; timeout_ms: 1800000 (30 min), detached:0
+        \\  // Detached requires background, spans Turns; stop/timeout/cancel/exit clean up.
+        \\  // After edits, matching command/cwd supersedes older Runs' bash (not detached, not failure).
+        \\  async bash({ command, cwd, timeout_ms, background = false, detached = false }) {}, // → {exit_code,output}, {superseded_by} or {id}; timeout_ms:1800000 (30 min), detached:0
         ,
     },
     .{
