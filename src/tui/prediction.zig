@@ -19,6 +19,8 @@ const max_tokens = 256;
 
 const instruction =
     \\Predict the user's next message to this coding agent: the exact text they would type, in their language.
+    \\Write as the user: 'I' refers to the user, and 'you' refers to the agent.
+    \\Use the assistant's last reply only as context; do not continue it or promise work on the agent's behalf.
     \\Match the length and tone of their recent messages; be short if they are short.
     \\If the assistant's reply ends with a question or a proposal awaiting a decision, predict the user's answer.
     \\One line, at most 80 characters. If unsure, output exactly NONE. Return only the text.
