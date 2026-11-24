@@ -177,9 +177,13 @@ pub const Entry = struct {
         return e.kind == .run or e.kind == .background or e.kind == .failure or e.kind == .changes or (e.kind == .user and long_text.isLong(e.text.items));
     }
 
+    pub fn verticalPadding(e: *const Entry, win: vaxis.Window) u16 {
+        return if (e.kind == .user and win.width >= 4) 1 else 0;
+    }
+
     pub fn toggleRows(e: *Entry, win: vaxis.Window) u16 {
         if (!e.collapsible()) return 0;
-        if (e.open) return 1;
+        if (e.open) return 1 + e.verticalPadding(win);
         const open = e.open;
         e.open = false;
         defer e.open = open;
@@ -309,7 +313,8 @@ pub const Entry = struct {
     fn printUser(e: *const Entry, win: vaxis.Window, commit: bool) u16 {
         var segs: [max_segments]vaxis.Segment = undefined;
         const shown = e.segments(&segs);
-        const body = win.child(.{ .x_off = 2, .width = win.width - 3 });
+        const pad = e.verticalPadding(win);
+        const body = win.child(.{ .x_off = 2, .y_off = pad, .width = win.width - 3 });
         const folded = e.collapsible() and !e.open;
         if (folded) {
             const suffix_width = body.gwidth(e.label.items) + @as(u16, if (e.queued != null) 9 else 0);
@@ -323,7 +328,8 @@ pub const Entry = struct {
             segs[1].text = segs[1].text[0..end];
         }
         const r = body.print(shown, .{ .wrap = if (folded) .none else .word, .commit = commit });
-        const rows = if (folded) 1 else @max(1, r.row +| @intFromBool(r.col > 0));
+        const body_rows = if (folded) 1 else @max(1, r.row +| @intFromBool(r.col > 0));
+        const rows = body_rows +| (2 * pad);
         if (commit) {
             const first: u16 = @intCast(@min(rows, @max(0, -@as(i32, win.y_off))));
             const last: u16 = @intCast(@min(rows, @max(0, @as(i32, win.screen.height) - win.y_off)));

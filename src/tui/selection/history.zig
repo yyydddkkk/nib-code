@@ -62,6 +62,7 @@ pub const History = struct {
         var wrote_row = false;
         for (entries[range.first.entry .. range.last.entry + 1], range.first.entry..) |*entry, i| {
             const height = entry.height(body);
+            const pad = entry.verticalPadding(body);
             const start: u32 = if (i == range.first.entry) @min(range.first.row, height) else 0;
             const end: u32 = if (i == range.last.entry) @min(range.last.row, height) else height;
             var row = start;
@@ -70,6 +71,8 @@ pub const History = struct {
                 _ = entry.print(body.child(.{ .y_off = @intCast(-@as(i32, @intCast(row))), .height = height }), true);
                 const count = @min(screen.height, end - row + 1);
                 for (0..count) |r| {
+                    const entry_row = row + r;
+                    if (entry_row < pad or (entry_row < height and entry_row >= height - pad)) continue;
                     if (wrote_row) try out.append(gpa, '\n');
                     wrote_row = true;
                     const first = if (i == range.first.entry and row + r == range.first.row) range.first.col else 0;

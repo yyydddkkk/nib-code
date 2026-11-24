@@ -1034,7 +1034,7 @@ fn userBackground(bg: [3]u8) vaxis.Color {
     const light = @as(u32, bg[0]) * 299 + @as(u32, bg[1]) * 587 + @as(u32, bg[2]) * 114 > 128_000;
     const accent = if (light) [3]u8{ 40, 80, 150 } else [3]u8{ 120, 160, 230 };
     var rgb: [3]u8 = undefined;
-    for (bg, accent, 0..) |base, tint, i| rgb[i] = @intCast((@as(u16, base) * 7 + tint) / 8);
+    for (bg, accent, 0..) |base, tint, i| rgb[i] = @intCast((@as(u16, base) * 15 + tint) / 16);
     return .{ .rgb = rgb };
 }
 
@@ -1047,20 +1047,18 @@ test "stream events are paced while interaction and completion refresh immediate
     try t.expectEqual(Frames.Refresh.immediate, Event.refresh(.paste_end));
 }
 
-test "code tint is a neutral shade subtler than the user tint" {
+test "code tint is a neutral ten-level shade" {
     const dark = codeBackground(.{ 0, 0, 0 }).rgb;
     const light = codeBackground(.{ 255, 255, 255 }).rgb;
     try std.testing.expectEqual([3]u8{ 10, 10, 10 }, dark);
     try std.testing.expectEqual([3]u8{ 245, 245, 245 }, light);
 }
 
-test "user message tint preserves dark and light terminal contrast" {
+test "user message background blends one-sixteenth blue on dark and light terminals" {
     const dark = userBackground(.{ 0, 0, 0 }).rgb;
     const light = userBackground(.{ 255, 255, 255 }).rgb;
-    try std.testing.expect(dark[0] < 32 and dark[1] < 32 and dark[2] < 32);
-    try std.testing.expect(light[0] > 220 and light[1] > 220 and light[2] > 220);
-    try std.testing.expect(dark[2] > dark[0]);
-    try std.testing.expect(light[2] > light[0]);
+    try std.testing.expectEqual([3]u8{ 7, 10, 14 }, dark);
+    try std.testing.expectEqual([3]u8{ 241, 244, 248 }, light);
 }
 
 fn isNewline(key: vaxis.Key, pasting: bool) bool {

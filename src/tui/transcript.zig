@@ -957,7 +957,7 @@ test "user cards tint wrapped rows, retain terminal foreground and leave gaps un
     const entry = &t.entries.items[0];
     entry.user_bg = .{ .rgb = .{ 15, 20, 28 } };
     const height = entry.height(win);
-    try testing.expect(height >= 3);
+    try testing.expect(height >= 5);
     try testing.expectEqual(height, entry.print(win, true));
     for (0..height) |row| {
         try testing.expectEqualStrings("▎", screen.readCell(0, @intCast(row)).?.char.grapheme);
@@ -966,12 +966,14 @@ test "user cards tint wrapped rows, retain terminal foreground and leave gaps un
         try testing.expect(body.style.fg == .default);
         try testing.expect(!body.style.bold);
     }
-    try testing.expectEqualStrings("h", screen.readCell(2, 0).?.char.grapheme);
-    try testing.expectEqualStrings(" ", screen.readCell(1, 0).?.char.grapheme);
+    try testing.expectEqualStrings(" ", screen.readCell(2, 0).?.char.grapheme);
+    try testing.expectEqualStrings("h", screen.readCell(2, 1).?.char.grapheme);
+    try testing.expectEqualStrings(" ", screen.readCell(2, height - 1).?.char.grapheme);
     try testing.expect(screen.readCell(0, height).?.style.bg == .default);
     win.clear();
     _ = entry.print(win.child(.{ .y_off = -1, .height = height }), true);
     try testing.expectEqualStrings("▎", screen.readCell(0, 0).?.char.grapheme);
+    try testing.expectEqualStrings("h", screen.readCell(2, 0).?.char.grapheme);
     try testing.expect(screen.readCell(0, height - 1).?.style.bg == .default);
 }
 
@@ -985,28 +987,32 @@ test "long user messages fold live and replayed, truncate the first line, and ex
     const raw = "a very long first line that must be clipped\n2\n3\n4\n5\n6";
     try t.add(gpa, .user, raw);
     var e = &t.entries.items[0];
-    try testing.expectEqual(@as(u16, 1), e.height(win));
+    try testing.expectEqual(@as(u16, 3), e.height(win));
+    try testing.expectEqual(@as(u16, 3), e.toggleRows(win));
     _ = e.print(win, true);
-    try testing.expectEqualStrings("s", screen.readCell(28, 0).?.char.grapheme);
-    try testing.expect(screen.readCell(28, 0).?.style.dim);
+    try testing.expectEqualStrings("s", screen.readCell(28, 1).?.char.grapheme);
+    try testing.expect(screen.readCell(28, 1).?.style.dim);
     toggleAll(&t);
-    try testing.expect(e.height(win) > 5);
+    try testing.expect(e.height(win) >= 8);
+    try testing.expectEqual(@as(u16, 2), e.toggleRows(win));
+    try testing.expect(e.control(win, 1) != null);
+    try testing.expect(e.control(win, 2) == null);
     t.clear(gpa);
     try t.addHistory(gpa, &.{.{ .role = "user", .content = raw }});
     e = &t.entries.items[0];
-    try testing.expectEqual(@as(u16, 1), e.height(win));
+    try testing.expectEqual(@as(u16, 3), e.height(win));
     toggleAll(&t);
-    try testing.expect(e.height(win) > 5);
+    try testing.expect(e.height(win) >= 8);
     try t.add(gpa, .user, raw);
     try testing.expect(!t.entries.items[1].open);
-    try testing.expectEqual(@as(u16, 1), t.entries.items[1].height(win));
+    try testing.expectEqual(@as(u16, 3), t.entries.items[1].height(win));
     const long = try gpa.alloc(u8, 801);
     defer gpa.free(long);
     @memset(long, 'x');
     try t.add(gpa, .user, long);
-    try testing.expectEqual(@as(u16, 1), t.entries.items[2].height(win));
+    try testing.expectEqual(@as(u16, 3), t.entries.items[2].height(win));
     try t.add(gpa, .user, long[0..800]);
-    try testing.expect(t.entries.items[3].height(win) > 1);
+    try testing.expect(t.entries.items[3].height(win) > 3);
 }
 
 test "bills stay dim and one row when resized or expanded" {
