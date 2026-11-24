@@ -255,8 +255,8 @@ class Mock(ThreadingHTTPServer):
             return "try { await " + bash("sudo true") + " } catch(e) { e.message }"
         if self.case == "timeout":
             program = ("import os,time,pathlib; pathlib.Path('worker.started').write_text(str(os.getpid())); "
-                       "time.sleep(30)")
-            return "await " + bash(shlex.join([sys.executable, "-c", program]), timeout_ms=500)
+                       "print('before-timeout', flush=True); time.sleep(30); print('after-timeout')")
+            return "await " + bash(shlex.join([sys.executable, "-c", program]), cwd="nested", timeout_ms=500)
         if self.case == "nonzero":
             return "await " + bash("echo failed; exit 7")
         if self.case == "inherited_pipe":
@@ -996,12 +996,19 @@ class BackgroundBashTests:
 
     def test_timeout_is_delivered_and_process_group_stops(self):
         mock = self.mock("timeout")
+        nested = self.cwd / "nested"
+        nested.mkdir()
         events = self.finish(self.start())
         result = json.loads(content(self.completion(mock.observed()[-1]["messages"])).split("\n", 1)[1])
-        self.assertRegex(result["error"].lower(), "timed.out|timeout")
+        self.assertIs(result["timed_out"], True)
+        self.assertIsNone(result["exit_code"])
+        self.assertGreaterEqual(result["elapsed_ms"], 500)
+        self.assertEqual(result["output"], "before-timeout\n")
         self.assertFalse(next(e["background"]["ok"] for e in events
                               if e.get("background", {}).get("state") == "finished"))
-        pid = int((self.cwd / "worker.started").read_text())
+        self.assertIn("timed_out", [e["progress"]["state"] for e in events
+                                    if e.get("progress", {}).get("id") == "b1"])
+        pid = int((nested / "worker.started").read_text())
         wait_for(lambda: not alive(pid))
 
     def test_policy_rejection_does_not_start_background_job(self):

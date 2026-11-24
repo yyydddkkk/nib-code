@@ -85,22 +85,26 @@ pub const Transcript = struct {
         e.task_id = try gpa.dupe(u8, id);
         try e.text.appendSlice(gpa, result);
         try e.label.print(gpa, "{s} {s} · {s}", .{ id, if (kind == .run) "Run" else @tagName(kind), if (ok) "completed" else "failed" });
-        const Summary = struct { superseded_by: ?[]const u8 = null, exit_code: ?u8 = null, @"error": ?[]const u8 = null };
+        const Summary = struct { superseded_by: ?[]const u8 = null, exit_code: ?u8 = null, timed_out: bool = false, @"error": ?[]const u8 = null };
         const parsed = std.json.parseFromSlice(Summary, gpa, result, .{ .ignore_unknown_fields = true }) catch null;
+        defer if (parsed) |summary| summary.deinit();
         if (parsed) |summary| {
-            defer summary.deinit();
             if (summary.value.superseded_by) |replacement| {
                 e.run = .superseded;
                 e.label.clearRetainingCapacity();
                 try e.label.print(gpa, "{s} superseded by {s}", .{ id, replacement });
                 try t.replaceBash(gpa, id, replacement);
             }
-            if (!ok and std.mem.indexOf(u8, summary.value.@"error" orelse "", "timed out") != null) {
-                e.run = .warning;
-                e.label.clearRetainingCapacity();
-                try e.label.print(gpa, "{s} {s} · timed out", .{ id, @tagName(kind) });
-            }
             if (kind == .bash) if (summary.value.exit_code) |code| try e.label.print(gpa, " · exit {d}", .{code});
+        }
+        const timed_out = if (parsed) |summary|
+            summary.value.timed_out or std.mem.indexOf(u8, summary.value.@"error" orelse "", "timed out") != null
+        else
+            kind == .bash and std.mem.startsWith(u8, result, "{\"timed_out\":true,");
+        if (!ok and timed_out) {
+            e.run = .warning;
+            e.label.clearRetainingCapacity();
+            try e.label.print(gpa, "{s} {s} · timed out", .{ id, @tagName(kind) });
         }
         try t.entries.append(gpa, e);
     }
@@ -1391,14 +1395,20 @@ test "session IDs route progress across repeated Turn Run numbers and late termi
     try testing.expectEqualStrings("  └─ b1 bash sleep 30 · 4s · canceled", t.entries.items[1].agent_tree.rows.items[1].text);
 }
 
-test "background failures without output preview the error and keep complete JSON" {
+test "background bash timeout is labeled without discarding the result" {
     const gpa = testing.allocator;
     var t: Transcript = .{};
     defer t.deinit(gpa);
-    const result = "{\"error\":\"timed out after 4000 ms\"}";
-    try t.backgroundResult(gpa, .bash, "b1", false, result);
-    try testing.expectEqualStrings("b1 bash · timed out", t.entries.items[0].label.items);
-    try testing.expectEqualStrings(result, t.entries.items[0].text.items);
+    const results = [_][]const u8{
+        "{\"error\":\"timed out after 4000 ms\"}",
+        "{\"timed_out\":true,\"elapsed_ms\":4000,\"exit_code\":null,\"output\":\"before\\n\"}",
+        "{\"timed_out\":true,\"elapsed_ms\":4000,\"exit_code\":null,\"output\":\"head … omitted … tail\"}\n[full output: saved]",
+    };
+    for (results, 0..) |result, i| {
+        try t.backgroundResult(gpa, .bash, "b1", false, result);
+        try testing.expectEqualStrings("b1 bash · timed out", t.entries.items[i].label.items);
+        try testing.expectEqualStrings(result, t.entries.items[i].text.items);
+    }
 }
 
 test "foreground agent reuse creates a new Run row and late progress stays in the old tree" {

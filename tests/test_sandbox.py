@@ -109,6 +109,25 @@ class SandboxTests(unittest.TestCase):
         self.assertRegex(result["output"], DENIED)
         self.assertFalse(self.outside.exists())
 
+    def test_bash_cwd_is_per_call_and_does_not_add_a_writable_root(self):
+        sibling = self.base / "sibling with spaces"
+        sibling.mkdir()
+        (self.project / "link").symlink_to(sibling, target_is_directory=True)
+        (self.project / "nested").mkdir()
+        calls = [bash("pwd; touch marker", cwd=str(sibling)), bash("pwd; touch marker", cwd="nested"),
+                 bash("pwd", cwd="link"), bash("pwd")]
+        self.run_js("const r = await Promise.all([" + ",".join(calls) + "]); "
+                    "await tools.write({path:'result.json', content:JSON.stringify(r)});")
+        outside, inside, link, default = json.loads((self.project / "result.json").read_text())
+        self.assertNotEqual(outside["exit_code"], 0)
+        self.assertTrue(outside["output"].startswith(str(sibling) + "\n"), outside)
+        self.assertRegex(outside["output"], DENIED)
+        self.assertFalse((sibling / "marker").exists())
+        self.assertEqual(inside, {"exit_code": 0, "output": str(self.project / "nested") + "\n"})
+        self.assertTrue((self.project / "nested" / "marker").exists())
+        self.assertEqual(link, {"exit_code": 0, "output": str(sibling) + "\n"})
+        self.assertEqual(default, {"exit_code": 0, "output": str(self.project) + "\n"})
+
     def test_temp_dirs_and_devices_stay_writable(self):
         marker = Path("/tmp") / ("nib-sandbox-" + uuid.uuid4().hex)
         self.addCleanup(lambda: marker.unlink(missing_ok=True))
