@@ -110,8 +110,8 @@ def settle(gate):
 
 def test_prediction(tmp):
     first, late, over, after = Gate("run the tests"), Gate("late guess", True), Gate("late third", True), Gate("after four")
-    user = "Let me know when the fix is ready for tests"
-    reply = "The fix is ready. Should I start the test suite?"
+    user = "Once the fix is ready, the next step is the test suite"
+    reply = "The fix is ready. What should I do next?"
     gate4 = Gate("answer 4", True)
     with fixture(tmp, [first, late, over, after], {1: Gate(reply), 4: gate4}) as (terminal, mock):
         terminal.send(user + "\r")
@@ -167,24 +167,32 @@ def test_prediction(tmp):
         assert not shown(terminal, "late third")
 
 
-def test_greeting_prediction(tmp):
-    reply = "你好！有什么我可以帮你的吗？"
-    prediction = Gate("NONE")
-    with fixture(tmp, [prediction], {1: Gate(reply)}) as (terminal, _):
-        terminal.send("你好\r")
-        terminal.wait_turn(reply)
-        assert prediction.received.wait(5)
-        instruction, context = (m["content"] for m in prediction.body["messages"])
-        assert "Do not answer the user, echo the assistant's reply, or continue it" in instruction
-        assert "A greeting followed by a generic offer to help is not enough" in instruction
-        assert "output exactly NONE" in instruction
-        assert "User's last message:\n你好\n\nAssistant's last reply:\n" + reply in context
-        settle(prediction)
-        assert shown(terminal, "Ask about this project") and not shown(terminal, "NONE")
+def test_abstains(tmp):
+    cases = {
+        "greeting": ("你好", "你好！有什么我可以帮你的吗？"),
+        "completed": ("把输入预测的角色写清楚", "已明确预测器的角色，测试通过，PR 已提交。"),
+        "choice": ("帮我看看构建速度", "缓存和并行编译都值得试。你想先试哪个？"),
+    }
+    for case, (user, reply) in cases.items():
+        prediction = Gate("NONE")
+        with fixture(tmp / case, [prediction], {1: Gate(reply)}) as (terminal, _):
+            terminal.send(user + "\r")
+            terminal.wait_turn(reply)
+            assert prediction.received.wait(5)
+            instruction, context = (m["content"] for m in prediction.body["messages"])
+            assert "Do not answer the user, echo the assistant's reply, or continue it" in instruction
+            assert "Default to NONE" in instruction and "output exactly NONE" in instruction
+            assert "the user's own words strongly support" in instruction
+            assert "Do not pick an option for them" in instruction
+            assert "Never invent agreement, praise, or thanks" in instruction
+            assert "a completed-work report alone does not justify a prediction" in instruction
+            assert f"User's last message:\n{user}\n\nAssistant's last reply:\n{reply}" in context
+            settle(prediction)
+            assert shown(terminal, "Ask about this project") and not shown(terminal, "NONE")
 
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-prediction-") as directory:
         test_prediction(Path(directory) / "prediction")
-        test_greeting_prediction(Path(directory) / "greeting")
+        test_abstains(Path(directory))
         print("test_prediction: ok")
