@@ -73,16 +73,24 @@ def test_background_report_and_user_card(tmp):
     reply = Reply("\n".join(f"- line-{i:03}" for i in range(80)))
     with terminal_fixture(tmp, reply) as terminal:
         terminal.send(mouse(64, 1, 1) * 40)
-        terminal.until("▎".encode())
+        def card():
+            lines = screen(terminal.read(), 120, 32)
+            return lines[:3] if lines[1] == " ▎ mouse test" else None
+
+        assert wait_for(card, "three-row user card") == [" ▎", " ▎ mouse test", " ▎"]
         for color in ("0000/0000/0000", "ffff/ffff/ffff"):
             start = len(terminal.read())
             terminal.send(f"\x1b]11;rgb:{color}\x1b\\")
             wait_for(lambda: len(terminal.read()) > start, "theme redraw")
             assert terminal.child.poll() is None
         start = len(terminal.read())
-        terminal.send(mouse(0, 3, 0) + mouse(32, 12, 0) + mouse(0, 12, 0, release=True))
+        terminal.send(mouse(0, 3, 1) + mouse(32, 12, 1) + mouse(0, 12, 1, release=True))
         copied = clipboard(terminal, start)
         assert copied == "mouse test", repr(copied)
+        start = len(terminal.read())
+        terminal.send(mouse(0, 3, 0) + mouse(32, 12, 2) + mouse(0, 12, 2, release=True))
+        copied = clipboard(terminal, start)
+        assert copied == " ▎ mouse test", repr(copied)
 
 
 def test_click_and_ctrl_o_open_single_runs(tmp):
@@ -193,7 +201,7 @@ def test_simple_mode(tmp):
         assert lines[37] == "╭" + "─" * 158 + "╮", view()
         assert lines[38] == "│" + " " * 158 + "│", view()
         assert lines[39] == "╰" + "─" * 158 + "╯", view()
-        assert lines[0] == " ▎ check", view()
+        assert lines[:3] == [" ▎", " ▎ check", " ▎"], view()
         assert "tokens" not in view() and "mock" not in view(), view()
         row = next(i for i, line in enumerate(view().split("\n")) if "Run" in line)
         terminal.send(mouse(0, 15, row) + mouse(0, 15, row, release=True))
