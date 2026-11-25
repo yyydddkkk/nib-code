@@ -777,7 +777,7 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             assert route["tuning"] == {"delivery": "user", "validation": "single", "continuation": "generic"}, route
             sent = read_requests(requests_path)[-1]
             assert sent["model"] == model, sent["model"]
-            assert "async wait(ids)" not in sent["messages"][0]["content"]
+            assert "async wait(ids)" in sent["messages"][0]["content"]
 
         patches_home = tmp / "patches-home"
         ask("patch labels", overrides={"NIB_HOME": str(patches_home), "NIB_PATCHES_OFF": "all"})

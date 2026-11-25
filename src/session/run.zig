@@ -111,12 +111,12 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     if (ran == null) {
         const remaining = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
         const prompt = @import("prompt.zig");
-        const mode = s.tools.backgroundMode();
+        const can_wait = s.tools.waitEnabled();
         const message = try std.fmt.allocPrint(a, "Run still executing after {d} ms; continuing in background as {s}. Captured output is preserved. {s} {s}", .{
             s.cfg.limits.run_background_after_ms,
             s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id,
-            prompt.backgroundDelivery(mode),
-            prompt.backgroundWait(mode),
+            prompt.backgroundDelivery(s.tools.tuning.delivery, can_wait),
+            prompt.backgroundWait(can_wait),
         });
         const text = try output_format.stepLimitOutput(a, message, remaining);
         try sink.emit(sink.ctx, .{ .run_end = .{ .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id, .ok = true, .output = text, .tool_summary = .{} } });

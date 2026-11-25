@@ -107,18 +107,15 @@ fn validationRuleText(variant: Tuning.Validation) []const u8 {
     };
 }
 
-const BackgroundMode = @import("tuning.zig").Resolved.BackgroundMode;
-
-pub fn backgroundDelivery(mode: BackgroundMode) []const u8 {
-    return switch (mode) {
-        .user => "Results arrive automatically as messages.",
-        .tool => "Results are appended to a later Run's output.",
-        .tool_without_wait => "Results are appended to a later Run's output while you work; if you reply without tools, Session delivers them as messages.",
+pub fn backgroundDelivery(delivery: Tuning.Delivery, can_wait: bool) []const u8 {
+    return switch (delivery) {
+        .user => "Unclaimed results arrive automatically as messages.",
+        .tool => if (can_wait) "Results are appended to a later Run's output." else "Results are appended to a later Run's output while you work; if you reply without tools, Session delivers them as messages.",
     };
 }
 
-pub fn backgroundWait(mode: BackgroundMode) []const u8 {
-    return if (mode == .tool)
+pub fn backgroundWait(can_wait: bool) []const u8 {
+    return if (can_wait)
         "If no independent work remains, call `await tools.wait()`."
     else
         "If no independent work remains, reply briefly without tools; Session waits locally and continues the Turn.";
@@ -166,8 +163,8 @@ pub fn renderSystem(a: std.mem.Allocator, cwd: []const u8, host: *const tools.To
     const lines = try patchLines(a, environ, profile, host.tuning.continuation);
     defer a.free(lines);
     const bytes = if (host.cfg) |cfg| cfg.limits.run_output_bytes else @import("output.zig").max_bytes;
-    const mode = host.backgroundMode();
-    const background = try std.fmt.allocPrint(a, " {s} {s}", .{ backgroundDelivery(mode), backgroundWait(mode) });
+    const can_wait = host.waitEnabled();
+    const background = try std.fmt.allocPrint(a, " {s} {s}", .{ backgroundDelivery(host.tuning.delivery, can_wait), backgroundWait(can_wait) });
     defer a.free(background);
     return render(a, .{
         .cwd = cwd,
@@ -208,9 +205,9 @@ test "system prompt documents every tool in JavaScript" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "last expression and console.log output share 16 KiB per Run") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "tool results inside JS remain complete") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
-    for ([_][]const u8{ "Results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
+    for ([_][]const u8{ "Unclaimed results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
         try std.testing.expect(std.mem.indexOf(u8, prompt, text) != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "Session waits locally and continues the Turn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "call `await tools.wait()`") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "independent read-only investigations") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Keep serial edits, builds, tests and reviews in the main loop") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "1800000 (30 min)") != null);
@@ -448,16 +445,23 @@ test "resumed Turns expose budget changes without rewriting the original system"
 test "background prompt matches the host tool table and delivery" {
     const t = std.testing;
     var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" } };
-    for (std.meta.tags(BackgroundMode)) |mode| {
-        host.tuning.delivery = if (mode == .user) .user else .tool;
-        host.depth = if (mode == .tool_without_wait) 1 else 0;
-        const text = try renderSystem(t.allocator, "/work", &host, .deepseek, null);
-        defer t.allocator.free(text);
-        try t.expectEqual(mode, host.backgroundMode());
-        try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundDelivery(mode)));
-        try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundWait(mode)));
-        try t.expectEqual(mode == .tool, std.mem.indexOf(u8, text, "async wait(ids)") != null);
-        try t.expectEqual(mode == .tool, std.mem.indexOf(u8, text, "await tools.wait()") != null);
+    for (std.meta.tags(Tuning.Delivery)) |delivery| {
+        host.tuning.delivery = delivery;
+        for ([_]struct { depth: u32, forked: bool, can_wait: bool }{
+            .{ .depth = 0, .forked = false, .can_wait = true },
+            .{ .depth = 1, .forked = true, .can_wait = true },
+            .{ .depth = 1, .forked = false, .can_wait = false },
+        }) |session| {
+            host.depth = session.depth;
+            host.forked = session.forked;
+            const text = try renderSystem(t.allocator, "/work", &host, .deepseek, null);
+            defer t.allocator.free(text);
+            try t.expectEqual(session.can_wait, host.waitEnabled());
+            try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundDelivery(delivery, session.can_wait)));
+            try t.expect(std.mem.containsAtLeast(u8, text, 1, backgroundWait(session.can_wait)));
+            try t.expectEqual(session.can_wait, std.mem.indexOf(u8, text, "async wait(ids)") != null);
+            try t.expectEqual(session.can_wait, std.mem.indexOf(u8, text, "await tools.wait()") != null);
+        }
     }
 }
 
@@ -471,9 +475,11 @@ test "common footprint uses shared text without selected policy or endpoint tool
     for ([_][]const u8{ "async search", "async mcp", "async wait", "; current:", "{{llm_" }) |part| {
         try t.expect(std.mem.indexOf(u8, text, part) == null);
     }
-    for (std.meta.tags(BackgroundMode)) |mode| {
-        try t.expect(std.mem.indexOf(u8, text, backgroundDelivery(mode)) == null);
-        try t.expect(std.mem.indexOf(u8, text, backgroundWait(mode)) == null);
+    for ([_]bool{ false, true }) |can_wait| {
+        for (std.meta.tags(Tuning.Delivery)) |delivery| {
+            try t.expect(std.mem.indexOf(u8, text, backgroundDelivery(delivery, can_wait)) == null);
+        }
+        try t.expect(std.mem.indexOf(u8, text, backgroundWait(can_wait)) == null);
     }
     for (std.meta.tags(Tuning.Validation)) |variant| {
         const guidance = validationRuleText(variant);
@@ -487,15 +493,15 @@ test "validation variants preserve delivery and remove only validation guidance"
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    for ([_]bool{ false, true }) |delivery| {
-        var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" }, .tuning = .{ .delivery = if (delivery) .tool else .user } };
+    for (std.meta.tags(Tuning.Delivery)) |delivery| {
+        var host: tools.Tools = .{ .io = t.io, .home = ".", .cfg = .{ .base_url = "invalid://local", .api_key = "k", .model = "deepseek-flash" }, .tuning = .{ .delivery = delivery } };
         inline for (std.meta.tags(Tuning.Validation)) |variant| {
             host.tuning.validation = variant;
             const system = try renderSystem(a, "/work", &host, .default, null);
             try t.expect(std.mem.indexOf(u8, system, "Full checks") == null);
             try t.expectEqual(variant == .single, std.mem.indexOf(u8, system, "known regression tests, expected results/fixtures") != null);
             try t.expectEqual(variant == .@"existing-only", std.mem.indexOf(u8, system, "do not write new test scripts or install toolchains") != null);
-            try t.expectEqual(delivery, std.mem.indexOf(u8, system, "async wait(ids)") != null);
+            try t.expect(std.mem.indexOf(u8, system, backgroundDelivery(delivery, true)) != null);
             try t.expect(std.mem.indexOf(u8, system, "Fix it and continue the task") != null);
             try t.expect(std.mem.indexOf(u8, system, "{{validation}}") == null);
         }

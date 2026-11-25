@@ -40,7 +40,7 @@ Family detection uses the model name, not the Provider or API shape. Family rout
 
 - **nib** owns tool contracts, sandboxing, cancellation, logging, and delivery guarantees. User permissions and explicit limits do not become Profile settings.
 - **Provider** owns capabilities and wire encoding. It does not look up Model Profiles.
-- **Profile** selects strategy variants. Session, tool exposure, and prompt rendering read the same choice. For example, a normal child Session can fold results into tool output but cannot use `tools.wait()`; when idle it replies without tools and waits locally.
+- **Profile** selects strategy variants. Session execution and prompt rendering read the same choices. For example, `delivery` controls how unclaimed background results reach the model. `tools.wait()` is available in root and forked Sessions independently of delivery; ordinary child Sessions reply without tools to wait locally.
 - **Prompt patches** remain independently removable by ID and can be scoped to Profiles. Do not duplicate a patch's instruction in the common template. Use a Tuning when a variation changes execution as well as text.
 
 The boundary for strategies is movable: promote a family strategy when it works as a shared default, move a common strategy into a Profile when evidence shows that only some families benefit, and remove workarounds without a measurable effect. Keep the execution contracts independent of those moves.
