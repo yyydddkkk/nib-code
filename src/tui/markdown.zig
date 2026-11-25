@@ -11,8 +11,10 @@ pub const Theme = struct {
 
 const Kind = enum { prose, heading, code, table, quote, list, other };
 
-const max_cols = 16;
-const col_gap = 2;
+const max_grid_cols = 16;
+const col_gap = 3;
+const min_wrap_col = 4;
+const table_rule: vaxis.Style = .{ .dim = true };
 
 const Line = struct {
     text: []const u8,
@@ -102,17 +104,18 @@ fn cellCount(line: []const u8) usize {
     return n;
 }
 
-fn parseDelimiter(line: []const u8, aligns: ?*[max_cols]Align) ?usize {
+fn parseDelimiter(line: []const u8, aligns: ?*[max_grid_cols]Align) ?usize {
     if (std.mem.indexOfScalar(u8, line, '|') == null) return null;
     var cells = Cells.init(line);
     var n: usize = 0;
     while (cells.next()) |cell| : (n += 1) {
-        if (n == max_cols) return null;
         const left = std.mem.startsWith(u8, cell, ":");
         const right = cell.len > 0 and cell[cell.len - 1] == ':';
         const dashes = cell[@intFromBool(left) .. cell.len - @intFromBool(right and cell.len > @intFromBool(left))];
         if (dashes.len == 0 or std.mem.indexOfNone(u8, dashes, "-") != null) return null;
-        if (aligns) |a| a[n] = if (left and right) .center else if (right) .right else .left;
+        if (aligns) |a| {
+            if (n < a.len) a[n] = if (left and right) .center else if (right) .right else .left;
+        }
     }
     return n;
 }
@@ -397,106 +400,247 @@ fn printQuote(row: vaxis.Window, text: []const u8, theme: Theme, commit: bool) u
     return used;
 }
 
-fn unescapedWidth(win: vaxis.Window, text: []const u8) u16 {
-    var w: u16 = 0;
+fn tableWordWidth(win: vaxis.Window, text: []const u8) u16 {
+    var width: u16 = 0;
     var rest = text;
     while (std.mem.indexOf(u8, rest, "\\|")) |at| {
-        w +|= win.gwidth(rest[0..at]) +| 1;
-        rest = rest[at + 2 ..];
+        width +|= win.gwidth(rest[0..at]);
+        rest = rest[at + 1 ..];
     }
-    return w +| win.gwidth(rest);
+    return width +| win.gwidth(rest);
 }
+
+const CellTokens = struct {
+    rest: []const u8,
+
+    fn next(tokens: *CellTokens) ?[]const u8 {
+        if (tokens.rest.len == 0) return null;
+        const end = if (isSpace(tokens.rest[0])) std.mem.indexOfNone(u8, tokens.rest, " \t") else std.mem.indexOfAny(u8, tokens.rest, " \t");
+        const n = end orelse tokens.rest.len;
+        const token = tokens.rest[0..n];
+        tokens.rest = tokens.rest[n..];
+        return token;
+    }
+
+    fn isSpace(c: u8) bool {
+        return c == ' ' or c == '\t';
+    }
+};
 
 fn cellWidth(win: vaxis.Window, cell: []const u8) u16 {
     var spans: Inline = .{ .text = cell };
-    var w: u16 = 0;
-    while (spans.next()) |segment| w +|= unescapedWidth(win, segment.text);
-    return w;
-}
-
-fn printCell(win: vaxis.Window, x: u16, cell: []const u8, base: vaxis.Style, theme: Theme) void {
-    var spans: Inline = .{ .text = cell, .base = base, .code_bg = theme.tint };
-    var col = x;
+    var width: u16 = 0;
     while (spans.next()) |segment| {
-        var rest = segment.text;
-        while (true) {
-            const at = std.mem.indexOf(u8, rest, "\\|");
-            const piece = if (at) |a| rest[0..a] else rest;
-            _ = win.printSegment(.{ .text = piece, .style = segment.style }, .{ .col_offset = col, .wrap = .none });
-            col +|= win.gwidth(piece);
-            const a = at orelse break;
-            _ = win.printSegment(.{ .text = "|", .style = segment.style }, .{ .col_offset = col, .wrap = .none });
-            col +|= 1;
-            rest = rest[a + 2 ..];
+        var tokens: CellTokens = .{ .rest = segment.text };
+        while (tokens.next()) |token| {
+            width +|= if (CellTokens.isSpace(token[0])) @intCast(@min(token.len, std.math.maxInt(u16))) else tableWordWidth(win, token);
         }
     }
+    return width;
+}
+
+const CellFlow = struct {
+    win: vaxis.Window,
+    commit: bool,
+    x: u16 = 0,
+    y: u16 = 0,
+    spaces: u16 = 0,
+    space_style: vaxis.Style = .{},
+
+    fn put(flow: *CellFlow, grapheme: []const u8, width: u16, style: vaxis.Style) void {
+        if (flow.commit) flow.win.writeCell(flow.x, flow.y, .{ .char = .{ .grapheme = grapheme, .width = @intCast(width) }, .style = style });
+        flow.x += width;
+    }
+
+    fn newline(flow: *CellFlow) void {
+        flow.x = 0;
+        flow.y +|= 1;
+    }
+
+    fn segment(flow: *CellFlow, value: vaxis.Segment) void {
+        if (flow.win.width == 0) return;
+        var tokens: CellTokens = .{ .rest = value.text };
+        while (tokens.next()) |token| {
+            if (CellTokens.isSpace(token[0])) {
+                flow.spaces +|= @intCast(@min(token.len, std.math.maxInt(u16)));
+                flow.space_style = value.style;
+                continue;
+            }
+            if (flow.spaces != 0) {
+                if (@min(tableWordWidth(flow.win, token), flow.win.width) +| flow.spaces > flow.win.width - flow.x) {
+                    if (flow.x > 0) flow.newline();
+                } else {
+                    for (0..flow.spaces) |_| flow.put(" ", 1, flow.space_style);
+                }
+                flow.spaces = 0;
+            }
+            var at: usize = 0;
+            var graphemes = vaxis.unicode.graphemeIterator(token);
+            while (graphemes.next()) |grapheme| {
+                const bytes = grapheme.bytes(token);
+                at += bytes.len;
+                if (std.mem.eql(u8, bytes, "\\") and at < token.len and token[at] == '|') continue;
+                const width = flow.win.gwidth(bytes);
+                if (width == 0) continue;
+                if (width > flow.win.width) {
+                    if (flow.x == flow.win.width) flow.newline();
+                    flow.put("�", 1, value.style);
+                    continue;
+                }
+                if (width > flow.win.width - flow.x) flow.newline();
+                flow.put(bytes, width, value.style);
+            }
+        }
+    }
+
+    fn inlineText(flow: *CellFlow, text: []const u8, style: vaxis.Style, theme: Theme) void {
+        var spans: Inline = .{ .text = text, .base = style, .code_bg = theme.tint };
+        while (spans.next()) |value| flow.segment(value);
+    }
+
+    fn height(flow: CellFlow) u16 {
+        return flow.y +| 1;
+    }
+};
+
+fn tableLine(win: vaxis.Window, x: u16, y: u16, glyph: []const u8) void {
+    win.writeCell(x, y, .{ .char = .{ .grapheme = glyph, .width = 1 }, .style = table_rule });
 }
 
 const Table = struct {
     cols: usize,
-    aligns: [max_cols]Align = undefined,
-    widths: [max_cols]u16 = @splat(0),
+    aligns: [max_grid_cols]Align = undefined,
+    widths: [max_grid_cols]u16 = @splat(1),
     total: u16 = 0,
 
-    fn body(block: []const u8) std.mem.SplitIterator(u8, .scalar) {
-        return std.mem.splitScalar(u8, block, '\n');
-    }
-
-    fn measure(win: vaxis.Window, block: []const u8) ?Table {
-        var lines = body(block);
-        const header = std.mem.trimEnd(u8, lines.next().?, "\r");
+    fn measure(win: vaxis.Window, header: []const u8, delim: []const u8, body: TableRows) ?Table {
         var t: Table = .{ .cols = 0 };
-        t.cols = parseDelimiter(std.mem.trimEnd(u8, lines.next() orelse return null, "\r"), &t.aligns) orelse return null;
-        measureRow(win, &t, header);
-        while (lines.next()) |line| measureRow(win, &t, std.mem.trimEnd(u8, line, "\r"));
-        t.total = @intCast(@min(std.math.maxInt(u16), (t.cols - 1) * col_gap));
-        for (t.widths[0..t.cols]) |w| t.total +|= w;
-        return if (t.total > win.width) null else t;
+        t.cols = parseDelimiter(delim, &t.aligns).?;
+        if (t.cols > max_grid_cols) return null;
+        t.measureRow(win, header);
+        var rest = body;
+        while (rest.next()) |line| t.measureRow(win, line);
+
+        const gaps = (t.cols - 1) * col_gap;
+        const widths = t.widths[0..t.cols];
+        const natural = sumWidths(widths, std.math.maxInt(u16)) + gaps;
+        if (natural <= win.width) {
+            t.total = @intCast(natural);
+            return t;
+        }
+        if (sumWidths(widths, min_wrap_col) + gaps > win.width) return null;
+
+        const available = win.width - gaps;
+        var lo: u16 = min_wrap_col;
+        var hi: u16 = @intCast(available);
+        while (lo < hi) {
+            const mid = hi - (hi - lo) / 2;
+            if (sumWidths(widths, mid) <= available) lo = mid else hi = mid - 1;
+        }
+        var remaining = available - sumWidths(widths, lo);
+        for (widths) |*width| {
+            if (width.* <= lo) continue;
+            width.* = lo + @as(u16, @intFromBool(remaining > 0));
+            remaining -|= 1;
+        }
+        t.total = win.width;
+        return t;
     }
 
-    fn measureRow(win: vaxis.Window, t: *Table, line: []const u8) void {
+    fn sumWidths(widths: []const u16, cap: u16) usize {
+        var total: usize = 0;
+        for (widths) |w| total += @min(w, cap);
+        return total;
+    }
+
+    fn measureRow(t: *Table, win: vaxis.Window, line: []const u8) void {
         var cells = Cells.init(line);
-        var i: usize = 0;
-        while (cells.next()) |cell| : (i += 1) {
-            if (i == t.cols) break;
-            t.widths[i] = @max(t.widths[i], cellWidth(win, cell));
+        for (t.widths[0..t.cols]) |*width| {
+            const cell = cells.next() orelse break;
+            width.* = @max(width.*, cellWidth(win, cell));
         }
     }
 
-    fn printRow(t: *const Table, win: vaxis.Window, line: []const u8, base: vaxis.Style, theme: Theme) void {
+    fn printRow(t: *const Table, win: vaxis.Window, line: []const u8, base: vaxis.Style, theme: Theme, commit: bool) u16 {
         var cells = Cells.init(line);
+        var height: u16 = 1;
         var x: u16 = 0;
-        for (0..t.cols) |i| {
+        for (t.widths[0..t.cols], t.aligns[0..t.cols], 0..) |width, alignment, i| {
             const cell = cells.next() orelse "";
-            const pad = t.widths[i] -| cellWidth(win, cell);
-            const at = x + switch (t.aligns[i]) {
-                .left => @as(u16, 0),
+            const pad = if (alignment == .left) 0 else width -| cellWidth(win, cell);
+            var flow: CellFlow = .{ .win = win.child(.{ .x_off = x, .width = width }), .commit = commit, .x = switch (alignment) {
+                .left => 0,
                 .center => pad / 2,
                 .right => pad,
-            };
-            printCell(win, at, cell, base, theme);
-            x +|= t.widths[i] +| col_gap;
+            } };
+            flow.inlineText(cell, base, theme);
+            height = @max(height, flow.height());
+            if (i + 1 < t.cols) x += width + col_gap;
+        }
+        if (commit) {
+            x = 0;
+            for (t.widths[0 .. t.cols - 1]) |width| {
+                x += width + col_gap;
+                for (0..@min(win.height, height)) |y| tableLine(win, x - 2, @intCast(y), "│");
+            }
+        }
+        return height;
+    }
+
+    fn printHeaderRule(t: *const Table, win: vaxis.Window, y: u16) void {
+        if (y >= win.height) return;
+        for (0..t.total) |x| tableLine(win, @intCast(x), y, "─");
+        var x: u16 = 0;
+        for (t.widths[0 .. t.cols - 1]) |width| {
+            x += width + col_gap;
+            tableLine(win, x - 2, y, "┼");
         }
     }
 };
 
-fn printTable(win: vaxis.Window, block: []const u8, theme: Theme, commit: bool) u16 {
-    const t = Table.measure(win, block) orelse {
-        var height: u16 = 0;
-        var lines = Table.body(block);
-        while (lines.next()) |line| {
-            height +|= printProse(win.child(.{ .y_off = @intCast(height) }), std.mem.trimEnd(u8, line, "\r"), .{}, theme, commit);
-        }
-        return height;
-    };
-    var lines = Table.body(block);
+const TableRows = struct {
+    lines: std.mem.SplitIterator(u8, .scalar),
+
+    fn next(rows_it: *TableRows) ?[]const u8 {
+        return std.mem.trimEnd(u8, rows_it.lines.next() orelse return null, "\r");
+    }
+};
+
+fn printStackedRow(win: vaxis.Window, header: []const u8, row: ?[]const u8, theme: Theme, commit: bool) u16 {
+    const bold: vaxis.Style = .{ .bold = true };
+    var labels = Cells.init(header);
+    var cells = Cells.init(row orelse "");
     var height: u16 = 0;
-    const header = std.mem.trimEnd(u8, lines.next().?, "\r");
-    _ = lines.next();
-    if (commit) t.printRow(win, header, .{ .dim = true }, theme);
-    height = 1;
-    while (lines.next()) |line| : (height +|= 1) {
-        if (commit) t.printRow(win.child(.{ .y_off = @intCast(height) }), std.mem.trimEnd(u8, line, "\r"), .{}, theme);
+    while (labels.next()) |label| {
+        const cell = cells.next() orelse "";
+        if (label.len == 0 and cell.len == 0) continue;
+        var flow: CellFlow = .{ .win = win.child(.{ .y_off = height }), .commit = commit };
+        flow.inlineText(label, bold, theme);
+        if (cell.len != 0) {
+            if (label.len != 0) flow.segment(.{ .text = ": ", .style = bold });
+            flow.inlineText(cell, .{}, theme);
+        }
+        height +|= flow.height();
+    }
+    return @max(1, height);
+}
+
+fn printTable(win: vaxis.Window, block: []const u8, theme: Theme, commit: bool) u16 {
+    var body: TableRows = .{ .lines = std.mem.splitScalar(u8, block, '\n') };
+    const header = body.next().?;
+    const delim = body.next().?;
+    if (Table.measure(win, header, delim, body)) |table| {
+        var height = table.printRow(win, header, .{ .bold = true }, theme, commit);
+        if (commit) table.printHeaderRule(win, height);
+        height +|= 1;
+        while (body.next()) |row| height +|= table.printRow(win.child(.{ .y_off = height }), row, .{}, theme, commit);
+        return height;
+    }
+    const first = body.next();
+    var height = printStackedRow(win, header, first, theme, commit);
+    while (body.next()) |row| {
+        height +|= 1;
+        height +|= printStackedRow(win.child(.{ .y_off = height }), header, row, theme, commit);
     }
     return height;
 }
@@ -753,20 +897,23 @@ test "italic, links and quotes" {
     try testing.expect(shot.cell(9, 0).style.bold);
 }
 
-test "table renders aligned borderless columns by display width" {
+test "table renders bold headings and dim rules with display-width alignment" {
     const a = testing.allocator;
     var shot: Shot = undefined;
     try shot.init(a, 60);
     defer shot.deinit(a);
     const text = "| 文件 | 改动 | 说明 |\n|---|:---:|---:|\n| src/grep.zig | +38 −9 | 边界检查 |\n| tests/a.py | +54 | 空 |";
-    try testing.expectEqual(@as(u16, 3), drawText(&shot, text, .{}));
+    try testing.expectEqual(@as(u16, 4), drawText(&shot, text, .{}));
     try shot.expect(a, &.{
-        "文件" ++ "           " ++ "改动" ++ "       " ++ "说明",
-        "src/grep.zig  +38 −9  边界检查",
-        "tests/a.py" ++ "     " ++ "+54" ++ "          " ++ "空",
+        "文件         │  改动  │     说明",
+        "─────────────┼────────┼─────────",
+        "src/grep.zig │ +38 −9 │ 边界检查",
+        "tests/a.py   │  +54   │       空",
     });
-    try testing.expect(shot.cell(0, 0).style.dim and !shot.cell(0, 0).style.bold);
-    try testing.expect(!shot.cell(0, 1).style.dim and !shot.cell(0, 1).style.bold);
+    try testing.expect(shot.cell(0, 0).style.bold and !shot.cell(0, 0).style.dim);
+    try testing.expect(shot.cell(13, 0).style.dim and !shot.cell(13, 0).style.bold);
+    try testing.expect(shot.cell(0, 1).style.dim and !shot.cell(0, 1).style.bold);
+    try testing.expect(!shot.cell(0, 2).style.dim and !shot.cell(0, 2).style.bold);
 }
 
 test "table cells keep inline styles, unescape pipes, pad ragged rows" {
@@ -775,26 +922,64 @@ test "table cells keep inline styles, unescape pipes, pad ragged rows" {
     try shot.init(a, 40);
     defer shot.deinit(a);
     _ = drawText(&shot, "a|b\n-|-\n`x`|**y**", .{ .tint = tint });
-    try shot.expect(a, &.{ "a  b", "x  y" });
-    try testing.expectEqual(tint, shot.cell(0, 1).style.bg);
-    try testing.expect(shot.cell(3, 1).style.bold);
+    try shot.expect(a, &.{ "a │ b", "──┼──", "x │ y" });
+    try testing.expectEqual(tint, shot.cell(0, 2).style.bg);
+    try testing.expect(shot.cell(4, 2).style.bold);
     shot.screen.clear();
     _ = drawText(&shot, "| a | b |\n|---|---|\n| x\\|y | z |", .{});
-    try shot.expect(a, &.{ "a    b", "x|y  z" });
+    try shot.expect(a, &.{ "a   │ b", "────┼──", "x|y │ z" });
     shot.screen.clear();
-    try testing.expectEqual(@as(u16, 3), drawText(&shot, "|a|b|c|\n|-|-|-|\n|1|\n|1|2|3|4|", .{}));
-    try shot.expect(a, &.{ "a  b  c", "1", "1  2  3" });
+    try testing.expectEqual(@as(u16, 4), drawText(&shot, "|a|b|c|\n|-|-|-|\n|1|\n|1|2|3|4|", .{}));
+    try shot.expect(a, &.{ "a │ b │ c", "──┼───┼──", "1 │   │", "1 │ 2 │ 3" });
 }
 
-test "too-wide tables and non-tables render as plain lines" {
+test "tight tables wrap styled words and keep columns distinct" {
+    const a = testing.allocator;
+    var shot: Shot = undefined;
+    try shot.init(a, 20);
+    defer shot.deinit(a);
+    const text = "name|detail\n-|-\nx|**alpha beta gamma**\n\ntail";
+    try testing.expectEqual(@as(u16, 6), drawText(&shot, text, .{}));
+    try shot.expect(a, &.{ "name │ detail", "─────┼──────────────", "x    │ alpha beta", "     │ gamma", "", "tail" });
+    try testing.expect(shot.cell(7, 3).style.bold);
+    try testing.expect(shot.cell(5, 3).style.dim);
+    shot.win.height = 1;
+    try testing.expectEqual(@as(u16, 6), drawText(&shot, text, .{}));
+}
+
+test "table wraps multi-cell graphemes before the column ends" {
+    const a = testing.allocator;
+    var shot: Shot = undefined;
+    try shot.init(a, 12);
+    defer shot.deinit(a);
+    try testing.expectEqual(@as(u16, 4), drawText(&shot, "a|b\n-|-\nx|1234567中文", .{}));
+    try shot.expect(a, &.{ "a │ b", "──┼─────────", "x │ 1234567", "  │ 中文" });
+}
+
+test "tables too narrow for columns render labeled records, never raw delimiters" {
+    const a = testing.allocator;
+    var shot: Shot = undefined;
+    try shot.init(a, 10);
+    defer shot.deinit(a);
+    const text = "名|状态|备注\n-|-|-\n甲|ok|一\n乙|no|二";
+    try testing.expectEqual(@as(u16, 7), drawText(&shot, text, .{}));
+    try shot.expect(a, &.{ "名: 甲", "状态: ok", "备注: 一", "", "名: 乙", "状态: no", "备注: 二" });
+    try testing.expect(shot.cell(0, 0).style.bold);
+    try testing.expect(!shot.cell(4, 0).style.bold);
+    shot.screen.clear();
+    const many = "a|a|a|a|a|a|a|a|a|a|a|a|a|a|a|a|a\n" ++
+        "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-\n" ++
+        "x|x|x|x|x|x|x|x|x|x|x|x|x|x|x|x|x";
+    try testing.expectEqual(@as(u16, 17), drawText(&shot, many, .{}));
+    const expected: [17][]const u8 = @splat("a: x");
+    try shot.expect(a, &expected);
+}
+
+test "pipes in code and non-tables stay literal" {
     const a = testing.allocator;
     var shot: Shot = undefined;
     try shot.init(a, 33);
     defer shot.deinit(a);
-    const wide = "aaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbb\n-|-\ncccccccccccccccc|dddddddddddddddd";
-    try testing.expectEqual(@as(u16, 3), drawText(&shot, wide, .{}));
-    try shot.expect(a, &.{ "aaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbb", "-|-", "cccccccccccccccc|dddddddddddddddd" });
-    shot.screen.clear();
     _ = drawText(&shot, "```\n| a | b |\n|---|---|\n```\nx | y\n\nz | w", .{});
     try shot.expect(a, &.{ "│ | a | b |", "│ |---|---|", "x | y", "", "z | w" });
 }
@@ -815,10 +1000,10 @@ test "table streaming: renders once header and delimiter exist and relays out as
     };
     const want = [_][]const []const u8{
         &.{"| a | b |"},
-        &.{"a  b"},
-        &.{ "a  b", "1  2" },
-        &.{ "a          b", "1          2", "long cell  3" },
-        &.{ "a          b", "1          2", "long cell  3", "", "tail" },
+        &.{ "a │ b", "──┼──" },
+        &.{ "a │ b", "──┼──", "1 │ 2" },
+        &.{ "a         │ b", "──────────┼──", "1         │ 2", "long cell │ 3" },
+        &.{ "a         │ b", "──────────┼──", "1         │ 2", "long cell │ 3", "", "tail" },
     };
     for (steps, want) |text, rows_want| {
         shot.screen.clear();
