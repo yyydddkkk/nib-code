@@ -723,7 +723,7 @@ pub const Session = struct {
                 pending.items[assistant_index].waiting = true;
                 try sink.emit(sink.ctx, .{ .notice = "Waiting for background results." });
             }
-            held = s.tools.backgroundMode().foldsResults() and reply.tool_calls.len > 0 and !waiting;
+            held = s.tools.tuning.delivery == .tool and reply.tool_calls.len > 0 and !waiting;
             if (held) {
                 try tools.Tools.poll(&s.tools);
                 const own = pending.items[pending.items.len - 1].content;
@@ -1125,8 +1125,8 @@ test "tuning follows the model, NIB_TUNE and the log" {
         try t.expectEqual(Tuning.Delivery.user, session.tools.tuning.delivery);
         try t.expectEqual(Tuning.Validation.single, session.tools.tuning.validation);
         try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "Before full builds/tests") != null);
-        try t.expect(!session.tools.waitEnabled());
-        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") == null);
+        try t.expect(session.tools.waitEnabled());
+        try t.expect(std.mem.indexOf(u8, session.history.items[0].content.?, "async wait(") != null);
     }
     cfg.model = "deepseek-flash";
     var id: []const u8 = undefined;

@@ -15,7 +15,6 @@ const jail = @import("tools/bash/jail.zig");
 
 const Tool = struct {
     root_only: bool = false,
-    tool_delivery_only: bool = false,
     name: []const u8,
     doc: []const u8,
     run: ?*const fn (t: *Tools, gpa: std.mem.Allocator, args: []const u8) anyerror!sandbox.ToolResult = null,
@@ -132,7 +131,6 @@ const all = [_]Tool{
     },
     .{
         .name = "wait",
-        .tool_delivery_only = true,
         .run = @import("tools/wait.zig").wait,
         .doc =
         \\  // Block until background Run/bash/agent tasks finish (default: pending non-detached tasks except the calling Run) and return their results; a result returned here is not delivered again. May follow other work in the same Run. Never auto-backgrounded; cancellable.
@@ -179,7 +177,7 @@ fn makeApi(comptime depth: u32, comptime mcp_enabled: bool, comptime wait_enable
     var d: []const u8 = "const tools = {\n";
     for (all) |tool| {
         if (!enabled(tool, depth)) continue;
-        if (tool.tool_delivery_only and !wait_enabled) continue;
+        if (!wait_enabled and std.mem.eql(u8, tool.name, "wait")) continue;
         if (!mcp_enabled and (std.mem.eql(u8, tool.name, "mcp") or std.mem.eql(u8, tool.name, "mcp_schema"))) continue;
         n = n ++ .{tool.name};
         d = d ++ tool.doc ++ "\n";
@@ -193,14 +191,14 @@ fn makeApi(comptime depth: u32, comptime mcp_enabled: bool, comptime wait_enable
 }
 
 const apis = blk: {
-    var table: [2][2][2]Api = undefined;
-    for (0..2) |depth| for (0..2) |mcp| for (0..2) |wait| {
-        table[depth][mcp][wait] = makeApi(depth, mcp == 1, wait == 1);
+    var table: [2][2]Api = undefined;
+    for (0..2) |child| for (0..2) |mcp| {
+        table[child][mcp] = makeApi(child, mcp == 1, child == 0);
     };
     break :blk table;
 };
-pub const names = apis[0][1][0].names;
-pub const docs = apis[0][1][0].docs;
+pub const names = apis[0][1].names;
+pub const docs = apis[0][1].docs;
 
 pub const RunScope = struct {
     tools: *Tools,
@@ -221,7 +219,7 @@ pub const RunScope = struct {
 
     pub fn blockedInWait(scope: *RunScope) bool {
         for (all, &scope.active_tools) |tool, *count| {
-            if (tool.tool_delivery_only and count.load(.acquire) > 0) return true;
+            if (std.mem.eql(u8, tool.name, "wait")) return count.load(.acquire) > 0;
         }
         return false;
     }
@@ -346,7 +344,7 @@ pub const Tools = struct {
     }
 
     fn apiFor(t: *const Tools, mcp_enabled: bool) Api {
-        return apis[@intFromBool(!(t.depth == 0 or t.forked))][@intFromBool(mcp_enabled)][@intFromBool(t.waitEnabled())];
+        return apis[@intFromBool(!t.waitEnabled())][@intFromBool(mcp_enabled)];
     }
 
     pub fn outputsDir(t: *const Tools, a: std.mem.Allocator) !?[]u8 {
@@ -355,12 +353,8 @@ pub const Tools = struct {
         return try std.fmt.allocPrint(a, "{s}/sessions/{s}.outputs", .{ data_home, session_id });
     }
 
-    pub fn backgroundMode(t: *const Tools) Tuning.BackgroundMode {
-        return t.tuning.backgroundMode(t.depth == 0 or t.forked);
-    }
-
     pub fn waitEnabled(t: *const Tools) bool {
-        return t.backgroundMode() == .tool;
+        return t.depth == 0 or t.forked;
     }
 
     pub fn documentation(t: *const Tools, a: std.mem.Allocator) ![]u8 {
@@ -374,7 +368,7 @@ pub const Tools = struct {
     }
 
     pub fn commonDocumentation(a: std.mem.Allocator) ![]u8 {
-        return renderDocumentation(a, apis[0][0][0].docs, false, .{}, "");
+        return renderDocumentation(a, comptime makeApi(0, false, false).docs, false, .{}, "");
     }
 
     fn modelOptions(a: std.mem.Allocator, cfg: provider.Config) ![]u8 {
@@ -467,8 +461,8 @@ pub const Tools = struct {
             return fail(gpa, "agent is unavailable inside a forked sub-agent", .{}) catch .{ .err = &.{} };
         const r = for (all, 0..) |tool, i| {
             if (!enabled(tool, t.depth)) continue;
-            if (tool.tool_delivery_only and !t.waitEnabled()) continue;
             if (!std.mem.eql(u8, name, tool.name)) continue;
+            if (std.mem.eql(u8, name, "wait") and !t.waitEnabled()) continue;
             const active = if (t.scope()) |run_scope| &run_scope.active_tools[i] else null;
             if (active) |count| _ = count.fetchAdd(1, .acq_rel);
             defer if (active) |count| {

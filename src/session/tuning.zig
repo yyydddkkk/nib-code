@@ -14,23 +14,6 @@ pub const Resolved = struct {
     pub const Validation = enum { single, @"existing-only", none };
     pub const Continuation = enum { generic, @"known-next" };
 
-    pub const BackgroundMode = enum {
-        user,
-        tool,
-        tool_without_wait,
-
-        pub fn foldsResults(mode: BackgroundMode) bool {
-            return mode != .user;
-        }
-    };
-
-    pub fn backgroundMode(r: Resolved, can_wait: bool) BackgroundMode {
-        return switch (r.delivery) {
-            .user => .user,
-            .tool => if (can_wait) .tool else .tool_without_wait,
-        };
-    }
-
     pub fn forProfile(profile: Profile) Resolved {
         return switch (profile) {
             .deepseek => .{ .delivery = .tool, .validation = .none },

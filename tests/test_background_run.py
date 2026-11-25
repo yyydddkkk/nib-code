@@ -102,9 +102,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     code = "await tools.wait(['r1'])"
         elif case == "done":
             pass
-        elif case == "wait-unavailable":
+        elif case.startswith("user-wait-"):
             if index == 0:
-                code = "({exposed: 'wait' in tools, type: typeof tools.wait})"
+                status = int(case.removeprefix("user-wait-"))
+                command = ("while [ ! -e release-worker ]; do sleep .02; done; sleep .2; "
+                           f"printf complete > artifact; printf worker-result; exit {status}")
+                code = "await tools.bash(" + json.dumps(dict(command=command, background=True)) + ")"
+            elif index == 1:
+                code = "await tools.write({path:'expected',content:'complete'})"
+            elif index == 2:
+                code = ("await tools.write({path:'release-worker',content:''}); "
+                        "await tools.wait(['b1'])")
+            elif index == 3:
+                code = "await tools.bash({command:'cmp expected artifact && printf verified'})"
         elif case == "resume":
             code = "await tools.sleep(150); 'resumed-result'" if index == 0 else None
         elif index == 0:
@@ -323,9 +333,8 @@ class BackgroundRunTests(unittest.TestCase):
         runs = [e["run_end"] for e in events if "run_end" in e]
         self.assertIn("continuing in background as r1", runs[0]["output"])
         self.assertIn("Captured output is preserved", runs[0]["output"])
-        self.assertIn("Results arrive automatically as messages", runs[0]["output"])
-        self.assertIn("reply briefly without tools", runs[0]["output"])
-        self.assertNotIn("tools.wait()", runs[0]["output"])
+        self.assertIn("Unclaimed results arrive automatically as messages", runs[0]["output"])
+        self.assertIn("await tools.wait()", runs[0]["output"])
         self.assertNotIn("before-yield", runs[0]["output"])
         self.assertEqual(runs[0]["changes"], [])
         self.assertEqual([c["path"] for c in runs[1]["changes"]], ["independent.txt"])
@@ -348,13 +357,16 @@ class BackgroundRunTests(unittest.TestCase):
     def test_overlap_keeps_await_console_changes_and_replay(self):
         self.assert_overlap()
 
-    def test_codex_overlap_keeps_await_console_changes_and_replay(self):
+    def use_codex(self):
         self.server.provider = "codex"
         auth = self.cwd / "auth"
         auth.mkdir()
         (auth / "auth.json").write_text(json.dumps({"tokens": {
             "access_token": "fake", "account_id": "fake", "refresh_token": "fake", "id_token": "fake"}}))
         self.env.update(NIB_PROVIDER="codex", NIB_MODEL="gpt-6.1-sol", CODEX_HOME=str(auth))
+
+    def test_codex_overlap_keeps_await_console_changes_and_replay(self):
+        self.use_codex()
         self.assert_overlap()
 
     def test_no_independent_work_waits_without_model_requests_or_final_text(self):
@@ -549,18 +561,37 @@ class BackgroundRunTests(unittest.TestCase):
         process.communicate(timeout=10)
         wait_for(lambda: not alive(pid))
 
-    def test_user_delivery_has_no_wait_tool(self):
-        self.server.case = "wait-unavailable"
-        self.env["NIB_TUNE"] = "delivery=user"
-        events, _, _ = self.finish(self.launch())
-        prompt = system(self.server.requests[0])
-        self.assertNotIn("async wait(", prompt)
-        self.assertNotIn("tools.wait(", prompt)
-        self.assertIn("reply briefly without tools", prompt)
-        run, = [e["run_end"] for e in events if "run_end" in e]
-        self.assertTrue(run["ok"], run)
-        self.assertEqual(json.loads(run["output"].removeprefix("result: ")),
-                         {"exposed": False, "type": "undefined"})
+    def test_codex_user_delivery_waits_by_id_then_verifies(self):
+        self.use_codex()
+        for status in (0, 7):
+            with self.subTest(status=status):
+                self.server.case = f"user-wait-{status}"
+                self.server.requests.clear()
+                (self.cwd / "release-worker").unlink(missing_ok=True)
+                events, rows, _ = self.finish(self.launch())
+                prompt = system(self.server.requests[0])
+                self.assertEqual(rows[0]["tuning"]["delivery"], "user")
+                self.assertIn("async wait(ids)", prompt)
+                self.assertIn("call `await tools.wait()`", prompt)
+                self.assertEqual(len(self.server.requests), 5)
+                runs = [e["run_end"] for e in events if "run_end" in e]
+                self.assertEqual(len(runs), 4)
+                self.assertIsNone(runs[2].get("background_id"))
+                result = json.loads(runs[2]["output"].removeprefix("result: "))
+                waited, = result["results"]
+                self.assertEqual((waited["id"], waited["kind"], waited["ok"]), ("b1", "bash", status == 0))
+                self.assertEqual(json.loads(waited["output"]), {"exit_code": status, "output": "worker-result"})
+                self.assertEqual(json.loads(runs[3]["output"].removeprefix("result: ")),
+                                 {"exit_code": 0, "output": "verified"})
+                final = self.server.requests[-1]["input"]
+                self.assertEqual(sum(item.get("role") == "user" for item in final), 1)
+                self.assertEqual(sum(item.get("output", "").count("worker-result") for item in final), 1)
+                delivery, = [d for row in rows for d in row.get("deliveries", [])]
+                self.assertEqual((delivery["via"], delivery["event"]["id"]), ("wait", "b1"))
+                finished, = [e["background"] for e in events if e.get("background", {}).get("state") == "finished"]
+                self.assertEqual(finished["id"], "b1")
+                self.assertFalse(any(m.get("waiting") for row in rows for m in row.get("messages", [])))
+                self.assertEqual(events[-1]["end"]["text"], "done")
 
     def test_tool_delivery_falls_back_to_a_user_message_when_the_model_waits_by_replying(self):
         self.server.case = "wait"
