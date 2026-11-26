@@ -105,7 +105,7 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         top_row = @min(win.height, y +| p.rows +| pad);
         if (win.height - top_row >= 2) {
             activity_row = top_row;
-            top_row += 1;
+            top_row += if (win.height >= 10 and win.height - top_row >= 4) @as(u16, 2) else 1;
         }
         if (transition) |t| {
             const moving = t.frame.prompt;
@@ -438,6 +438,7 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 5).?.style.bg);
         try testing.expect(std.mem.indexOf(u8, visible, "─") == null);
         const history = @import("selection/history.zig");
+        try testing.expectEqual(@as(i17, 7), frame.window.y_off);
         try testing.expectEqual(null, history.position(frame, t.entries.items, 4, 1));
         try testing.expectEqual(@as(usize, 1), history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off)).?.entry);
         try testing.expectEqual(null, history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off + 3)));

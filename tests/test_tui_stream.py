@@ -169,7 +169,8 @@ def test_turn_pages(tmp):
         terminal.wait_turn(first.text)
         assert visible()[2].lstrip() == "> First prompt"
         assert "─" not in "\n".join(visible())
-        assert visible()[4].strip() == ""
+        assert visible()[4].strip() == visible()[5].strip() == ""
+        assert visible()[6].strip() == first.text
         assert visible()[-1].strip() == "01 / 01"
 
         terminal.send(next_page)
@@ -191,6 +192,7 @@ def test_turn_pages(tmp):
         terminal.send("\x1b")
         wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[4],
                  "Escape parks the draft without canceling the Turn")
+        assert visible()[5].strip() == ""
         assert visible()[-1].strip() == "02 / 02"
         terminal.send(prev)
         wait_for(lambda: visible()[-1].strip() == "01 / 02", "browse an older Turn with a parked draft")
