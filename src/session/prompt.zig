@@ -204,7 +204,9 @@ test "system prompt documents every tool in JavaScript" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "backticks, ${ or backslashes") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "last expression and console.log output share 16 KiB per Run") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "tool results inside JS remain complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to 8 at a time.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "With semicolons, a bash call normally reports only the last command's exit status.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "inspect each exit_code or timed_out") != null);
     for ([_][]const u8{ "Unclaimed results arrive automatically as messages", "ps, cat/tail logs, sleep, empty Runs or timeout reruns", "Do not read their redirected logs before completion" }) |text|
         try std.testing.expect(std.mem.indexOf(u8, prompt, text) != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "call `await tools.wait()`") != null);
