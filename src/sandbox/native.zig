@@ -72,7 +72,7 @@ fn nativeLog(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue)
     var len: usize = 0;
     const p = c.JS_ToCStringLen2(ctx, &len, argv[0], false) orelse return js_undefined;
     defer c.JS_FreeCString(ctx, p);
-    const masked = if (st.output_policy == .credentials_v1) sandbox.redaction.mask(st.gpa, p[0..len], .plain) catch {
+    const masked = if (st.output_policy != .legacy) sandbox.redaction.mask(st.gpa, p[0..len], .plain) catch {
         st.oom = true;
         return js_undefined;
     } else null;

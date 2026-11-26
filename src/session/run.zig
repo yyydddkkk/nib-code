@@ -95,8 +95,13 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
         const source = try s.log.findSource(s.io, a, args.value.base) orelse
             return .{ .ok = false, .output = "error: base source unavailable in this Session" };
         if (!source.failed) return .{ .ok = false, .output = "error: base must be a completed failed script" };
-        break :resolve patch(a, source.code, args.value.edits) catch |err|
-            return .{ .ok = false, .output = try std.fmt.allocPrint(a, "error: {s}; edits require nonempty old_text matching exactly once", .{@errorName(err)}) };
+        if (args.value.edits.len == 0) return .{ .ok = false, .output = "error: at least one edit is required" };
+        switch (try patch(a, source.code, args.value.edits)) {
+            .source => |patched| break :resolve patched,
+            .invalid => |invalid| return .{ .ok = false, .output = try std.fmt.allocPrint(a, "error: edit {d} of {d}: {s}; each edit searches the source after earlier edits", .{
+                invalid.index + 1, args.value.edits.len, invalid.reason,
+            }) },
+        }
     } else resolve: {
         const Args = struct { code: []const u8 };
         const args = std.json.parseFromSlice(Args, a, call.function.arguments, .{ .ignore_unknown_fields = true }) catch
@@ -266,26 +271,33 @@ test "execute emits per-Run actual tool summaries including empty and overflow" 
 const Edit = struct { old_text: []const u8, new_text: []const u8 };
 const Rerun = struct { base: []const u8, edits: []const Edit };
 
-fn patch(a: std.mem.Allocator, original: []const u8, edits: []const Edit) ![]const u8 {
-    if (edits.len == 0) return error.EmptyEdits;
+const Patch = union(enum) {
+    source: []const u8,
+    invalid: struct { index: usize, reason: []const u8 },
+};
+
+fn patch(a: std.mem.Allocator, original: []const u8, edits: []const Edit) !Patch {
     var code = original;
-    for (edits) |edit| {
-        if (edit.old_text.len == 0) return error.EmptyOldText;
-        const first = std.mem.indexOf(u8, code, edit.old_text) orelse return error.OldTextNotFound;
-        if (std.mem.indexOfPos(u8, code, first + 1, edit.old_text) != null) return error.AmbiguousOldText;
+    for (edits, 0..) |edit, i| {
+        if (edit.old_text.len == 0) return .{ .invalid = .{ .index = i, .reason = "old_text is empty" } };
+        const first = std.mem.indexOf(u8, code, edit.old_text) orelse
+            return .{ .invalid = .{ .index = i, .reason = "old_text did not match" } };
+        if (std.mem.indexOfPos(u8, code, first + 1, edit.old_text) != null)
+            return .{ .invalid = .{ .index = i, .reason = "old_text matched more than once" } };
         code = try std.mem.replaceOwned(u8, a, code, edit.old_text, edit.new_text);
     }
-    return code;
+    return .{ .source = code };
 }
 
 test "patch rejects overlapping matches and applies edits to a copy" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try std.testing.expectError(error.AmbiguousOldText, patch(a, "aaa", &.{.{ .old_text = "aa", .new_text = "b" }}));
+    const overlapping = try patch(a, "aaa", &.{.{ .old_text = "aa", .new_text = "b" }});
+    try std.testing.expectEqualStrings("old_text matched more than once", overlapping.invalid.reason);
     const original = "alpha beta";
     const resolved = try patch(a, original, &.{ .{ .old_text = "alpha", .new_text = "gamma" }, .{ .old_text = "gamma beta", .new_text = "delta" } });
-    try std.testing.expectEqualStrings("delta", resolved);
+    try std.testing.expectEqualStrings("delta", resolved.source);
     try std.testing.expectEqualStrings("alpha beta", original);
 }
 

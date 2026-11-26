@@ -40,7 +40,7 @@ pub const Limits = struct {
     timeout_ms: i64 = 5 * 60 * 1000,
     max_log_bytes: usize = 64 * 1024,
     max_full_log_bytes: usize = 16 * 1024 * 1024,
-    output_policy: redaction.Policy = .credentials_v1,
+    output_policy: redaction.Policy = .current,
 };
 
 pub const ToolResult = union(enum) {
@@ -205,10 +205,11 @@ pub fn eval(
     }
     errdefer gpa.free(text);
     if (!ok) {
-        const annotated = try sourceContext(gpa, text, code, limits.output_policy);
+        const syntax = c.JS_IsException(promise) and std.mem.startsWith(u8, text, "SyntaxError:");
+        const annotated = try sourceContext(gpa, text, code, limits.output_policy, syntax);
         gpa.free(text);
         text = annotated;
-    } else if (limits.output_policy == .credentials_v1) {
+    } else if (limits.output_policy != .legacy) {
         text = try redaction.owned(gpa, text, .rendered);
     }
     if (jobs_drained) _ = try st.jobs(ctx, rt);
@@ -241,31 +242,76 @@ pub fn eval(
 
 const testing = std.testing;
 
-fn sourceContext(a: std.mem.Allocator, original: []const u8, code: []const u8, policy: redaction.Policy) ![]u8 {
-    const masked = if (policy == .credentials_v1) try redaction.mask(a, original, .rendered) else null;
+fn sourceContext(a: std.mem.Allocator, original: []const u8, code: []const u8, policy: redaction.Policy, syntax: bool) ![]u8 {
+    const masked = if (policy != .legacy) try redaction.mask(a, original, .rendered) else null;
     defer if (masked) |bytes| a.free(bytes);
     const message = masked orelse original;
     const marker = "<run>:";
     const start = std.mem.indexOf(u8, original, marker) orelse return a.dupe(u8, message);
     var location = std.mem.tokenizeAny(u8, original[start + marker.len ..], ":\r\n )");
     const line = std.fmt.parseInt(usize, location.next() orelse return a.dupe(u8, message), 10) catch return a.dupe(u8, message);
-    const column = std.fmt.parseInt(usize, location.next() orelse "1", 10) catch 1;
-    var lines = std.mem.splitScalar(u8, code, '\n');
-    var number: usize = 0;
-    while (lines.next()) |raw| {
-        number += 1;
-        if (number != line) continue;
-        var point = @min(column -| 1, raw.len);
-        const masked_source = if (policy == .credentials_v1) try redaction.maskAt(a, raw, .rendered, &point) else null;
-        defer if (masked_source) |bytes| a.free(bytes);
-        const source = masked_source orelse raw;
-        var first = point -| 80;
-        while (first < source.len and (source[first] & 0xc0) == 0x80) first += 1;
-        var last = @min(source.len, first + 200);
-        while (last > first and last < source.len and (source[last] & 0xc0) == 0x80) last -= 1;
-        return std.fmt.allocPrint(a, "{s}\nsource line {d}: {s}{s}{s}", .{ message, line, if (first > 0) @as([]const u8, "…") else "", source[first..last], if (last < source.len) @as([]const u8, "…") else "" });
+    if (line == 0) return a.dupe(u8, message);
+    // QuickJS parser columns are one-based UTF-8 byte offsets.
+    const column = std.fmt.parseInt(usize, location.next() orelse "", 10) catch 0;
+    const mark_column = syntax and policy == .diagnostics_v2;
+    const raw = sourceLine(code, line, mark_column) orelse return a.dupe(u8, message);
+    var point: redaction.Location = .{ .byte = @min(column -| 1, raw.len), .exact = column > 0 and column - 1 <= raw.len };
+    const masked_source = if (policy != .legacy) try redaction.maskAt(a, raw, .rendered, &point) else null;
+    defer if (masked_source) |bytes| a.free(bytes);
+    const source = masked_source orelse raw;
+    var first = point.byte -| 80;
+    while (first < source.len and (source[first] & 0xc0) == 0x80) first += 1;
+    var last = @min(source.len, first + 200);
+    while (last > first and last < source.len and (source[last] & 0xc0) == 0x80) last -= 1;
+    const left: []const u8 = if (first > 0) "…" else "";
+    const right: []const u8 = if (last < source.len) "…" else "";
+    const excerpt = source[first..last];
+    var label_buf: [48]u8 = undefined;
+    const label = try std.fmt.bufPrint(&label_buf, "source line {d}: ", .{line});
+    if (mark_column and point.exact and first <= point.byte and point.byte <= last) {
+        if (excerptWidth(excerpt, point.byte - first)) |width| {
+            const indent = label.len + @as(usize, @intFromBool(left.len != 0)) + width;
+            const spaces: [48 + 200 + 1]u8 = @splat(' ');
+            return std.fmt.allocPrint(a, "{s}\n{s}{s}{s}{s}\n{s}^", .{ message, label, left, excerpt, right, spaces[0..indent] });
+        }
     }
-    return a.dupe(u8, message);
+    return std.fmt.allocPrint(a, "{s}\n{s}{s}{s}{s}", .{ message, label, left, excerpt, right });
+}
+
+fn sourceLine(code: []const u8, line: usize, js_lines: bool) ?[]const u8 {
+    if (!js_lines) {
+        var lines = std.mem.splitScalar(u8, code, '\n');
+        for (1..line) |_| _ = lines.next() orelse return null;
+        return lines.next();
+    }
+    var start: usize = 0;
+    var number: usize = 1;
+    var i: usize = 0;
+    while (i < code.len) : (i += 1) {
+        const size: usize = switch (code[i]) {
+            '\n' => 1,
+            '\r' => if (i + 1 < code.len and code[i + 1] == '\n') 2 else 1,
+            0xe2 => if (std.mem.startsWith(u8, code[i..], "\u{2028}") or std.mem.startsWith(u8, code[i..], "\u{2029}")) 3 else 0,
+            else => 0,
+        };
+        if (size == 0) continue;
+        if (number == line) return code[start..i];
+        i += size - 1;
+        start = i + 1;
+        number += 1;
+    }
+    return if (number == line) code[start..] else null;
+}
+
+fn excerptWidth(excerpt: []const u8, point: usize) ?usize {
+    const prefix = excerpt[0..point];
+    const suffix = excerpt[point..];
+    if (!std.unicode.utf8ValidateSlice(prefix) or !std.unicode.utf8ValidateSlice(suffix)) return null;
+    for (excerpt) |byte| if (std.ascii.isControl(byte)) return null;
+    const gwidth = @import("vaxis").gwidth.gwidth;
+    const width = gwidth(prefix, .unicode);
+    if (width + gwidth(suffix, .unicode) != gwidth(excerpt, .unicode)) return null;
+    return width;
 }
 
 test "syntax errors include original source location and a bounded UTF-8 line" {
@@ -278,18 +324,41 @@ test "syntax errors include original source location and a bounded UTF-8 line" {
     defer testing.allocator.free(code);
     for (0..300) |i| @memcpy(code[i * 3 ..][0..3], "你");
     const message = "TypeError: bad\n    at <eval> (<run>:1:500)";
-    const bounded = try sourceContext(testing.allocator, message, code, .credentials_v1);
+    const bounded = try sourceContext(testing.allocator, message, code, .credentials_v1, false);
     defer testing.allocator.free(bounded);
     try testing.expect(std.mem.startsWith(u8, bounded, message));
     try testing.expect(bounded.len <= message.len + "\nsource line 1: …".len + 200 + "…".len);
     try testing.expect(std.unicode.utf8ValidateSlice(bounded));
 }
 
+test "syntax excerpt marks a clipped UTF-8 parser column and retains the old replay format" {
+    const chars: [100][3]u8 = @splat("你".*);
+    const code = "const ok = 1;\r\n/*" ++ @as([300]u8, @bitCast(chars)) ++ "*/ const broken = ;";
+    const result = try run(code, .{}, null);
+    defer result.deinit(testing.allocator);
+    try testing.expect(!result.ok);
+    const label = "source line 2: ";
+    const excerpt_start = std.mem.indexOf(u8, result.text, label).?;
+    const excerpt_end = std.mem.indexOfScalarPos(u8, result.text, excerpt_start, '\n').?;
+    const excerpt = result.text[excerpt_start..excerpt_end];
+    try testing.expect(std.mem.startsWith(u8, excerpt[label.len..], "…"));
+    try testing.expect(std.mem.endsWith(u8, excerpt, "const broken = ;"));
+    try testing.expect(excerpt.len <= label.len + "…".len + 200);
+    try testing.expect(std.unicode.utf8ValidateSlice(result.text));
+    const caret = result.text[excerpt_end + 1 ..];
+    try testing.expectEqual(@import("vaxis").gwidth.gwidth(excerpt[0 .. excerpt.len - 1], .unicode), caret.len - 1);
+    try testing.expect(caret[caret.len - 1] == '^');
+
+    const legacy = try run(code, .{ .output_policy = .credentials_v1 }, null);
+    defer legacy.deinit(testing.allocator);
+    try testing.expect(std.mem.endsWith(u8, legacy.text, "const broken = ;"));
+}
+
 test "source context masks the whole selected line before clipping and keeps the location" {
     const token = redaction.test_github;
     const code = @as([190]u8, @splat('x')) ++ " " ++ token ++ " after";
     const message = "SyntaxError: bad\n<run>:1:5";
-    const result = try sourceContext(testing.allocator, message, code, .credentials_v1);
+    const result = try sourceContext(testing.allocator, message, code, .credentials_v1, false);
     defer testing.allocator.free(result);
     try testing.expect(std.mem.startsWith(u8, result, message));
     try testing.expect(std.mem.endsWith(u8, result, " [REDACTED…"));
@@ -330,7 +399,7 @@ test "source context preserves errors without a usable source line" {
         "TypeError: bad\n    at <eval> (<run>:0:2)",
         "TypeError: bad\n    at <eval> (<run>:99:2)",
     }) |message| {
-        const result = try sourceContext(testing.allocator, message, "const x = 1;", .credentials_v1);
+        const result = try sourceContext(testing.allocator, message, "const x = 1;", .credentials_v1, false);
         defer testing.allocator.free(result);
         try testing.expectEqualStrings(message, result);
     }

@@ -387,13 +387,13 @@ fn replayOutput(a: Allocator, io: std.Io, original: Run, outcome: @import("sandb
 fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8, outputs_dir: ?[]const u8) !Report {
     const end = recording.end orelse .ok;
     const redaction = @import("sandbox/redaction.zig");
-    const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, end, script != null, original.child, .credentials_v1);
+    const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, end, script != null, original.child, if (recording.output_policy == .legacy or script != null) .current else recording.output_policy);
     defer evaluated.deinit(a);
     const text = try replayOutput(a, io, original, evaluated.outcome, recording.run_output_bytes, outputs_dir);
     const incomplete = recording.incomplete or evaluated.incomplete or original.expected == null;
     const determined = script == null and !incomplete and end != .timeout and end != .cancelled;
     const equal = if (!determined or evaluated.divergence != null) false else switch (recording.output_policy) {
-        .credentials_v1 => std.mem.eql(u8, original.expected.?, text),
+        .credentials_v1, .diagnostics_v2 => std.mem.eql(u8, original.expected.?, text),
         .legacy => blk: {
             // Keep the historic byte comparison private, including its pre-redaction truncation.
             var arena: std.heap.ArenaAllocator = .init(a);

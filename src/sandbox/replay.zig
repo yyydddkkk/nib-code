@@ -122,7 +122,7 @@ const Engine = struct {
 };
 
 pub fn execute(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entries: []const Entry, start_ms_epoch: i64, end: record.End, script_mode: bool) !Report {
-    return executeSession(gpa, io, code, entries, start_ms_epoch, end, script_mode, false, .credentials_v1);
+    return executeSession(gpa, io, code, entries, start_ms_epoch, end, script_mode, false, .current);
 }
 
 pub fn executeSession(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entries: []const Entry, start_ms_epoch: i64, end: record.End, script_mode: bool, child: bool, policy: sandbox.redaction.Policy) !Report {

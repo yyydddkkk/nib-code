@@ -175,8 +175,10 @@ A failed configured `after_edit` hook adds `{"hook":{"command":"...","exit_code"
 The model can call `rerun({base: "12:0", edits: [{old_text: "...", new_text: "..."}]})`.
 A completed script failure includes its Session-scoped source reference: the 1-based
 assistant Step ordinal and 0-based Run index, as in replay. Each edit must have
-nonempty `old_text` matching exactly once; edits apply in order to a copy. Empty,
-missing or ambiguous edits execute nothing. Successful, pending, unknown and foreign
+nonempty `old_text` matching exactly once. Each edit searches the copy left by the
+previous edits. Rejected edits report their 1-based index in the submitted order
+without echoing `old_text`, and execute nothing. Syntax errors can include a
+bounded source-line excerpt with a caret when the column can be mapped accurately. Successful, pending, unknown and foreign
 sources are rejected. Older logs without explicit source/terminal metadata cannot
 provide bases.
 

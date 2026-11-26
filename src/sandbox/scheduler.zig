@@ -14,7 +14,7 @@ pub const State = struct {
     io: std.Io,
     host: ?Host,
     logs: console.Capture,
-    output_policy: sandbox.redaction.Policy = .credentials_v1,
+    output_policy: sandbox.redaction.Policy = .current,
     js_remaining_ns: i96,
     js_started: ?std.Io.Clock.Timestamp = null,
     cancel: ?*const std.atomic.Value(bool),
