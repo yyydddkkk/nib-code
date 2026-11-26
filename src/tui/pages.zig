@@ -4,8 +4,10 @@ const Viewport = @import("viewport.zig").Viewport;
 
 pub const Pages = struct {
     index: ?usize = null,
-    composing: bool = true,
+    focus: Focus = .blank,
     saved: std.ArrayList(Viewport) = .empty,
+
+    pub const Focus = enum { page, blank, editing };
 
     pub const Page = struct {
         heading: ?usize = null,
@@ -21,7 +23,7 @@ pub const Pages = struct {
 
     pub fn reset(p: *Pages) void {
         p.index = null;
-        p.composing = true;
+        p.focus = .blank;
         p.saved.clearRetainingCapacity();
     }
 
@@ -98,7 +100,7 @@ pub fn headingRow(rows: u16) u16 {
 
 test "Turn pages ignore interjections and keep independent viewports" {
     const a = std.testing.allocator;
-    var p: Pages = .{ .composing = false };
+    var p: Pages = .{ .focus = .page };
     defer p.saved.deinit(a);
     const entries = [_]Entry{
         .{ .kind = .user, .turn_heading = true },

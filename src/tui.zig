@@ -185,7 +185,7 @@ pub fn run(init: std.process.Init, session: *Session) !void {
     app.menu.wake = .{ .ctx = &app, .call = pathsReady };
 
     try app.transcript.addHistory(gpa, session.history.items);
-    app.pages.composing = app.currentPage().count == 0;
+    app.pages.focus = if (app.currentPage().count == 0) .blank else .page;
     for (session.history.items) |m| {
         if (m.source != .undo and std.mem.eql(u8, m.role, "user")) try app.input.remember(gpa, m.content orelse "");
     }
@@ -352,7 +352,7 @@ pub const App = struct {
                 return app.onKey(k);
             },
             .paste_start => {
-                if (app.cfg.turn_pages and !app.flow.active() and !app.menu.isPinned()) try app.openDraft();
+                if (app.cfg.turn_pages and !app.flow.active() and !app.menu.isPinned()) try app.openDraft(.editing);
                 app.pasting = true;
                 app.paste_buf.clearRetainingCapacity();
             },
@@ -594,7 +594,11 @@ pub const App = struct {
             try providers.key(app, k);
             return true;
         }
-        if (app.cfg.turn_pages and !app.pages.composing) {
+        if (app.cfg.turn_pages and app.pages.focus == .blank and k.matches(vaxis.Key.left, .{}) and app.currentPage().count > 0) {
+            app.pages.focus = .page;
+            return true;
+        }
+        if (app.cfg.turn_pages and app.pages.focus == .page) {
             if (k.matches(vaxis.Key.left, .{}) or k.matches(vaxis.Key.right, .{})) {
                 try app.flipPage(k.matches(vaxis.Key.right, .{}));
                 return true;
@@ -604,7 +608,7 @@ pub const App = struct {
                 return true;
             }
             if (k.matches(vaxis.Key.enter, .{}) or k.matches(vaxis.Key.tab, .{}) or k.text != null or k.matches('v', .{ .ctrl = true }) or isNewline(k, false)) {
-                try app.openDraft();
+                try app.openDraft(.editing);
             }
         }
         app.menu.sync(app.io, input, app.session);
@@ -632,10 +636,10 @@ pub const App = struct {
             try input.replace(gpa, line);
             if (app.turn == null or commands.allowedWhileBusy(line)) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
         } else if (k.matches(vaxis.Key.escape, .{})) {
-            if (app.cfg.turn_pages and app.pages.composing and app.currentPage().count != 0) {
+            if (app.cfg.turn_pages and app.pages.focus != .page and app.currentPage().count != 0) {
                 try app.input.replace(gpa, "");
                 app.menu.inputChanged("");
-                app.pages.composing = false;
+                app.pages.focus = .page;
             } else if (app.turn) |t| t.cancel.store(true, .release);
         } else if (k.matches(vaxis.Key.page_up, .{})) {
             app.scroll.pending -= app.scrollDistance();
@@ -665,6 +669,7 @@ pub const App = struct {
         } else {
             _ = try input.key(gpa, k);
         }
+        if (app.pages.focus == .blank and input.text().len != 0) app.pages.focus = .editing;
         if (std.hash.Wyhash.hash(0, input.text()) != before) app.menu.inputChanged(input.text());
         defer app.pendingFlight = null;
         if (submitted) |line| try app.submit(line);
@@ -726,7 +731,7 @@ pub const App = struct {
         if (line.len == 0) return gpa.free(line);
         if (!app.session.isPluginCommand(line)) if (commands.parse(line)) |parsed| {
             defer gpa.free(line);
-            app.pages.composing = false;
+            app.pages.focus = .page;
             return switch (parsed) {
                 .unknown => |name| app.report(.err, "unknown command /{s} · /help lists commands", .{name}),
                 .known => |c| app.command(c.command, c.arg, line),
@@ -741,7 +746,7 @@ pub const App = struct {
             const id = try app.session.enqueue(line);
             try app.transcript.add(gpa, .user, line);
             app.transcript.entries.items[app.transcript.entries.items.len - 1].queued = id;
-            app.pages.composing = false;
+            app.pages.focus = .page;
             return;
         }
         try app.startTurnWithImages(line, app.input.sent_images.items);
@@ -763,7 +768,11 @@ pub const App = struct {
         }
         try app.transcript.add(app.gpa, .user, text);
         app.transcript.entries.items[app.transcript.entries.items.len - 1].turn_heading = true;
-        app.pages.composing = app.input.text().len != 0;
+        if (app.input.text().len != 0) {
+            app.pages.focus = .editing;
+        } else if (app.pages.focus != .blank or page_before.count == 0) {
+            app.pages.focus = .page;
+        }
         app.turn = try Turn.spawnWithImages(app.gpa, app.session, app.loop, text, images, false);
         app.live_steps = 0;
         app.turn_runs = 0;
@@ -868,7 +877,7 @@ pub const App = struct {
             const restored = if (draft.len == 0) try app.gpa.dupe(u8, text) else try std.fmt.allocPrint(app.gpa, "{s}\n\n{s}", .{ text, draft });
             defer app.gpa.free(restored);
             try app.input.replace(app.gpa, restored);
-            app.pages.composing = true;
+            app.pages.focus = .editing;
             app.menu.inputChanged(app.input.text());
             try app.report(.info, "{d} queued message{s} returned to input", .{ batch.items.items.len, if (batch.items.items.len == 1) "" else "s" });
         }
@@ -983,7 +992,7 @@ pub const App = struct {
 
     pub fn resetPages(app: *App) void {
         app.pages.reset();
-        app.pages.composing = app.currentPage().count == 0;
+        app.pages.focus = if (app.currentPage().count == 0) .blank else .page;
         app.scroll = .{};
         app.body = null;
         app.flight = null;
@@ -995,17 +1004,17 @@ pub const App = struct {
         return app.transcript.latestDetailsIn(page.start, page.end);
     }
 
-    fn openDraft(app: *App) !void {
+    fn openDraft(app: *App, focus: pages.Pages.Focus) !void {
         const page = app.currentPage();
         if (!page.latest()) try app.pages.switchTo(app.gpa, page, page.count - 1, &app.scroll);
-        app.pages.composing = true;
+        app.pages.focus = focus;
         app.flight = null;
         app.body = null;
     }
 
     fn flipPage(app: *App, forward: bool) !void {
         const page = app.currentPage();
-        if (forward and page.latest()) return app.openDraft();
+        if (forward and page.latest()) return app.openDraft(.blank);
         if (!forward and page.index == 0) return;
         app.flight = null;
         app.body = null;
@@ -1038,7 +1047,7 @@ pub const App = struct {
         };
         if (app.cfg.turn_pages != (ui == .pages)) {
             app.resetPages();
-            if (app.input.text().len > 0) app.pages.composing = true;
+            if (app.input.text().len > 0) app.pages.focus = .editing;
         }
         app.cfg.simple = ui == .simple;
         app.session.cfg.simple = app.cfg.simple;
@@ -1100,7 +1109,7 @@ pub const App = struct {
             if (!empty) app.title_loaded = false;
             s.title = if (empty and !app.signed_out) app.titleLine() else "";
             app.body = view.drawFrame(win, app.transcript.entries.items, visible_input, &app.scroll, menu, selected, s, &app.status_text);
-        } else if (app.pages.composing or app.flow.active() or app.menu.isPinned()) {
+        } else if (app.pages.focus != .page or app.flow.active() or app.menu.isPinned()) {
             view.drawDraft(win, visible_input, menu, selected, s, &app.status_text);
             app.body = null;
         } else {

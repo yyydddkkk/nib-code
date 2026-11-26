@@ -150,7 +150,7 @@ def test_large_paste_does_not_redraw_per_key(tmp):
 
 
 def test_turn_pages(tmp):
-    first, second = Reply("First page answer"), Reply("Second page answer")
+    first, second = Reply("First page answer"), Reply("Second page answer", gated=True)
     with fixture(tmp, [first, second]) as (terminal, home, _):
         def visible():
             return screen(terminal.read(), 120, 32)
@@ -170,6 +170,22 @@ def test_turn_pages(tmp):
         terminal.send("\x1b[C")
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
         terminal.send("Second prompt\r")
+        assert second.received.wait(5), "second Turn did not start"
+        wait_for(lambda: "> Second prompt" in visible()[1], "second prompt lands while the model waits")
+        terminal.send("\x1b[C")
+        wait_for(lambda: visible()[15].strip() == ">", "right opens a blank page during a running Turn")
+        terminal.send("\x1b[D")
+        wait_for(lambda: "> Second prompt" in visible()[1] and "Waiting for model" in visible()[-1],
+                 "left returns directly to the running Turn without canceling it")
+        terminal.send("\x1b[C")
+        wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
+        terminal.send("draft\x1b[D!")
+        wait_for(lambda: "> draf!t" in visible()[15], "left edits once typing begins")
+        terminal.send("\x1b[F\x15\x1b[Dx")
+        wait_for(lambda: "> x" in visible()[15], "deleting draft text does not re-enable page navigation")
+        terminal.send("\x1b")
+        wait_for(lambda: "> Second prompt" in visible()[1], "Escape closes the edited draft")
+        second.release.set()
         terminal.wait_turn(second.text)
         assert visible()[1].lstrip() == "> Second prompt"
         assert first.text not in "\n".join(visible())
