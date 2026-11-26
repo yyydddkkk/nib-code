@@ -138,7 +138,8 @@ const all = [_]Tool{
         .run = @import("tools/wait.zig").wait,
         .doc =
         \\  // Block until background Run/bash/agent tasks finish (default: pending non-detached tasks except the calling Run) and return their results; a result returned here is not delivered again. May follow other work in the same Run. Never auto-backgrounded; cancellable.
-        \\  async wait(ids) {}, // ids: optional array of task ids → { ok, results: [{ id, kind, ok, output }], not_pending?: [id] }
+        \\  async wait(ids) {}, // ids: optional array of task ids → { ok, results: [{ id, kind, ok, output, bash? }], not_pending?: [id] }
+        \\  // Bash exit/timeout metadata: bash = { exit_code: number|null, timed_out: boolean, elapsed_ms?, output_path? }.
         ,
     },
     .{

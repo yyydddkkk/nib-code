@@ -29,6 +29,19 @@ pub const Batch = struct {
     }
 };
 
+pub const BashCompletion = struct {
+    status: @import("../tools/bash.zig").Status,
+    output_path: ?[]const u8 = null,
+
+    fn clone(value: BashCompletion, gpa: std.mem.Allocator) !BashCompletion {
+        return .{ .status = value.status, .output_path = if (value.output_path) |path| try gpa.dupe(u8, path) else null };
+    }
+
+    fn deinit(value: BashCompletion, gpa: std.mem.Allocator) void {
+        if (value.output_path) |path| gpa.free(path);
+    }
+};
+
 pub const Item = struct {
     id: u64,
     text: []const u8,
@@ -38,9 +51,11 @@ pub const Item = struct {
     completion_arena: ?std.heap.ArenaAllocator = null,
     run_scope: ?usize = null,
     waited_by: ?usize = null,
+    bash: ?BashCompletion = null,
 
     fn deinit(item: Item, gpa: std.mem.Allocator) void {
         gpa.free(item.text);
+        if (item.bash) |value| value.deinit(gpa);
         if (item.background) |event| gpa.free(event.id);
         if (item.completion_arena) |owned| {
             var arena = owned;
@@ -68,10 +83,10 @@ pub const Inbox = struct {
     }
 
     pub fn enqueueBackground(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, execution: ?@import("../sandbox/timing.zig").Execution) !u64 {
-        return q.enqueueCompletion(gpa, io, id, kind, state, ok, text, detached, invocation, null, execution, null);
+        return q.enqueueCompletion(gpa, io, id, kind, state, ok, text, detached, invocation, null, execution, null, null);
     }
 
-    pub fn enqueueCompletion(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, completion: ?@import("events.zig").RunCompletion, execution: ?@import("../sandbox/timing.zig").Execution, run_scope: ?usize) !u64 {
+    pub fn enqueueCompletion(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, kind: Background.Kind, state: @FieldType(Background, "state"), ok: ?bool, text: []const u8, detached: bool, invocation: usize, completion: ?@import("events.zig").RunCompletion, execution: ?@import("../sandbox/timing.zig").Execution, run_scope: ?usize, bash: ?BashCompletion) !u64 {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
         const copy = try gpa.dupe(u8, text);
@@ -84,15 +99,28 @@ pub const Inbox = struct {
             owned = .init(gpa);
             break :blk try cloneCompletion(owned.?.allocator(), value);
         } else null;
+        const copy_bash = if (bash) |value| try value.clone(gpa) else null;
+        errdefer if (copy_bash) |value| value.deinit(gpa);
         const message_id = q.next_id;
-        try q.batch.items.append(gpa, .{ .id = message_id, .text = copy, .background = .{ .id = agent_id, .kind = kind, .state = state, .ok = ok, .completion = copy_completion, .execution = execution }, .detached = detached, .invocation = invocation, .completion_arena = owned, .run_scope = run_scope });
+        try q.batch.items.append(gpa, .{ .id = message_id, .text = copy, .background = .{ .id = agent_id, .kind = kind, .state = state, .ok = ok, .completion = copy_completion, .execution = execution }, .detached = detached, .invocation = invocation, .completion_arena = owned, .run_scope = run_scope, .bash = copy_bash });
         q.next_id += 1;
         return message_id;
     }
 
-    pub const Waited = struct { kind: Background.Kind, ok: ?bool, invocation: usize, text: []u8 };
+    pub const Waited = struct {
+        kind: Background.Kind,
+        ok: ?bool,
+        invocation: usize,
+        text: []u8,
+        bash: ?BashCompletion,
 
-    /// Moves the oldest queued background result of `id` to `waited`; the copy of its text belongs to the caller.
+        pub fn deinit(taken: Waited, gpa: std.mem.Allocator) void {
+            gpa.free(taken.text);
+            if (taken.bash) |value| value.deinit(gpa);
+        }
+    };
+
+    /// Moves the oldest queued background result of `id` to `waited` and returns a caller-owned copy.
     pub fn takeForWait(q: *Inbox, gpa: std.mem.Allocator, io: std.Io, id: []const u8, run_scope: usize) !?Waited {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
@@ -101,6 +129,8 @@ pub const Inbox = struct {
             if (!std.mem.eql(u8, b.id, id)) continue;
             const text = try gpa.dupe(u8, item.text);
             errdefer gpa.free(text);
+            const bash = if (item.bash) |value| try value.clone(gpa) else null;
+            errdefer if (bash) |value| value.deinit(gpa);
             var claimed = item;
             claimed.waited_by = run_scope;
             try q.waited.items.append(gpa, claimed);
@@ -111,7 +141,7 @@ pub const Inbox = struct {
                 }
             }
             _ = q.batch.items.orderedRemove(i);
-            return .{ .kind = b.kind, .ok = b.ok, .invocation = item.invocation, .text = text };
+            return .{ .kind = b.kind, .ok = b.ok, .invocation = item.invocation, .text = text, .bash = bash };
         }
         return null;
     }
@@ -370,7 +400,7 @@ test "waiting takes one result by id and leaves the rest queued" {
     _ = try q.enqueueBackground(t.allocator, t.io, "b2", .bash, .finished, false, "second", false, 0, null);
     try t.expect(try q.takeForWait(t.allocator, t.io, "b9", 1) == null);
     const taken = (try q.takeForWait(t.allocator, t.io, "b2", 1)).?;
-    defer t.allocator.free(taken.text);
+    defer taken.deinit(t.allocator);
     try t.expectEqualStrings("second", taken.text);
     try t.expectEqual(@as(?bool, false), taken.ok);
     try t.expectEqual(@as(usize, 2), q.batch.items.items.len);
@@ -393,7 +423,7 @@ test "wait claims follow the consuming Run, including when that Run is itself wa
     _ = try q.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "first", false, 0, null);
     const first = (try q.takeForWait(t.allocator, t.io, "b1", 1)).?;
     defer t.allocator.free(first.text);
-    _ = try q.enqueueCompletion(t.allocator, t.io, "r1", .run, .finished, true, "second", false, 0, null, null, 1);
+    _ = try q.enqueueCompletion(t.allocator, t.io, "r1", .run, .finished, true, "second", false, 0, null, null, 1, null);
     const second = (try q.takeForWait(t.allocator, t.io, "r1", 2)).?;
     defer t.allocator.free(second.text);
 

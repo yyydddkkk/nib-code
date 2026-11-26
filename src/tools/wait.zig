@@ -2,7 +2,14 @@ const std = @import("std");
 const tools = @import("../tools.zig");
 const sandbox = @import("../sandbox.zig");
 
-const Result = struct { id: []const u8, kind: []const u8, ok: ?bool, output: []const u8 };
+const Bash = struct {
+    exit_code: std.json.Value,
+    timed_out: bool,
+    elapsed_ms: ?u64,
+    output_path: ?[]const u8,
+};
+
+const Result = struct { id: []const u8, kind: []const u8, ok: ?bool, output: []const u8, bash: ?Bash };
 
 pub fn wait(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
     var arena: std.heap.ArenaAllocator = .init(gpa);
@@ -27,10 +34,16 @@ pub fn wait(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.
         while (i < remaining.items.len) {
             const id = remaining.items[i];
             if (try inbox.takeForWait(gpa, t.io, id, t.runId())) |taken| {
-                defer gpa.free(taken.text);
+                defer taken.deinit(gpa);
                 bg.delivered(t.io, id, taken.invocation);
                 const output = if (std.mem.indexOfScalar(u8, taken.text, '\n')) |nl| taken.text[nl + 1 ..] else taken.text;
-                try results.append(a, .{ .id = id, .kind = @tagName(taken.kind), .ok = taken.ok, .output = try a.dupe(u8, output) });
+                const bash: ?Bash = if (taken.bash) |value| .{
+                    .exit_code = if (value.status.exit_code) |code| .{ .integer = code } else .null,
+                    .timed_out = value.status.elapsed_ms != null,
+                    .elapsed_ms = value.status.elapsed_ms,
+                    .output_path = if (value.output_path) |path| try a.dupe(u8, path) else null,
+                } else null;
+                try results.append(a, .{ .id = id, .kind = @tagName(taken.kind), .ok = taken.ok, .output = try a.dupe(u8, output), .bash = bash });
                 _ = remaining.orderedRemove(i);
             } else if (!bg.outstanding(t.io, id)) {
                 try not_pending.append(a, id);

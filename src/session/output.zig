@@ -116,24 +116,53 @@ pub fn formatMessage(gpa: std.mem.Allocator, prefix: []const u8, json: []const u
 }
 
 pub fn formatMessageSaved(gpa: std.mem.Allocator, prefix: []const u8, json: []const u8, limit: usize, save: ?Save, raw_full: ?[]const u8) ![]u8 {
-    const budget = limit - prefix.len;
-    if (json.len <= budget) return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, json });
-    const footer: ?[]u8 = if (save) |target| blk: {
-        const full = raw_full orelse json;
+    const message = try renderMessage(gpa, prefix, json, limit, .{ .save = save, .raw_full = raw_full });
+    if (message.output_path) |path| gpa.free(path);
+    return message.text;
+}
+
+const Message = struct {
+    text: []u8,
+    output_path: ?[]u8 = null,
+
+    pub fn deinit(message: Message, gpa: std.mem.Allocator) void {
+        gpa.free(message.text);
+        if (message.output_path) |path| gpa.free(path);
+    }
+};
+
+const MessageOptions = struct {
+    save: ?Save = null,
+    raw_full: ?[]const u8 = null,
+    truncated: ?struct { heading: []const u8, body: []const u8 } = null,
+};
+
+pub fn renderMessage(gpa: std.mem.Allocator, prefix: []const u8, json: []const u8, limit: usize, options: MessageOptions) !Message {
+    if (json.len <= limit - prefix.len) return .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, json }) };
+    const heading = if (options.truncated) |preview| preview.heading else "";
+    const body = if (options.truncated) |preview| preview.body else json;
+    const budget = limit - prefix.len - heading.len;
+    var output_path: ?[]u8 = null;
+    errdefer if (output_path) |path| gpa.free(path);
+    const footer: ?[]u8 = if (options.save) |target| blk: {
+        const full = options.raw_full orelse json;
         const partial = full.len > max_saved_bytes;
         const slice = if (partial) trimEnd(full[0..max_saved_bytes]) else full;
-        break :blk saveBytes(gpa, target, slice, partial) catch null;
+        const path = savePath(gpa, target, slice) catch break :blk null;
+        defer if (!target.write) gpa.free(path);
+        if (target.write) output_path = path;
+        break :blk try artifactFooter(gpa, path, partial);
     } else null;
     defer if (footer) |f| gpa.free(f);
-    if (footer) |f| if (f.len + 2 < budget / 2) {
-        const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(json), .logs = @constCast("") }, budget - f.len - 2);
-        defer gpa.free(payload);
-        const nl: []const u8 = if (payload.len > 0 and payload[payload.len - 1] == '\n') "" else "\n";
-        return std.fmt.allocPrint(gpa, "{s}{s}{s}{s}\n", .{ prefix, payload, nl, f });
-    };
-    const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(json), .logs = @constCast("") }, budget);
+    const visible_footer = if (footer) |f| (if (f.len + 2 < budget / 2) f else "") else "";
+    const footer_bytes = if (visible_footer.len > 0) visible_footer.len + 2 else 0;
+    const payload = try renderLimit(gpa, .{ .ok = false, .text = @constCast(body), .logs = @constCast("") }, budget - footer_bytes);
     defer gpa.free(payload);
-    return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, payload });
+    const nl: []const u8 = if (visible_footer.len > 0 and (payload.len == 0 or payload[payload.len - 1] != '\n')) "\n" else "";
+    return .{
+        .text = try std.fmt.allocPrint(gpa, "{s}{s}{s}{s}{s}{s}", .{ prefix, heading, payload, nl, visible_footer, if (visible_footer.len > 0) "\n" else "" }),
+        .output_path = output_path,
+    };
 }
 
 fn renderSaved(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize, save: ?Save) ![]u8 {
@@ -184,12 +213,18 @@ fn saveOutcome(gpa: std.mem.Allocator, o: sandbox.Outcome, target: Save) !?[]u8 
 }
 
 fn saveBytes(gpa: std.mem.Allocator, target: Save, data: []const u8, partial: bool) ![]u8 {
+    const path = try savePath(gpa, target, data);
+    defer gpa.free(path);
+    return artifactFooter(gpa, path, partial);
+}
+
+fn savePath(gpa: std.mem.Allocator, target: Save, data: []const u8) ![]u8 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
     const file = try std.fmt.allocPrint(gpa, "{s}.txt", .{std.fmt.bytesToHex(digest[0..16].*, .lower)});
     defer gpa.free(file);
     const path = try std.fs.path.join(gpa, &.{ target.dir, file });
-    defer gpa.free(path);
+    errdefer gpa.free(path);
     if (target.write) {
         const cwd = std.Io.Dir.cwd();
         cwd.createDir(target.io, target.dir, .fromMode(0o700)) catch |err| switch (err) {
@@ -200,6 +235,10 @@ fn saveBytes(gpa: std.mem.Allocator, target: Save, data: []const u8, partial: bo
         const present = if (cwd.statFile(target.io, path, .{})) |stat| stat.size == data.len else |_| false;
         if (!present) _ = try atomic_file.replace(target.io, gpa, path, data, .{ .permissions = .fromMode(0o600), .sync = false });
     }
+    return path;
+}
+
+fn artifactFooter(gpa: std.mem.Allocator, path: []const u8, partial: bool) ![]u8 {
     return if (partial)
         std.fmt.allocPrint(gpa, "[full output (first 16 MiB): {s}]", .{path})
     else
@@ -788,6 +827,25 @@ test "formatSaved writes full truncated output once and skips small outputs" {
     defer testing.allocator.free(partial_out);
     try testing.expect(partial_out.len <= max_bytes);
     try testing.expect(std.mem.indexOf(u8, partial_out, "[full output (first 16 MiB): ") != null);
+}
+
+test "truncated Bash preview retains status when the artifact cannot be saved" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "not-a-directory", .data = "" });
+    const dir = try std.fmt.allocPrint(t.allocator, ".zig-cache/tmp/{s}/not-a-directory", .{tmp.sub_path});
+    defer t.allocator.free(dir);
+    const body = &@as([max_bytes + 1]u8, @splat('x'));
+    const message = try renderMessage(t.allocator, "[background bash b1 finished]\n", body, max_bytes, .{
+        .save = .{ .io = t.io, .dir = dir },
+        .truncated = .{ .heading = "exit_code: 7\n\n", .body = body },
+    });
+    defer message.deinit(t.allocator);
+    try t.expectEqual(@as(?[]u8, null), message.output_path);
+    try t.expect(std.mem.startsWith(u8, message.text, "[background bash b1 finished]\nexit_code: 7\n\n"));
+    try t.expect(std.mem.indexOf(u8, message.text, "[full output") == null);
+    try t.expect(message.text.len <= max_bytes);
 }
 
 test "formatMessageSaved writes raw full background output only when truncated" {
