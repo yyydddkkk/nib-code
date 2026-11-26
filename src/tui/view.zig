@@ -67,11 +67,12 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
             const control_hit = e.control(body, s.hovered_row orelse 0);
             const first = if (control_hit) |c| c.first else 0;
             const rows = if (control_hit) |c| c.rows else 0;
+            const bg = if (e.kind == .run) s.run_hover_bg else s.hover_bg;
             for (0..body_h) |row| {
                 if (@as(i32, @intCast(row)) < y + first or @as(i32, @intCast(row)) >= y + first + rows) continue;
                 for (0..body.width) |col| {
                     const cell = &win.screen.buf[row * win.screen.width + col + @as(usize, @intCast(body.x_off))];
-                    cell.style.bg = s.hover_bg;
+                    cell.style.bg = bg;
                     cell.default = false;
                 }
             }
@@ -608,7 +609,7 @@ test "hover covers full summary width and leaves expanded details unchanged" {
     var scroll: Viewport = .{};
     var text: status.Text = .{};
     const color: vaxis.Color = .{ .rgb = .{ 8, 8, 8 } };
-    const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .hover_bg = color }, &text).?;
+    const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .run_hover_bg = color }, &text).?;
     const rows = entry.toggleRows(frame.window);
     try testing.expectEqual(@as(u16, 1), rows);
     for (0..rows) |row| for (1..79) |col| {
@@ -686,7 +687,7 @@ test "Simple Run marks and selection preserve details" {
     for ([_]@FieldType(Entry, "run"){ .ok, .failed, .running, .warning }) |state| {
         e.run = state;
         try e.refreshLabel(gpa);
-        const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = cfg, .hovered = 0, .hover_bg = .{ .rgb = .{ 18, 18, 18 } } }, &text).?;
+        const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = cfg, .hovered = 0, .run_hover_bg = .{ .rgb = .{ 8, 8, 8 } } }, &text).?;
         try testing.expectEqual(@as(u16, 1), e.height(frame.window));
         const image = try snapshot(gpa, &screen);
         defer gpa.free(image);
@@ -700,7 +701,7 @@ test "Simple Run marks and selection preserve details" {
         const p = @import("selection/history.zig").position(frame, t.entries.items, 15, 0).?;
         try testing.expectEqual(@as(usize, 0), p.entry);
         try testing.expectEqual(@as(u16, 0), p.row);
-        try testing.expectEqualDeep(vaxis.Color{ .rgb = .{ 18, 18, 18 } }, screen.readCell(11, 0).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color{ .rgb = .{ 8, 8, 8 } }, screen.readCell(11, 0).?.style.bg);
         try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(0, 0).?.style.bg);
         e.open = true;
         const expanded = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = cfg }, &text).?;
@@ -848,8 +849,8 @@ test "nested Run hover highlights only its heading and output stays readable" {
     defer input.deinit(a);
     var scroll: Viewport = .{};
     var text: status.Text = .{};
-    const color: vaxis.Color = .{ .rgb = .{ 18, 18, 18 } };
-    const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .hovered_row = 2, .hover_bg = color }, &text).?;
+    const color: vaxis.Color = .{ .rgb = .{ 8, 8, 8 } };
+    const frame = drawFrame(win, t.entries.items, &input, &scroll, &.{}, 0, .{ .cfg = mock_cfg, .hovered = 0, .hovered_row = 2, .run_hover_bg = color }, &text).?;
     try testing.expectEqualDeep(color, screen.readCell(3, 2).?.style.bg);
     try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(3, 0).?.style.bg);
     try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(7, 3).?.style.bg);

@@ -15,16 +15,7 @@ nib 以 Run 为工作单位：模型写一段 JavaScript，一步完成读取、
 
 ## 数据
 
-与 Codex CLI 使用同一模型：
-
-**快 12% · 费用低 44% · 请求少 32% · 20/20 通过**
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-versus-dark.svg">
-  <img src="docs/assets/bench-versus-light.svg" alt="nib 与 Codex CLI 同模型对比：耗时 128 秒 vs 144 秒；每个任务费用 $0.044 vs $0.079；请求 13 vs 19；输入 token 192k vs 623k。" width="880">
-</picture>
-
-**同时打开十个 agent：**
+### 内存占用：十个空闲实例
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-memory-dark.svg">
@@ -33,9 +24,25 @@ nib 以 Run 为工作单位：模型写一段 JavaScript，一步完成读取、
 
 **nib 0.19.0**：Linux x86-64 静态二进制 6.7 MB · 单实例空闲 RSS 4.6 MB · 无运行时依赖。内存图仅更新 nib 的实测值，其他 agent 沿用历史数据。
 
-*任务基准：2026 年 11 月 · gpt-6.1-terra、medium · 对比 Codex CLI 0.166.0 共 20 次运行，按 API 价格计费。*
+### 提示词长度
 
-**通用提示词为 1,493 tokens**，含通用工具说明。[各模型家族的完整请求开销 →](docs/benchmarks.md#current-prompt-footprint)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-prompt-dark.svg">
+  <img src="docs/assets/bench-prompt-light.svg" alt="提示词 token 数：nib 0.19.0 仅通用部分 1,493。其他 agent 的历史完整数据：pi 纯净版 1,282；pi 日常扩展版 2,417；dsh 6,236；prime-agent 8,891；Codex CLI 10,260；Claude Code 11,275。" width="880">
+</picture>
+
+**nib 0.19.0 的通用提示词为 1,493 tokens**，含通用工具说明，不含模型配置和请求工具定义。其他 agent 显示历史完整固定提示词长度，口径不同。[各模型家族的完整固定开销 →](docs/benchmarks.md#current-prompt-footprint)
+
+### 同模型对比：Codex CLI
+
+**快 12% · 费用低 44% · 请求少 32% · 20/20 通过**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-versus-dark.svg">
+  <img src="docs/assets/bench-versus-light.svg" alt="nib 与 Codex CLI 同模型对比：耗时 128 秒 vs 144 秒；每个任务费用 $0.044 vs $0.079；请求 13 vs 19；输入 token 192k vs 623k。" width="880">
+</picture>
+
+*任务基准：2026 年 11 月 · gpt-6.1-terra、medium · 对比 Codex CLI 0.166.0 共 20 次运行，按 API 价格计费。*
 
 ## 安装
 
