@@ -13,6 +13,7 @@ pub fn install(gpa: std.mem.Allocator, ctx: *c.JSContext, host: ?Host) !void {
     const global = c.JS_GetGlobalObject(ctx);
     defer c.JS_FreeValue(ctx, global);
     _ = c.JS_SetPropertyStr(ctx, global, "__log", c.JS_NewCFunction2(ctx, nativeLog, "__log", 1, c.JS_CFUNC_generic, 0));
+    _ = c.JS_SetPropertyStr(ctx, global, "__maskJson", c.JS_NewCFunction2(ctx, nativeMaskJson, "__maskJson", 1, c.JS_CFUNC_generic, 0));
     _ = c.JS_SetPropertyStr(ctx, global, "__host", c.JS_NewCFunction2(ctx, nativeHost, "__host", 2, c.JS_CFUNC_generic, 0));
     if (comptime sandbox.benchmark.enabled) {
         _ = c.JS_SetPropertyStr(ctx, global, "__benchReceived", c.JS_NewCFunction2(ctx, benchmarkReceived, "__benchReceived", 1, c.JS_CFUNC_generic, 0));
@@ -71,10 +72,35 @@ fn nativeLog(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue)
     var len: usize = 0;
     const p = c.JS_ToCStringLen2(ctx, &len, argv[0], false) orelse return js_undefined;
     defer c.JS_FreeCString(ctx, p);
-    st.logs.append(st.gpa, p[0..len]) catch {
+    const masked = if (st.output_policy == .credentials_v1) sandbox.redaction.mask(st.gpa, p[0..len], .plain) catch {
+        st.oom = true;
+        return js_undefined;
+    } else null;
+    defer if (masked) |bytes| st.gpa.free(bytes);
+    st.logs.append(st.gpa, masked orelse p[0..len]) catch {
         st.oom = true;
     };
     return js_undefined;
+}
+
+fn nativeMaskJson(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    if (argc < 1) return js_undefined;
+    const st = state(ctx);
+    if (st.output_policy == .legacy) return c.JS_DupValue(ctx, argv[0]);
+    var len: usize = 0;
+    const p = c.JS_ToCStringLen2(ctx, &len, argv[0], false) orelse {
+        st.oom = true;
+        return c.JS_ThrowOutOfMemory(ctx);
+    };
+    defer c.JS_FreeCString(ctx, p);
+    const masked = (sandbox.redaction.mask(st.gpa, p[0..len], .rendered) catch {
+        st.oom = true;
+        return c.JS_ThrowOutOfMemory(ctx);
+    }) orelse return c.JS_DupValue(ctx, argv[0]);
+    defer st.gpa.free(masked);
+    const result = c.JS_NewStringLen(ctx, masked.ptr, masked.len);
+    if (c.JS_IsException(result)) st.oom = true;
+    return result;
 }
 
 fn nativeHost(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {

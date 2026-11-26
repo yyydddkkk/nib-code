@@ -26,7 +26,7 @@ Main `$NIB_HOME/sessions/<session_id>.jsonl` stores messages/Steps; independent 
 
 Replay step is **1-based assistant Step ordinal over the Session**, including final answers, never resetting per Turn; run is **0-based `tool_calls` index**. Not `turn_step` or internal tool index. Commands/format/truncation/dedup/undetermined cases: [replay.md](replay.md).
 
-Sidecars may contain undisplayed full files/output/secrets, not sent to providers/reflection. Reflection only reads specified main logs, without sessions enumeration or sidecar/sibling/child reads: prompt constraint, not separate access control. Inspect both before sharing; main redaction does not cover sidecars.
+Newly formatted [Run and background output](run-output.md#credential-masking) is masked for known credential formats before being logged, including saved full output. This does not sanitize other Session data or existing files. Sidecars may contain undisplayed full files/output/secrets, not sent to providers/reflection. Reflection only reads specified main logs, without sessions enumeration or sidecar/sibling/child reads: prompt constraint, not separate access control. Inspect both before sharing; main redaction does not cover sidecars.
 
 ## Experiment tags (header)
 

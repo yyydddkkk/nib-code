@@ -67,6 +67,14 @@ Locks coordinate only cooperating file tools sharing NIB_HOME; bash/editors/exte
 
 Local regression needs no provider/key: build then python3 tests/test_files.py. Temporary NIB_HOME tests cover high-frequency multiprocess edits, aliases/symlinks, stale write/reread, paginated versions, permissions/hard links, cancelable lock waits, concurrent atomic-replacement reads.
 
+## Credential masking
+
+Before any display or capture truncation, nib replaces recognized credentials with `[REDACTED]` in console entries, Run results and rendered errors (including source excerpts), after-edit hook failure output, and background Bash/agent completion text. The same masked output reaches the model, TUI, `ask --json`, Session log, `tools.wait()` completion, and saved output files. Raw tool byte counts are unchanged; output limits and omission counts use the masked text.
+
+The matcher recognizes `ghp_`, `gho_`, `ghu_`, and `ghs_` with exactly 36 ASCII letters or digits, and `sk-proj-` and `sk-svcacct-` with at least 24 ASCII letters, digits, underscores or hyphens. Token boundaries are based on ASCII letters, digits, underscores, and hyphens. Generic `sk-` strings, `Bearer` headers, and `password=` assignments are not recognized by those forms alone.
+
+This is accidental-disclosure protection, not a security boundary. It does not rewrite source files, Run scripts, raw tool values and arguments, chat, diffs, images, Bash command summaries, user-written files, or earlier logs and artifacts. It cannot recover tokens clipped by a tool, split across console calls, or intentionally encoded. Opt-in [raw replay recordings](replay.md) may contain credentials; do not share them unreviewed.
+
 ## Run execution budgets and cancellation
 
 After top-level fulfillment/rejection, drain in-flight/queued tools, remaining JS jobs, and continuation-created calls until no work remains. Any call failure leaves others running, not just agent failures. Preserve original top-level rejection despite later success/failure. `Promise.all` early rejection does not stop side effects; failed Runs may keep writing. Foreground agents still finish/count usage, with Esc available. Cross-Run background lifecycle: [tool-delegation.md](tool-delegation.md).

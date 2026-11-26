@@ -275,6 +275,7 @@ const Recording = struct {
     key: Key,
     start_ms_epoch: i64,
     run_output_bytes: usize = output.max_bytes,
+    output_policy: @import("sandbox/redaction.zig").Policy = .legacy,
     entries: std.ArrayList(core.Entry) = .empty,
     end: ?End = null,
     incomplete: bool = false,
@@ -305,6 +306,10 @@ fn loadCalls(a: Allocator, data: []const u8) ![]Recording {
             if (meta.object.get("run_output_bytes")) |limit| {
                 r.run_output_bytes = try natural(limit);
                 if (r.run_output_bytes < 16384 or r.run_output_bytes > 16777216) return error.InvalidReplayLog;
+            }
+            if (meta.object.get("output_policy")) |version| {
+                const number = std.math.cast(u8, try natural(version)) orelse return error.InvalidReplayLog;
+                r.output_policy = std.enums.fromInt(@TypeOf(r.output_policy), number) orelse return error.InvalidReplayLog;
             }
             if (meta.object.get("incomplete")) |incomplete| {
                 if (incomplete != .bool) return error.InvalidReplayLog;
@@ -371,21 +376,44 @@ const Report = struct {
     end: ?End = null,
 };
 
-fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8, outputs_dir: ?[]const u8) !Report {
-    const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, recording.end orelse .ok, script != null, original.child);
-    defer evaluated.deinit(a);
+fn replayOutput(a: Allocator, io: std.Io, original: Run, outcome: @import("sandbox.zig").Outcome, limit: usize, outputs_dir: ?[]const u8) ![]const u8 {
     const expect_saved = if (original.expected) |exp| std.mem.indexOf(u8, exp, "[full output") != null else false;
     const save: ?output.Save = if (expect_saved) if (outputs_dir) |dir| .{ .io = io, .dir = dir, .write = false } else null else null;
-    const formatted = try output.formatSaved(a, evaluated.outcome, recording.run_output_bytes, save);
+    const formatted = try output.formatSaved(a, outcome, limit, save);
     const referenced = if (original.source_reference) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, original.key.step, original.key.run }) else formatted;
-    const text = try output.stepLimitOutput(a, referenced, original.remaining_steps);
+    return output.stepLimitOutput(a, referenced, original.remaining_steps);
+}
+
+fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, script: ?[]const u8, outputs_dir: ?[]const u8) !Report {
+    const end = recording.end orelse .ok;
+    const redaction = @import("sandbox/redaction.zig");
+    const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, end, script != null, original.child, .credentials_v1);
+    defer evaluated.deinit(a);
+    const text = try replayOutput(a, io, original, evaluated.outcome, recording.run_output_bytes, outputs_dir);
     const incomplete = recording.incomplete or evaluated.incomplete or original.expected == null;
-    const determined = script == null and !incomplete and recording.end != .timeout and recording.end != .cancelled;
-    const equal = if (original.expected) |expected| std.mem.eql(u8, expected, text) else false;
+    const determined = script == null and !incomplete and end != .timeout and end != .cancelled;
+    const equal = if (!determined or evaluated.divergence != null) false else switch (recording.output_policy) {
+        .credentials_v1 => std.mem.eql(u8, original.expected.?, text),
+        .legacy => blk: {
+            // Keep the historic byte comparison private, including its pre-redaction truncation.
+            var arena: std.heap.ArenaAllocator = .init(a);
+            defer arena.deinit();
+            const scratch = arena.allocator();
+            const legacy = try core.executeSession(scratch, io, original.code, recording.entries.items, recording.start_ms_epoch, end, false, original.child, .legacy);
+            const raw = try replayOutput(scratch, io, original, legacy.outcome, recording.run_output_bytes, outputs_dir);
+            break :blk std.mem.eql(u8, original.expected.?, raw);
+        },
+    };
+    const divergence: ?[]const u8 = if (evaluated.divergence) |d|
+        (try redaction.mask(a, d, .rendered)) orelse try a.dupe(u8, d)
+    else if (determined and !equal)
+        "output differs"
+    else
+        null;
     return .{
         .run = try std.fmt.allocPrint(a, "{d}:{d}", .{ original.key.step, original.key.run }),
-        .match = if (determined) evaluated.divergence == null and equal else null,
-        .divergence = if (evaluated.divergence) |d| try a.dupe(u8, d) else if (determined and !equal) try std.fmt.allocPrint(a, "output differs: expected={f}; actual={f}", .{ std.json.fmt(original.expected.?, .{}), std.json.fmt(text, .{}) }) else null,
+        .match = if (determined) equal else null,
+        .divergence = divergence,
         .incomplete = incomplete,
         .uses_time = evaluated.uses_time,
         .uses_random = evaluated.uses_random,

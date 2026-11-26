@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import signal
 import stat
 import subprocess
@@ -18,8 +19,9 @@ import threading
 import unittest
 
 from background_assertions import stop_result
+from redaction_fixtures import SYNTHETIC_TOKEN, assert_no_token
 
-from test_interjections import Terminal, wait_for
+from test_interjections import Terminal, screen, wait_for
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "zig-out/bin/nib"
@@ -114,6 +116,71 @@ class ReplayTests(unittest.TestCase):
     def replay(self, session, *args, check=True):
         result = self.command("replay", session, "--json", *args, check=check)
         return json.loads(result.stdout)
+
+    def test_run_output_redaction_preserves_raw_js_and_artifact(self):
+        raw = "before: " + SYNTHETIC_TOKEN + " : " + "界" * 9000 + " :after\n"
+        for name in ("sample.txt", "copy.txt"):
+            (self.cwd / name).write_text(raw)
+        self.mock.reply(codes=[
+            'const r = await tools.read({path:"sample.txt"}); '
+            'await tools.write({path:"copy.txt",content:r.text}); '
+            'console.log(r.text);',
+        ])
+        self.mock.reply()
+        result = self.command("ask", "--json", "print a fixture", env=dict(self.env, NIB_RECORD="off"))
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        session = events[0]["start"]["session_id"]
+        self.assertFalse(self.calls_path(session).exists())
+        self.assertEqual((self.cwd / "copy.txt").read_text(), raw)
+        run_end, = [e["run_end"] for e in events if "run_end" in e]
+        saved_path = re.search(r"\[full output: ([^\]]+)\]", run_end["output"])[1]
+        saved = Path(saved_path).read_text()
+        messages = json.dumps(self.mock.requests[-1], ensure_ascii=False)
+        main = (self.home / "sessions" / f"{session}.jsonl").read_text()
+        for rendered in (result.stdout, main, messages, saved):
+            self.assertIn("before: [REDACTED]", rendered)
+        self.assertIn(":after", saved)
+        assert_no_token(self, result.stdout, main, messages, saved)
+
+    def test_tui_shows_masked_run_error(self):
+        (self.cwd / "sample.txt").write_text("failure: " + SYNTHETIC_TOKEN)
+        self.mock.reply(codes=['throw new Error((await tools.read({path:"sample.txt"})).text);'])
+        self.mock.reply()
+        terminal = Terminal(self.cwd, self.env)
+        try:
+            terminal.send("print a fixture\r")
+            terminal.wait_turn("mock finished")
+            terminal.send("\x0f")
+            terminal.until(b"[REDACTED]")
+            assert_no_token(self, "\n".join(screen(terminal.output, 120, 32)))
+        finally:
+            terminal.close()
+
+    def test_output_policy_replays_raw_legacy_comparison_privately(self):
+        raw = "before: " + SYNTHETIC_TOKEN + " :after"
+        (self.cwd / "sample.txt").write_text(raw)
+        session = self.ask(['const r = await tools.read({path:"sample.txt"}); console.log(r.text);'])
+        path = self.calls_path(session)
+        calls = jsonl(path)
+        self.assertEqual(calls[0]["args"], {"path": "sample.txt"})
+        self.assertEqual(json.loads(calls[0]["result"])["text"], raw)
+        self.assertEqual(calls[-1]["meta"]["output_policy"], 1)
+        current = self.replay(session, "--run", "1:0")
+        self.assertIs(current["match"], True)
+        self.assertEqual(current["output"], "before: [REDACTED] :after")
+
+        calls[-1]["meta"].pop("output_policy")
+        path.write_text("".join(json.dumps(row) + "\n" for row in calls))
+        main = self.home / "sessions" / f"{session}.jsonl"
+        logs = main.read_text()
+        main.write_text(logs.replace(current["output"], raw))
+        legacy = self.replay(session, "--run", "1:0")
+        self.assertEqual(legacy, current)
+        main.write_text(logs.replace(current["output"], raw + " mismatch"))
+        mismatch = self.command("replay", session, "--run", "1:0", "--json", check=False)
+        self.assertIs(json.loads(mismatch.stdout)["match"], False)
+        self.assertIn("output differs", mismatch.stdout)
+        assert_no_token(self, mismatch.stdout, mismatch.stderr)
 
     def record_files(self):
         (self.cwd / "sample.txt").write_text("alpha\nbeta\nalpha\n")
@@ -211,7 +278,7 @@ class ReplayTests(unittest.TestCase):
             run_rows = [r for r in rows if (r["step"], r["run"]) == key]
             self.assertEqual(sum("meta" in r for r in run_rows), 1)
             self.assertEqual(set(run_rows[-1]), {"step", "run", "meta"})
-            self.assertEqual(set(run_rows[-1]["meta"]), {"start_ms_epoch", "run_output_bytes", "end"})
+            self.assertEqual(set(run_rows[-1]["meta"]), {"start_ms_epoch", "run_output_bytes", "output_policy", "end"})
             self.assertEqual(run_rows[-1]["meta"]["run_output_bytes"], 16384)
         (self.cwd / "sample.txt").unlink()
         (self.cwd / "side-effect").unlink()
