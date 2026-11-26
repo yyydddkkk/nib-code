@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
+    const vaxis = patchedVaxis(b, vaxis_dep);
 
     const options = b.addOptions();
     const version = @import("build.zig.zon").version;
@@ -52,7 +53,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "vaxis", .module = vaxis_dep.module("vaxis") },
+            .{ .name = "vaxis", .module = vaxis },
             .{ .name = "qjs", .module = qjs_c.createModule() },
             .{ .name = "build_options", .module = options.createModule() },
             .{ .name = "sandbox_probe_options", .module = production_probe.createModule() },
@@ -106,4 +107,20 @@ pub fn build(b: *std.Build) void {
     b.step("bench-scheduler", "Measure native tool scheduling (ReleaseFast only)").dependOn(&bench_run.step);
     const bench_tests = b.addRunArtifact(b.addTest(.{ .root_module = bench_module }));
     b.step("test-bench-scheduler", "Test scheduler benchmark probes and fixtures").dependOn(&bench_tests.step);
+}
+
+fn patchedVaxis(b: *std.Build, dep: *std.Build.Dependency) *std.Build.Module {
+    const queue_path = "src/queue.zig";
+    const source_path = dep.builder.root.joinString(b.allocator, queue_path) catch @panic("OOM");
+    const queue = std.Io.Dir.cwd().readFileAlloc(b.graph.io, source_path, b.allocator, .limited(64 * 1024)) catch |err| std.debug.panic("cannot read vaxis queue: {s}", .{@errorName(err)});
+    // The pinned vaxis queue can strand its producer under Debug backpressure when helpers take Queue by value.
+    const old = "(self: Self";
+    if (std.mem.count(u8, queue, old) != 5) @panic("revisit the vaxis queue patch after updating vaxis");
+    const patched = std.mem.replaceOwned(u8, b.allocator, queue, old, "(self: *const Self") catch @panic("OOM");
+    const sources = b.addWriteFiles();
+    _ = sources.addCopyDirectory(dep.path("src"), "src", .{ .exclude_extensions = &.{"queue.zig"} });
+    _ = sources.add(queue_path, patched);
+    const module = dep.module("vaxis");
+    module.root_source_file = sources.getDirectory().path(b, "src/main.zig");
+    return module;
 }

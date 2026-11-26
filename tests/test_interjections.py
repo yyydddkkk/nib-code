@@ -139,8 +139,30 @@ class Terminal:
                 rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.master, termios.TIOCGWINSZ, b"\0" * 8))
                 raise AssertionError((text, self.child.poll(), screen(self.output, cols, rows)))
 
+    def wait_frame(self, text):
+        frame_end = b"\x1b[?2026l"
+        output = b""
+
+        def completed():
+            nonlocal output
+            end = self.output.rfind(frame_end)
+            if end == -1:
+                return False
+            output = self.output[:end + len(frame_end)]
+            return any(text in row for row in screen(output, 120, 32))
+
+        with self.output_changed:
+            if not self.output_changed.wait_for(completed, timeout=10):
+                raise AssertionError((text, self.child.poll(), screen(output, 120, 32)))
+            return output
+
     def send(self, text):
-        os.write(self.master, text.encode())
+        data = memoryview(text.encode())
+        while data:
+            written = os.write(self.master, data)
+            if written == 0:
+                raise OSError("PTY write made no progress")
+            data = data[written:]
 
     def close(self):
         if self.master is None:
@@ -197,14 +219,24 @@ def fixture(tmp, replies, config=None, provider="chat_completions", environment=
                    HOME=str(tmp), TERM="xterm-256color", NIB_TUNE="delivery=user")
         env.update(environment or {})
         terminal = Terminal(tmp, env)
+        failure = None
         try:
             yield terminal, home, env
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            terminal.close()
             for reply in replies:
                 reply.release.set()
-            mock.shutdown()
-            thread.join()
+            try:
+                terminal.close()
+            except Exception as cleanup:
+                if failure is None:
+                    raise
+                failure.add_note(f"PTY cleanup also failed: {type(cleanup).__name__} (exit {terminal.child.returncode})")
+            finally:
+                mock.shutdown()
+                thread.join()
 
 
 def wait_queued(terminal, *texts):
