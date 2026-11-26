@@ -594,12 +594,17 @@ pub const App = struct {
             try providers.key(app, k);
             return true;
         }
-        if (app.cfg.turn_pages and (k.matches(vaxis.Key.left, .{ .ctrl = true }) or k.matches(vaxis.Key.right, .{ .ctrl = true }))) {
-            try app.flipPage(k.matches(vaxis.Key.right, .{ .ctrl = true }));
-            return true;
+        if (app.cfg.turn_pages) {
+            if (k.matches(vaxis.Key.left, .{}) and (app.pages.focus == .page or input.text().len == 0)) {
+                try app.flipPage(false);
+                return true;
+            }
+            if (app.pages.focus == .page and k.matches(vaxis.Key.right, .{})) {
+                try app.flipPage(true);
+                return true;
+            }
         }
         if (app.cfg.turn_pages and app.pages.focus == .page) {
-            if (k.matches(vaxis.Key.left, .{}) or k.matches(vaxis.Key.right, .{})) return true;
             if (k.matches(vaxis.Key.enter, .{})) {
                 try app.openDraft(.editing);
                 return true;

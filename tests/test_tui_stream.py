@@ -151,7 +151,7 @@ def test_large_paste_does_not_redraw_per_key(tmp):
 
 def test_turn_pages(tmp):
     first, second = Reply("First page answer"), Reply("Second page answer", gated=True)
-    prev, next_page = "\x1b[1;5D", "\x1b[1;5C"
+    prev, next_page = "\x1b[D", "\x1b[C"
     with fixture(tmp, [first, second]) as (terminal, home, _):
         def visible():
             return screen(terminal.read(), 120, 32)
@@ -185,21 +185,15 @@ def test_turn_pages(tmp):
         wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
         terminal.send("draft\x1b[D!")
         wait_for(lambda: "> draf!t" in visible()[15], "left edits once typing begins")
-        terminal.send(prev)
-        wait_for(lambda: "> Second prompt" in visible()[2], "Ctrl+Left leaves the draft without discarding it")
-        terminal.send(next_page)
-        wait_for(lambda: "> draf!t" in visible()[15], "Ctrl+Right restores the draft")
+        terminal.send(prev * 6 + "<" + next_page + "=")
+        wait_for(lambda: "> <d=raf!t" in visible()[15], "arrows edit even at the start of a nonempty draft")
         terminal.send("\x1b[F\x15" + prev)
-        wait_for(lambda: "> Second prompt" in visible()[2], "Ctrl+Left works after typing and deleting the draft")
+        wait_for(lambda: "> Second prompt" in visible()[2], "left goes back after typing and deleting the draft")
         second.release.set()
         terminal.wait_turn(second.text)
         assert visible()[2].lstrip() == "> Second prompt"
         assert first.text not in "\n".join(visible())
 
-        terminal.send("\x1b[D" + next_page)
-        wait_for(lambda: visible()[15].strip() == ">", "plain left does not navigate while browsing")
-        terminal.send(prev)
-        wait_for(lambda: "02 / 02" in visible()[-1], "Ctrl+Left closes the empty draft")
         terminal.send(prev)
         wait_for(lambda: "01 / 02" in visible()[-1], "left returns to the first Turn")
         assert first.text in "\n".join(visible()) and second.text not in "\n".join(visible())
