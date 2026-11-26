@@ -88,7 +88,7 @@ pub const system_template =
     \\
     \\Writing scripts:
     \\- Top-level `await` works. Each Step is a full model round trip; one Run can read several files and make independent edits, returning only what you need.
-++ std.fmt.comptimePrint("\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to {d} at a time; commands chained inside one bash call (&&, ;) run one after another.\n", .{sandbox.tool_concurrency}) ++
+++ std.fmt.comptimePrint("\n- Tool calls started without awaiting each one (e.g. Promise.all) run concurrently, up to {d} at a time. Use && for dependent shell commands. With semicolons, a bash call normally reports only the last command's exit status. For independent checks, use separate bash calls in the same Run (parallel only when safe) and inspect each exit_code or timed_out.\n", .{sandbox.tool_concurrency}) ++
     \\- Long Runs auto-background while awaiting tools; scripts and captured output stay intact. Continue useful work; no ps, cat/tail logs, sleep, empty Runs or timeout reruns to check/wait. Do not read their redirected logs before completion.
 ++ "{s}" ++
     \\- Default to doing the task yourself. Unless the user requests delegation, delegate only independent read-only investigations that can run in parallel with useful parent work and whose results can be discarded. Keep serial edits, builds, tests and reviews in the main loop. Waiting on a foreground agent is serial; background delegation does not help if you must wait for it to proceed.
