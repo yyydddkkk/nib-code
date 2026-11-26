@@ -61,7 +61,7 @@ The signed-out hint, activity, menus, provider flows, notices, errors and warnin
 
 Collapsed Runs use one title line: successful Runs carry no mark (success is silent); failures and warnings keep their red ✗ / yellow ! marks; running Runs keep their live text. Running agent trees remain visible to preserve progress. Opening uses the same change-first details as Normal mode. User shading and Markdown are unchanged.
 
-Hover shifts each reported background RGB channel by +18 on dark backgrounds or −18 on light backgrounds (saturated). Without a background report, a reported dark scheme uses RGB 18/18/18 and light uses 237/237/237. Without either report, hover adds no background. This neutral shade stays restrained beside the blue user-message tint.
+Run controls use a subtler hover shade than other controls: each background RGB channel shifts by 8 for Runs and 18 elsewhere, upward on dark backgrounds and downward on light backgrounds (saturated). If the terminal reports only a color scheme, use black or white as the base. Without either report, hover adds no background.
 
 ## Menus
 

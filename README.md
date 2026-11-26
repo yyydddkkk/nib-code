@@ -15,16 +15,7 @@ nib works in Runs: the model writes one JavaScript script that reads, edits and 
 
 ## Numbers
 
-Against Codex CLI on the same model:
-
-**12% faster · 44% cheaper · 32% fewer requests · 20/20 passed**
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-versus-dark.svg">
-  <img src="docs/assets/bench-versus-light.svg" alt="nib vs Codex CLI on the same model: wall time 128 s vs 144 s; cost per task $0.044 vs $0.079; requests 13 vs 19; input tokens 192k vs 623k." width="880">
-</picture>
-
-**Ten agents open:**
+### Memory: ten idle instances
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-memory-dark.svg">
@@ -33,9 +24,25 @@ Against Codex CLI on the same model:
 
 **nib 0.19.0:** 6.7 MB static Linux x86-64 binary · 4.6 MB idle RSS · no runtime dependencies. The chart uses fresh nib measurements; other agents retain their historical figures.
 
-*Task benchmark: Nov 2026 · gpt-6.1-terra, medium · 20 runs vs Codex CLI 0.166.0 at API prices.*
+### Prompt length
 
-**Shared prompt: 1,493 tokens**, including the common tool API. [Full request counts by model family →](docs/benchmarks.md#current-prompt-footprint)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-prompt-dark.svg">
+  <img src="docs/assets/bench-prompt-light.svg" alt="Prompt tokens: nib 0.19.0 shared only 1,493. Historical full counts for other agents: pi clean 1,282; pi with everyday extensions 2,417; dsh 6,236; prime-agent 8,891; Codex CLI 10,260; Claude Code 11,275." width="880">
+</picture>
+
+**nib 0.19.0's shared prompt is 1,493 tokens**, including the common tool API but excluding model profiles and request tool definitions. Other agents show historical full fixed-prompt counts, measured on a different basis. [Full fixed input by model family →](docs/benchmarks.md#current-prompt-footprint)
+
+### Same-model comparison: Codex CLI
+
+**12% faster · 44% cheaper · 32% fewer requests · 20/20 passed**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-versus-dark.svg">
+  <img src="docs/assets/bench-versus-light.svg" alt="nib vs Codex CLI on the same model: wall time 128 s vs 144 s; cost per task $0.044 vs $0.079; requests 13 vs 19; input tokens 192k vs 623k." width="880">
+</picture>
+
+*Task benchmark: Nov 2026 · gpt-6.1-terra, medium · 20 runs vs Codex CLI 0.166.0 at API prices.*
 
 ## Install
 

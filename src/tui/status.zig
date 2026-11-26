@@ -61,6 +61,7 @@ pub const Status = struct {
     hovered: ?usize = null,
     hovered_row: ?u16 = null,
     hover_bg: @import("vaxis").Color = .default,
+    run_hover_bg: @import("vaxis").Color = .default,
     user_bg: @import("vaxis").Color = .default,
     code_bg: @import("vaxis").Color = .default,
     usage: provider.Usage = .{},
