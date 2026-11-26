@@ -595,6 +595,10 @@ pub const App = struct {
             return true;
         }
         if (app.cfg.turn_pages) {
+            if (app.pages.focus != .page and k.matches(vaxis.Key.escape, .{}) and app.currentPage().count != 0) {
+                try app.flipPage(false);
+                return true;
+            }
             if (k.matches(vaxis.Key.left, .{}) and (app.pages.focus == .page or input.text().len == 0)) {
                 try app.flipPage(false);
                 return true;
@@ -617,8 +621,9 @@ pub const App = struct {
                 try app.openDraft(.editing);
             }
         }
-        app.menu.sync(app.io, input, app.session);
-        const selected = app.menu.selected(input.text());
+        const parked = app.cfg.turn_pages and app.pages.focus == .page;
+        if (!parked) app.menu.sync(app.io, input, app.session);
+        const selected = if (parked) null else app.menu.selected(input.text());
         const before = std.hash.Wyhash.hash(0, input.text());
         var submitted: ?[]u8 = null;
 
@@ -642,11 +647,7 @@ pub const App = struct {
             try input.replace(gpa, line);
             if (app.turn == null or commands.allowedWhileBusy(line)) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
         } else if (k.matches(vaxis.Key.escape, .{})) {
-            if (app.cfg.turn_pages and app.pages.focus != .page and app.currentPage().count != 0) {
-                try app.input.replace(gpa, "");
-                app.menu.inputChanged("");
-                app.pages.focus = .page;
-            } else if (app.turn) |t| t.cancel.store(true, .release);
+            if (app.turn) |t| t.cancel.store(true, .release);
         } else if (k.matches(vaxis.Key.page_up, .{})) {
             app.scroll.pending -= app.scrollDistance();
         } else if (k.matches(vaxis.Key.page_down, .{})) {
@@ -774,7 +775,7 @@ pub const App = struct {
         }
         try app.transcript.add(app.gpa, .user, text);
         app.transcript.entries.items[app.transcript.entries.items.len - 1].turn_heading = true;
-        if (app.input.text().len != 0) {
+        if (app.input.text().len != 0 and app.pages.focus != .page) {
             app.pages.focus = .editing;
         } else if (app.pages.focus != .blank or page_before.count == 0) {
             app.pages.focus = .page;
@@ -1078,8 +1079,11 @@ pub const App = struct {
     }
 
     fn render(app: *App) !void {
-        try app.menu.load(app.io, app.input.text(), app.session);
-        app.menu.sync(app.io, &app.input, app.session);
+        const show_input = !app.cfg.turn_pages or app.pages.focus != .page or app.flow.active() or app.menu.isPinned();
+        if (show_input) {
+            try app.menu.load(app.io, app.input.text(), app.session);
+            app.menu.sync(app.io, &app.input, app.session);
+        }
         var visible_input: *Editor = &app.input;
         if (app.flow.takesText()) {
             try app.flow.display(&app.prompt_text, app.gpa);
@@ -1087,7 +1091,7 @@ pub const App = struct {
             visible_input = &app.prompt_view;
         }
         app.input.ghost = if (app.turn == null and !app.flow.active() and !app.menu.isPinned()) app.prediction.visible(&app.input) else "";
-        const menu = app.menu.items(app.input.text());
+        const menu: []commands.Candidate = if (show_input) app.menu.items(app.input.text()) else &.{};
         for (menu) |*candidate| if (candidate.command == .reflect and candidate.value == null) {
             candidate.detail = commands.reflectHelp(&app.reflect_help, reflect.issueRepo(app));
         };

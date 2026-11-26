@@ -169,7 +169,8 @@ def test_turn_pages(tmp):
         terminal.wait_turn(first.text)
         assert visible()[2].lstrip() == "> First prompt"
         assert "─" not in "\n".join(visible())
-        assert "01 / 01" in visible()[-1]
+        assert visible()[4].strip() == ""
+        assert visible()[-1].strip() == "01 / 01"
 
         terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
@@ -179,7 +180,7 @@ def test_turn_pages(tmp):
         terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank page during a running Turn")
         terminal.send(prev)
-        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[-1],
+        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[4],
                  "left returns directly to the running Turn without canceling it")
         terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
@@ -187,6 +188,17 @@ def test_turn_pages(tmp):
         wait_for(lambda: "> draf!t" in visible()[15], "left edits once typing begins")
         terminal.send(prev * 6 + "<" + next_page + "=")
         wait_for(lambda: "> <d=raf!t" in visible()[15], "arrows edit even at the start of a nonempty draft")
+        terminal.send("\x1b")
+        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[4],
+                 "Escape parks the draft without canceling the Turn")
+        assert visible()[-1].strip() == "02 / 02"
+        terminal.send(prev)
+        wait_for(lambda: visible()[-1].strip() == "01 / 02", "browse an older Turn with a parked draft")
+        assert "Waiting for model" not in "\n".join(visible())
+        terminal.send(next_page + next_page)
+        wait_for(lambda: "> <d=raf!t" in visible()[15], "returning to the draft restores the text")
+        terminal.send("+")
+        wait_for(lambda: "> <d=+raf!t" in visible()[15], "returning restores the cursor")
         terminal.send("\x1b[F\x15" + prev)
         wait_for(lambda: "> Second prompt" in visible()[2], "left goes back after typing and deleting the draft")
         second.release.set()

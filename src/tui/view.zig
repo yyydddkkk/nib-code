@@ -92,6 +92,7 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
     const edge = pages.margin(win.width);
     const width = win.width - 2 * edge;
     var top_row: u16 = 0;
+    var activity_row: ?u16 = null;
     if (page.heading) |i| {
         const y = pages.headingRow(win.height);
         const head = all[i].text.items;
@@ -101,7 +102,11 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         const measured = body.printSegment(.{ .text = head }, .{ .wrap = .grapheme, .commit = false });
         p.rows = @min(p.rows, measured.row +| 1);
         body.height = p.rows;
-        top_row = @min(win.height, y +| p.rows +| pad * 2);
+        top_row = @min(win.height, y +| p.rows +| pad);
+        if (win.height - top_row >= 2) {
+            activity_row = top_row;
+            top_row += 1;
+        }
         if (transition) |t| {
             const moving = t.frame.prompt;
             const bg = flightBackground(headingBackground(s), t.base_bg, t.frame.tint);
@@ -113,7 +118,7 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
                 words.parent_y_off = -@as(i17, moving.skip);
             }
             _ = words.printSegment(.{ .text = t.text, .style = .{ .bg = bg } }, .{ .wrap = .grapheme });
-            if (!t.frame.reveal or moving.y +| moving.rows +| moving.pad > top_row) return null;
+            if (!t.frame.reveal or moving.y +| moving.rows +| moving.pad > (activity_row orelse top_row)) return null;
         } else {
             const bg = headingBackground(s);
             shadeHeading(win, p, bg);
@@ -125,6 +130,9 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
                 _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
             }
         }
+    } else if (win.height >= 3) {
+        activity_row = 0;
+        top_row = 1;
     }
 
     const footer = if (win.height - top_row >= 2) @as(u16, 1) else 0;
@@ -141,15 +149,17 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
     drawBody(win, body, entries, top, page.start, s);
     top.entry += page.start;
 
+    if (activity_row) |row| {
+        const status_w = win.width - edge - body_x;
+        var activity = s;
+        activity.new_output = local.new_output;
+        const label = text.formatWidth(activity, local.top != null, status_w);
+        printFitted(win.child(.{ .x_off = body_x, .y_off = row, .width = status_w, .height = 1 }), label, activity.activityStyle());
+    }
     if (footer != 0) {
         const index = if (page.count == 0) "" else std.fmt.bufPrint(&text.page_index, "{d:0>2} / {d:0>2}", .{ page.index + 1, page.count }) catch "";
         const index_w = if (index.len + 2 < width) win.gwidth(index) else 0;
         if (index_w > 0) printFitted(win.child(.{ .x_off = win.width - edge - index_w, .y_off = win.height - 1, .width = index_w, .height = 1 }), index, muted);
-        const status_w = width -| (if (index_w > 0) index_w + 2 else 0);
-        var activity = s;
-        activity.new_output = local.new_output;
-        const label = text.formatWidth(activity, local.top != null, status_w);
-        printFitted(win.child(.{ .x_off = body_x, .y_off = win.height - 1, .width = status_w -| (body_x - edge), .height = 1 }), label, activity.activityStyle());
     }
     return .{ .top = top, .window = body, .end = page.end };
 }
