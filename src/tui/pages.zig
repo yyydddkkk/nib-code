@@ -61,6 +61,7 @@ pub const Prompt = struct {
     width: u16,
     rows: u16,
     skip: u16 = 0,
+    pad: u16 = 0,
 
     pub fn bodyWidth(p: Prompt) u16 {
         return @max(1, p.width -| 2);
@@ -81,7 +82,14 @@ pub const Flight = struct {
         const t = 1 - left * left * left;
         const x = mix(f.from.x, margin(cols), t);
         const right = mix(f.from.x + f.from.width, cols - margin(cols), t);
-        return .{ .x = x, .y = mix(f.from.y, headingRow(rows), t), .width = right -| x, .rows = f.from.rows, .skip = f.from.skip };
+        return .{
+            .x = x,
+            .y = mix(f.from.y, headingRow(rows), t),
+            .width = right -| x,
+            .rows = f.from.rows,
+            .skip = f.from.skip,
+            .pad = mix(f.from.pad, headingPadding(rows), t),
+        };
     }
 
     fn mix(a: u16, b: u16, t: f64) u16 {
@@ -95,7 +103,11 @@ pub fn margin(cols: u16) u16 {
 }
 
 pub fn headingRow(rows: u16) u16 {
-    return if (rows >= 8) 1 else 0;
+    return @as(u16, if (rows >= 8) 1 else 0) + headingPadding(rows);
+}
+
+pub fn headingPadding(rows: u16) u16 {
+    return if (rows >= 6) 1 else 0;
 }
 
 test "Turn pages ignore interjections and keep independent viewports" {

@@ -166,7 +166,7 @@ def test_turn_pages(tmp):
         wait_for(lambda: "> First prompt" in visible()[15], "left moves inside the draft")
         terminal.send("\r")
         terminal.wait_turn(first.text)
-        assert visible()[1].lstrip() == "> First prompt"
+        assert visible()[2].lstrip() == "> First prompt"
         assert "─" not in "\n".join(visible())
         assert "01 / 01" in visible()[-1]
 
@@ -174,11 +174,11 @@ def test_turn_pages(tmp):
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
         terminal.send("Second prompt\r")
         assert second.received.wait(5), "second Turn did not start"
-        wait_for(lambda: "> Second prompt" in visible()[1], "second prompt lands while the model waits")
+        wait_for(lambda: "> Second prompt" in visible()[2], "second prompt lands while the model waits")
         terminal.send("\x1b[C")
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank page during a running Turn")
         terminal.send("\x1b[D")
-        wait_for(lambda: "> Second prompt" in visible()[1] and "Waiting for model" in visible()[-1],
+        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[-1],
                  "left returns directly to the running Turn without canceling it")
         terminal.send("\x1b[C")
         wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
@@ -187,10 +187,10 @@ def test_turn_pages(tmp):
         terminal.send("\x1b[F\x15\x1b[Dx")
         wait_for(lambda: "> x" in visible()[15], "deleting draft text does not re-enable page navigation")
         terminal.send("\x1b")
-        wait_for(lambda: "> Second prompt" in visible()[1], "Escape closes the edited draft")
+        wait_for(lambda: "> Second prompt" in visible()[2], "Escape closes the edited draft")
         second.release.set()
         terminal.wait_turn(second.text)
-        assert visible()[1].lstrip() == "> Second prompt"
+        assert visible()[2].lstrip() == "> Second prompt"
         assert first.text not in "\n".join(visible())
 
         terminal.send("\x1b[D")

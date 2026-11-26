@@ -35,7 +35,7 @@ fn mark(win: vaxis.Window, p: pages.Prompt, bg: vaxis.Color) void {
 
 fn headingStyle(win: vaxis.Window, p: pages.Prompt, s: status.Status) vaxis.Style {
     const bg = if (s.user_bg != .default) s.user_bg else s.run_hover_bg;
-    if (bg != .default) win.child(.{ .x_off = p.x, .y_off = p.y, .width = p.width, .height = p.rows }).fill(.{
+    if (bg != .default) win.child(.{ .x_off = p.x, .y_off = p.y - p.pad, .width = p.width, .height = p.rows + p.pad * 2 }).fill(.{
         .char = .{ .grapheme = " ", .width = 1 },
         .style = .{ .bg = bg },
     });
@@ -86,7 +86,8 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
     if (page.heading) |i| {
         const y = pages.headingRow(win.height);
         const head = all[i].text.items;
-        var p: pages.Prompt = .{ .x = edge, .y = y, .width = width, .rows = @min(win.height - y, @max(1, win.height / 3)) };
+        const pad = pages.headingPadding(win.height);
+        var p: pages.Prompt = .{ .x = edge, .y = y, .width = width, .rows = @min(win.height - y - pad, @max(1, win.height / 3)), .pad = pad };
         var body = promptBody(win, p);
         const measured = body.printSegment(.{ .text = head }, .{ .wrap = .grapheme, .commit = false });
         p.rows = @min(p.rows, measured.row +| 1);
@@ -98,7 +99,7 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         } else {
             _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
         }
-        top_row = @min(win.height, y +| p.rows +| @as(u16, if (win.height >= 6) 1 else 0));
+        top_row = @min(win.height, y +| p.rows +| pad * 2);
     }
 
     const footer = if (win.height - top_row >= 2) @as(u16, 1) else 0;
@@ -376,7 +377,9 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         try testing.expectEqualStrings("C", screen.readCell(mid.x + 2, mid.y + 1).?.char.grapheme);
         try testing.expectEqualDeep(tint, screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows - 1).?.style.bg);
         try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y).?.style.bg);
-        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(mid.x, mid.y + mid.rows).?.style.bg);
+        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y - 1).?.style.bg);
+        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y + mid.rows).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(mid.x, mid.y + mid.rows + 1).?.style.bg);
 
         const frame = drawPage(win, t.entries.items, page, &scroll, null, s, &text).?;
         const visible = try snapshot(gpa, &screen);
@@ -384,14 +387,19 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         try testing.expect(std.mem.indexOf(u8, visible, "First page only.") != null);
         try testing.expect(std.mem.indexOf(u8, visible, "Second page only.") == null);
         const edge = pages.margin(cols);
-        try testing.expectEqualStrings(">", screen.readCell(edge, 1).?.char.grapheme);
-        try testing.expectEqualDeep(tint, screen.readCell(cols - edge - 1, 2).?.style.bg);
-        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 3).?.style.bg);
+        try testing.expectEqualStrings(">", screen.readCell(edge, 2).?.char.grapheme);
+        for (1..5) |row| try testing.expectEqualDeep(tint, screen.readCell(cols - edge - 1, @intCast(row)).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 5).?.style.bg);
         try testing.expect(std.mem.indexOf(u8, visible, "─") == null);
         const history = @import("selection/history.zig");
         try testing.expectEqual(null, history.position(frame, t.entries.items, 4, 1));
         try testing.expectEqual(@as(usize, 1), history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off)).?.entry);
         try testing.expectEqual(null, history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off + 3)));
+
+        _ = drawPage(win, t.entries.items, .{ .heading = 2, .start = 3, .end = 4, .count = 2, .index = 1 }, &scroll, null, s, &text);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 0).?.style.bg);
+        for (1..4) |row| try testing.expectEqualDeep(tint, screen.readCell(edge, @intCast(row)).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 4).?.style.bg);
     }
 }
 
