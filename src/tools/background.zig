@@ -1,6 +1,7 @@
 const std = @import("std");
 const Tools = @import("../tools.zig").Tools;
 const agent = @import("agent.zig");
+const bash = @import("bash.zig");
 const Inbox = @import("../session/inbox.zig").Inbox;
 const Log = @import("../session/log.zig").Log;
 const BackgroundEvent = @import("../session/events.zig").Background;
@@ -96,22 +97,26 @@ pub const Background = struct {
         fn finish(job: *Job) !void {
             const gpa = job.gpa;
             const t = job.t;
+            var bash_status: ?bash.Status = null;
             const result = switch (job.kind) {
                 .agent => agent.execute(t, gpa, job.args, &job.cancel, job.id, job.run, true, job.fork_input),
                 .run => unreachable,
-                .bash => @import("bash.zig").executeBackground(t, gpa, job.args, &job.cancel, .{ .id = job.id, .run = job.run, .background = true, .kind = .bash, .prompt = "" }, &job.execution),
+                .bash => bash.executeBackground(t, gpa, job.args, &job.cancel, .{ .id = job.id, .run = job.run, .background = true, .kind = .bash, .prompt = "" }, &job.execution, &bash_status),
             } catch |err| try @import("../tools.zig").fail(gpa, "{s}", .{@errorName(err)});
             defer switch (result) {
                 inline else => |bytes| gpa.free(bytes),
             };
-            try job.deliver(result);
+            try job.deliver(result, bash_status);
         }
 
-        fn deliver(job: *Job, result: @import("../sandbox.zig").ToolResult) !void {
+        fn deliver(job: *Job, result: @import("../sandbox.zig").ToolResult, bash_status: ?bash.Status) !void {
             const t = job.t;
             const gpa = job.gpa;
             const bg = &t.background;
-            const state = taskState(gpa, result);
+            const state = if (bash_status) |status|
+                (if (status.elapsed_ms != null) "timed_out" else if (status.exit_code == 0) "done" else "failed")
+            else
+                taskState(gpa, result);
             bg.mutex.lockUncancelable(t.io);
             job.state = state;
             bg.mutex.unlock(t.io);
@@ -128,37 +133,37 @@ pub const Background = struct {
             defer gpa.free(prefix);
             const outputs_dir = try t.outputsDir(gpa);
             defer if (outputs_dir) |dir| gpa.free(dir);
-            const full_text: ?[]u8 = switch (job.kind) {
-                .bash => if (parsed.value.object.get("output")) |out_val| switch (out_val) {
-                    .string => |text| blk: {
-                        if (std.mem.eql(u8, state, "timed_out")) {
-                            const elapsed = parsed.value.object.get("elapsed_ms").?.integer;
-                            break :blk try std.fmt.allocPrint(gpa, "timed out after {d} ms\n\n{s}", .{ elapsed, text });
-                        }
-                        const code = if (parsed.value.object.get("exit_code")) |c| switch (c) {
-                            .integer => |n| n,
-                            else => @as(i64, -1),
-                        } else @as(i64, -1);
-                        break :blk try std.fmt.allocPrint(gpa, "exit_code: {d}\n\n{s}", .{ code, text });
-                    },
-                    else => null,
-                } else null,
-                .agent => if (parsed.value.object.get("text")) |text_val| switch (text_val) {
-                    .string => |text| try gpa.dupe(u8, text),
-                    else => null,
-                } else null,
-                .run => unreachable,
-            };
-            defer if (full_text) |text| gpa.free(text);
+            const bash_body: []const u8 = if (bash_status != null) parsed.value.object.get("output").?.string else "";
+            const heading: ?[]u8 = if (bash_status) |status| blk: {
+                if (status.elapsed_ms) |elapsed| break :blk try std.fmt.allocPrint(gpa, "timed out after {d} ms\n\n", .{elapsed});
+                if (status.exit_code) |code| break :blk try std.fmt.allocPrint(gpa, "exit_code: {d}\n\n", .{code});
+                break :blk try gpa.dupe(u8, "exit_code: null\n\n");
+            } else null;
+            defer if (heading) |text| gpa.free(text);
+            const full_bash = if (heading) |text| try std.mem.concat(gpa, u8, &.{ text, bash_body }) else null;
+            defer if (full_bash) |text| gpa.free(text);
+            const full_text: ?[]const u8 = if (full_bash) |text| text else if (job.kind == .agent) blk: {
+                const value = parsed.value.object.get("text") orelse break :blk null;
+                break :blk if (value == .string) value.string else null;
+            } else null;
             const save: ?output.Save = if (outputs_dir) |dir| .{ .io = t.io, .dir = dir } else null;
-            const formatted = try output.formatMessageSaved(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save, full_text);
-            defer gpa.free(formatted);
+            const message = try output.renderMessage(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, .{
+                .save = save,
+                .raw_full = full_text,
+                .truncated = if (heading) |text| .{ .heading = text, .body = bash_body } else null,
+            });
+            defer message.deinit(gpa);
+            const execution = if (job.execution.end_ms_epoch > 0) job.execution else null;
+            const inbox = bg.inbox.?;
             if (job.kind == .agent) {
                 t.agent_sessions.mutex.lockUncancelable(t.io);
                 defer t.agent_sessions.mutex.unlock(t.io);
-                _ = try t.background.inbox.?.enqueueBackground(gpa, t.io, job.id, job.kind, .finished, ok, formatted, job.detached, job.invocation, if (job.execution.end_ms_epoch > 0) job.execution else null);
+                _ = try inbox.enqueueBackground(gpa, t.io, job.id, job.kind, .finished, ok, message.text, job.detached, job.invocation, execution);
                 t.agent_sessions.releaseLocked(job.id);
-            } else _ = try t.background.inbox.?.enqueueBackground(gpa, t.io, job.id, job.kind, .finished, ok, formatted, job.detached, job.invocation, if (job.execution.end_ms_epoch > 0) job.execution else null);
+            } else {
+                const completion: ?@import("../session/inbox.zig").BashCompletion = if (bash_status) |value| .{ .status = value, .output_path = message.output_path } else null;
+                _ = try inbox.enqueueCompletion(gpa, t.io, job.id, job.kind, .finished, ok, message.text, job.detached, job.invocation, null, execution, null, completion);
+            }
         }
     };
 
@@ -215,7 +220,7 @@ pub const Background = struct {
         job.thread = std.Thread.spawn(.{}, Job.work, .{job}) catch |err| {
             if (kind == .bash) bg.bash_active -= 1;
             try t.progress.update(gpa, t.io, .{ .id = id, .run = job.run, .invocation = job.invocation, .kind = kind, .background = true, .detached = detached, .fork = if (kind == .agent) t.agent_sessions.isFork(t.io, id) else false, .prompt = prompt, .state = .failed });
-            try job.deliver(.{ .err = @constCast(@errorName(err)) });
+            try job.deliver(.{ .err = @constCast(@errorName(err)) }, null);
             if (kind == .agent) t.agent_sessions.release(t.io, id);
             job.done.store(true, .release);
             return result;
@@ -339,7 +344,7 @@ pub const Background = struct {
             };
             const text = try std.fmt.allocPrint(job.gpa, "[background run {s} finished]\n{s}", .{ job.id, completion.output });
             defer job.gpa.free(text);
-            _ = try bg.inbox.?.enqueueCompletion(job.gpa, io, job.id, .run, .finished, completion.ok, text, false, 0, completion, completion.execution, job.scope.id);
+            _ = try bg.inbox.?.enqueueCompletion(job.gpa, io, job.id, .run, .finished, completion.ok, text, false, 0, completion, completion.execution, job.scope.id, null);
             job.collected = true;
             job.releaseExecution();
         }

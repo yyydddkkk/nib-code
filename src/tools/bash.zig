@@ -88,10 +88,15 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         };
         return .{ .ok = result };
     }
-    return execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null);
+    return execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null, null);
 }
 
-pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), progress: @import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution) !sandbox.ToolResult {
+pub const Status = struct {
+    exit_code: ?u8,
+    elapsed_ms: ?u64 = null,
+};
+
+pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), progress: @import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, status: ?*?Status) !sandbox.ToolResult {
     const parsed = try std.json.parseFromSlice(Args, gpa, args, .{});
     defer parsed.deinit();
     if (parsed.value.validationError()) |message| return fail(gpa, "{s}", .{message});
@@ -100,10 +105,10 @@ pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, ca
     value.detached = parsed.value.detached;
     const cwd = WorkingDir.open(t, gpa, parsed.value.cwd) catch |err| return WorkingDir.failure(gpa, parsed.value.cwd, err);
     defer cwd.close(t, gpa);
-    return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution);
+    return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution, status);
 }
 
-fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution) !sandbox.ToolResult {
+fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, status: ?*?Status) !sandbox.ToolResult {
     const id = if (progress) |value| value.id else try t.progress.reserveBash(gpa, t.io);
     sandbox.tool_identity = .{ .id = id, .background = progress != null };
     var active: @import("bash/registry.zig").Command = .{ .id = id, .run = if (progress) |value| value.run else t.runId(), .command = command, .cwd = cwd.path, .detached = if (progress) |value| value.detached else false, .started = .now(t.io, .awake) };
@@ -151,12 +156,17 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
     if (result.stop) |err| {
         state = if (err == error.TimedOut) .timed_out else .canceled;
         return switch (err) {
-            error.TimedOut => .{ .ok = try std.json.Stringify.valueAlloc(gpa, .{
-                .timed_out = true,
-                .elapsed_ms = tracker.elapsedMs(),
-                .exit_code = @as(?u8, null),
-                .output = stdout,
-            }, .{}) },
+            error.TimedOut => blk: {
+                const elapsed = tracker.elapsedMs();
+                const json = try std.json.Stringify.valueAlloc(gpa, .{
+                    .timed_out = true,
+                    .elapsed_ms = elapsed,
+                    .exit_code = @as(?u8, null),
+                    .output = stdout,
+                }, .{});
+                if (status) |out| out.* = .{ .exit_code = null, .elapsed_ms = elapsed };
+                break :blk .{ .ok = json };
+            },
             error.Canceled => fail(gpa, "canceled", .{}),
         };
     }
@@ -166,7 +176,9 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
     };
     tracker.exit_code = code;
     state = if (code != null and code.? == 0) .done else .failed;
-    return .{ .ok = try std.json.Stringify.valueAlloc(gpa, .{ .exit_code = code, .output = stdout }, .{}) };
+    const json = try std.json.Stringify.valueAlloc(gpa, .{ .exit_code = code, .output = stdout }, .{});
+    if (status) |out| out.* = .{ .exit_code = code };
+    return .{ .ok = json };
 }
 
 const Tracker = struct {
@@ -498,7 +510,7 @@ test "bash has a finite 30 minute default and honors explicit timeouts in every 
     const progress = try t.progress.add(testing.allocator, testing.io, .bash, "sleep 5", 1, true);
     var cancel: std.atomic.Value(bool) = .init(false);
     var execution: @import("../sandbox/timing.zig").Execution = .{};
-    const result = try executeBackground(&t, testing.allocator, "{\"command\":\"sleep 5\",\"background\":true,\"detached\":true,\"timeout_ms\":25}", &cancel, .{ .id = progress, .kind = .bash, .background = true, .prompt = "" }, &execution);
+    const result = try executeBackground(&t, testing.allocator, "{\"command\":\"sleep 5\",\"background\":true,\"detached\":true,\"timeout_ms\":25}", &cancel, .{ .id = progress, .kind = .bash, .background = true, .prompt = "" }, &execution, null);
     defer freeResult(result);
     try expectTimeout(result, 25, "");
     try testing.expect(execution.start_ms_epoch > 0);

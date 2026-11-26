@@ -104,6 +104,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     code = "await tools.wait(['r1'])"
         elif case == "done":
             pass
+        elif case.startswith("bash-metadata-"):
+            if index == 0:
+                mode = case.removeprefix("bash-metadata-")
+                command = "cat fixture.txt; " + ("sleep 20" if mode == "timeout" else f"exit {mode}")
+                opts = dict(command=command, background=True, timeout_ms=1000 if mode == "timeout" else 15000)
+                code = ("const {id} = await tools.bash(" + json.dumps(opts) + "); "
+                        "const {results} = await tools.wait([id]); const {kind, ok, bash, output} = results[0]; "
+                        "await tools.write({path:'wait-result.json',content:JSON.stringify({kind,ok,bash,output})}); "
+                        "await tools.wait([id])")
         elif case.startswith("user-wait-"):
             if index == 0:
                 status = int(case.removeprefix("user-wait-"))
@@ -584,6 +593,7 @@ class BackgroundRunTests(unittest.TestCase):
                 result = json.loads(runs[2]["output"].removeprefix("result: "))
                 waited, = result["results"]
                 self.assertEqual((waited["id"], waited["kind"], waited["ok"]), ("b1", "bash", status == 0))
+                self.assertEqual(waited["bash"], {"exit_code": status, "timed_out": False})
                 self.assertEqual(json.loads(waited["output"]), {"exit_code": status, "output": "worker-result: [REDACTED]"})
                 self.assertEqual(json.loads(runs[3]["output"].removeprefix("result: ")),
                                  {"exit_code": 0, "output": "verified"})
@@ -597,6 +607,42 @@ class BackgroundRunTests(unittest.TestCase):
                 self.assertFalse(any(m.get("waiting") for row in rows for m in row.get("messages", [])))
                 self.assertEqual(events[-1]["end"]["text"], "done")
                 assert_no_token(self, json.dumps(events), json.dumps(rows), json.dumps(final))
+
+    def test_bash_wait_metadata_survives_truncation(self):
+        raw = "head: " + SYNTHETIC_TOKEN + "\n" + "界" * 10000 + "\ntail\n"
+        (self.cwd / "fixture.txt").write_text(raw)
+        self.env["NIB_TUNE"] = "delivery=tool"
+        for mode in ("0", "7", "timeout"):
+            with self.subTest(mode=mode):
+                self.server.case = f"bash-metadata-{mode}"
+                self.server.requests.clear()
+                events, rows, _ = self.finish(self.launch())
+                result = json.loads((self.cwd / "wait-result.json").read_text())
+                self.assertEqual((result["kind"], result["ok"]), ("bash", mode == "0"))
+                bash = result["bash"]
+                self.assertIs(bash["timed_out"], mode == "timeout")
+                self.assertEqual(bash["exit_code"], None if mode == "timeout" else int(mode))
+                if mode == "timeout":
+                    self.assertGreaterEqual(bash["elapsed_ms"], 1000)
+                    heading = f"timed out after {bash['elapsed_ms']} ms"
+                else:
+                    self.assertNotIn("elapsed_ms", bash)
+                    heading = f"exit_code: {mode}"
+                output = result["output"]
+                self.assertTrue(output.startswith(heading + "\n\n"), output[:200])
+                self.assertIn("head: [REDACTED]", output)
+                self.assertIn("bytes omitted", output)
+                self.assertIn("tail", output)
+                self.assertIn(f"[full output: {bash['output_path']}]", output)
+                self.assertLessEqual(len(("[background bash b1 finished]\n" + output).encode()), 16 * 1024)
+                saved = Path(bash["output_path"]).read_text()
+                self.assertEqual(saved, heading + "\n\n" + raw.replace(SYNTHETIC_TOKEN, "[REDACTED]"))
+                assert_no_token(self, output, saved)
+                delivery, = [d for row in rows for d in row.get("deliveries", [])]
+                self.assertEqual((delivery["via"], delivery["event"]["id"]), ("wait", "b1"))
+                run, = [e["run_end"] for e in events if "run_end" in e]
+                self.assertEqual(json.loads(run["output"].removeprefix("result: ")),
+                                 {"ok": True, "results": [], "not_pending": ["b1"]})
 
     def test_tool_delivery_falls_back_to_a_user_message_when_the_model_waits_by_replying(self):
         self.server.case = "wait"

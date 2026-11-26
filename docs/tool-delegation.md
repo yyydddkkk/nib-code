@@ -85,7 +85,7 @@ Detached background bash survives Runs/normal Turns; answers/Step-limit cleanup 
 
 `tools.stop({id,reason}) → {id,stopped,reason,notice?}` requires nonblank string, else reject without stop. All explicit stops need concrete reasons, without command-purpose guessing; long/silent alone is not a hang. User requests/observed failures/changed needs qualify. Unfinished test cancellation loses progress, proves no pass, and restarting repeats unfinished work; files/build caches do not roll back. Retain reason and actual-stop notice. Cancel/join one background a/b task and clean groups; active→`stopped:true`, known finished→false, unknown rejects. Concurrent stops join once and deliver completion once. Release agent occupancy before returning without deleting identity. Start/stop use ordinary settlement/recording; background bodies count receiving-Step output_bytes. [ADR 0014](adr/0014-session-background-jobs.md).
 
-`tools.wait(ids?) → { ok, results: [{ id, kind, ok, output }], not_pending? }` is available in root and forked Sessions with either delivery mode. It blocks until the named background Run/bash/agent tasks (default: all pending non-detached tasks except the calling Run) have finished and returns their results, which are then not delivered again. Unknown or already delivered ids go to `not_pending`. It honors cancellation, and a Run blocked in it is never automatically backgrounded. See [waiting for background results](run-output.md#waiting-for-background-results).
+`tools.wait(ids?) → { ok, results: [{ id, kind, ok, output, bash? }], not_pending? }` is available in root and forked Sessions with either delivery mode. It blocks until the named background Run/bash/agent tasks (default: all pending non-detached tasks except the calling Run) have finished and returns their results, which are then not delivered again. Unknown or already delivered ids go to `not_pending`. It honors cancellation, and a Run blocked in it is never automatically backgrounded. See [waiting for background results](run-output.md#waiting-for-background-results).
 
 Execution failures normally become result messages. Internal worker failures preventing inbox generation/writes (e.g. allocation) report once via polling, remove pending-result membership, never repeatedly error in later Runs.
 
@@ -116,6 +116,15 @@ Long Runs need no model `background:true`: after configurable 10 seconds while a
 stop accepts other background rN, never self. Runs are non-detached; answers/Step caps await delivery. Continuations may launch explicit ordinary/detached bash/agents. Only Session main threads forward progress/usage/results to sinks, never background sandboxes/tool threads.
 
 Tool-free text with pending ordinary tasks always commits waiting Steps/local waits regardless of wording/length. A Step whose Runs all succeed with no output/actual host calls (empty Runs/blank printing) also waits without model requests. Output or actual tools count normal work; git/read/stop are not automatically waiting. Resume after inbox/interjections; detached retains cross-Turn behavior.
+
+When a background Bash command exits or times out, its result includes
+`bash: { exit_code, timed_out, elapsed_ms?, output_path? }`. `exit_code` is
+`null` if no exit code was available; `elapsed_ms` appears only for timeouts.
+Read these fields directly rather than parsing `output`, which is the masked
+completion text and may be truncated. Short completions retain their JSON
+text. For truncated Bash output the status is shown before the excerpt, and
+`output_path` is present only if the masked full-output artifact was saved.
+Other task kinds and Bash tool failures without a process status omit `bash`.
 
 ## Identical commands supersede stale execution
 
