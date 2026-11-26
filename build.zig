@@ -90,6 +90,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "vaxis", .module = vaxis },
             .{ .name = "qjs", .module = qjs_c.createModule() },
             .{ .name = "sandbox_probe_options", .module = benchmark_probe.createModule() },
         },
