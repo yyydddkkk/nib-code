@@ -24,6 +24,8 @@ Unit tests run on Linux and macOS. Each platform builds its own Debug executable
 
 `scripts/ci_matrix.py` discovers the deduplicated test list from `AGENTS.md`. Linux runs every script in its own job. macOS keeps the existing portable subset in four sequential shards; Linux process-fixture and Linux-calibrated PTY tests remain Linux-only. No test assertions or timing limits are changed by sharding.
 
+The Linux TUI stream job sends a single bracketed paste larger than the terminal event queue. It waits for a completed rendered frame, checks that paste does not submit the input, and verifies the exact payload on explicit submission. Keep this test's queue pressure: retrying or chopping up the paste can hide an input stall. The build applies a cache-local pointer-receiver patch to the pinned libvaxis queue; remove it when the dependency carries the fix.
+
 ## Scheduling estimates
 
 `.github/ci-e2e-seconds.json` contains median Linux e2e test-step durations in seconds from these successful runs on 2026-11-17:

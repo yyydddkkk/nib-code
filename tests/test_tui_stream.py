@@ -137,10 +137,10 @@ def test_large_paste_does_not_redraw_per_key(tmp):
     payload = "first line\n" + "/help\n  indented text\twith a tab\n" * 96 + "last line"
     reply = Reply("paste received")
     with fixture(tmp, [reply]) as (terminal, _, _):
-        offset = len(terminal.read())
+        before = terminal.wait_frame("Ask about this project")
         terminal.send("\x1b[200~" + payload + "\x1b[201~")
-        terminal.until(b"[Pasted #1")
-        frames = terminal.read()[offset:].count(b"\x1b[?2026h")
+        after = terminal.wait_frame("[Pasted #1")
+        frames = after[len(before):].count(b"\x1b[?2026h")
         assert 1 <= frames <= 4, f"pasting repainted {frames} frames"
         assert not reply.received.is_set(), "pasted newlines must not submit input"
         terminal.send("\r")
