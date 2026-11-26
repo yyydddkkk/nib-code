@@ -232,6 +232,7 @@ pub const App = struct {
     user_bg: vaxis.Color = .default,
     code_bg: vaxis.Color = .default,
     hover_bg: vaxis.Color = .default,
+    run_hover_bg: vaxis.Color = .default,
     terminal_bg: ?[3]u8 = null,
     hovered: ?usize = null,
     hovered_row: ?u16 = null,
@@ -435,11 +436,11 @@ pub const App = struct {
                     app.terminal_bg = color.value;
                     app.user_bg = userBackground(color.value);
                     app.code_bg = codeBackground(color.value);
-                    app.hover_bg = hoverBackground(color.value);
+                    app.setHoverBackgrounds(null);
                 }
             },
             .color_scheme => |scheme| {
-                app.hover_bg = if (app.terminal_bg) |bg| hoverBackground(bg) else hoverFallback(scheme);
+                app.setHoverBackgrounds(scheme);
                 try app.vx.queryColor(app.w, .bg);
             },
             .winsize => |ws| {
@@ -982,6 +983,7 @@ pub const App = struct {
             .hovered = app.hovered,
             .hovered_row = app.hovered_row,
             .hover_bg = app.hover_bg,
+            .run_hover_bg = app.run_hover_bg,
             .usage = app.usage,
             .steps = app.steps,
             .background_count = app.background_count,
@@ -1007,20 +1009,21 @@ pub const App = struct {
         try app.vx.render(app.w);
         try app.w.flush();
     }
+    fn setHoverBackgrounds(app: *App, scheme: ?vaxis.Color.Scheme) void {
+        const bg = app.terminal_bg orelse switch (scheme orelse return) {
+            .light => [3]u8{ 255, 255, 255 },
+            .dark => [3]u8{ 0, 0, 0 },
+        };
+        app.hover_bg = hoverBackground(bg, 18);
+        app.run_hover_bg = hoverBackground(bg, 8);
+    }
 };
 
-fn hoverBackground(bg: [3]u8) vaxis.Color {
+fn hoverBackground(bg: [3]u8, offset: u8) vaxis.Color {
     const light = @as(u32, bg[0]) * 299 + @as(u32, bg[1]) * 587 + @as(u32, bg[2]) * 114 > 128_000;
     var rgb: [3]u8 = undefined;
-    for (bg, 0..) |base, i| rgb[i] = if (light) base -| 18 else base +| 18;
+    for (bg, 0..) |base, i| rgb[i] = if (light) base -| offset else base +| offset;
     return .{ .rgb = rgb };
-}
-
-fn hoverFallback(scheme: ?vaxis.Color.Scheme) vaxis.Color {
-    return switch (scheme orelse return .default) {
-        .light => .{ .rgb = .{ 237, 237, 237 } },
-        .dark => .{ .rgb = .{ 18, 18, 18 } },
-    };
 }
 
 fn codeBackground(bg: [3]u8) vaxis.Color {
@@ -1845,13 +1848,29 @@ test "hover changes only between toggleable entries and summary clicks exclude d
     try std.testing.expectEqual(@as(?usize, null), app.hovered);
 }
 
-test "hover uses neutral eighteen-level contrast and scheme fallback" {
+test "Run hover has lower contrast than other controls with or without an RGB report" {
     const t = std.testing;
-    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 18, 18, 18 } }, hoverBackground(.{ 0, 0, 0 }));
-    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 237, 237, 237 } }, hoverBackground(.{ 255, 255, 255 }));
-    try t.expectEqualDeep(hoverBackground(.{ 0, 0, 0 }), hoverFallback(.dark));
-    try t.expectEqualDeep(hoverBackground(.{ 255, 255, 255 }), hoverFallback(.light));
-    try t.expectEqualDeep(vaxis.Color.default, hoverFallback(null));
+    var app: App = undefined;
+    app.terminal_bg = null;
+    app.hover_bg = .default;
+    app.run_hover_bg = .default;
+    app.setHoverBackgrounds(null);
+    try t.expectEqualDeep(vaxis.Color.default, app.hover_bg);
+    try t.expectEqualDeep(vaxis.Color.default, app.run_hover_bg);
+    app.setHoverBackgrounds(.dark);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 18, 18, 18 } }, app.hover_bg);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 8, 8, 8 } }, app.run_hover_bg);
+    app.setHoverBackgrounds(.light);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 237, 237, 237 } }, app.hover_bg);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 247, 247, 247 } }, app.run_hover_bg);
+    app.terminal_bg = .{ 20, 25, 30 };
+    app.setHoverBackgrounds(.light);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 38, 43, 48 } }, app.hover_bg);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 28, 33, 38 } }, app.run_hover_bg);
+    app.terminal_bg = .{ 235, 240, 245 };
+    app.setHoverBackgrounds(null);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 217, 222, 227 } }, app.hover_bg);
+    try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 227, 232, 237 } }, app.run_hover_bg);
 }
 
 test "Simple key variants and command toggle silently and persist" {
@@ -1927,7 +1946,7 @@ test "file paths are links only when open is configured; a click runs the comman
 test "scrolled Run layout drives wrapped heading hover and click but leaves bodies selectable" {
     const t = std.testing;
     const Frame = struct {
-        const color: vaxis.Color = .{ .rgb = .{ 18, 18, 18 } };
+        const color: vaxis.Color = .{ .rgb = .{ 8, 8, 8 } };
 
         fn draw(app: *App) void {
             var input: Editor = .{};
@@ -1935,7 +1954,7 @@ test "scrolled Run layout drives wrapped heading hover and click but leaves bodi
                 .cfg = app.cfg,
                 .hovered = app.hovered,
                 .hovered_row = app.hovered_row,
-                .hover_bg = color,
+                .run_hover_bg = color,
             }, &app.status_text);
         }
 
