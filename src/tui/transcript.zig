@@ -229,8 +229,12 @@ pub const Transcript = struct {
 
     /// Latest Run, background or failure entry; Ctrl+O targets it.
     pub fn latestDetails(t: *const Transcript) ?usize {
-        var i = t.entries.items.len;
-        while (i > 0) {
+        return t.latestDetailsIn(0, t.entries.items.len);
+    }
+
+    pub fn latestDetailsIn(t: *const Transcript, start: usize, end: usize) ?usize {
+        var i = end;
+        while (i > start) {
             i -= 1;
             const k = t.entries.items[i].kind;
             if (k == .run or k == .background or k == .failure or (k == .changes and !t.entries.items[i].simple)) return i;
@@ -558,6 +562,7 @@ pub const Transcript = struct {
                 try t.add(gpa, .info, content);
             } else if (std.mem.eql(u8, m.role, "user")) {
                 try t.add(gpa, .user, @import("../session/skills.zig").typed(content));
+                t.entries.items[t.entries.items.len - 1].turn_heading = !(m.interjection orelse false);
             } else if (std.mem.eql(u8, m.role, "assistant")) {
                 if (content.len > 0) try t.add(gpa, if (m.waiting orelse false) .info else .assistant, content);
                 for (m.tool_calls orelse &.{}) |call| {

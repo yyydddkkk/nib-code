@@ -124,7 +124,8 @@ pub fn resolve(a: Allocator, env: *const Env, text: []const u8, path: []const u8
         return error.InvalidConfig;
     } else file.codex_settings.transport;
     cfg.codex_fast = id == .codex and file.codex_fast;
-    cfg.simple = file.simple;
+    cfg.simple = file.ui == .simple;
+    cfg.turn_pages = file.ui == .pages;
     cfg.open = if (file.open) |value| try a.dupe(u8, value) else null;
     cfg.codex_run_tool = if (env.get("NIB_CODEX_RUN_TOOL")) |v| std.meta.stringToEnum(@FieldType(provider.Config, "codex_run_tool"), v) orelse {
         detail.* = try a.dupe(u8, "NIB_CODEX_RUN_TOOL: expected custom or function");

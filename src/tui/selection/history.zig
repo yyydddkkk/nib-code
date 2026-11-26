@@ -3,7 +3,15 @@ const vaxis = @import("vaxis");
 const Entry = @import("../transcript.zig").Entry;
 const Anchor = @import("../viewport.zig").Anchor;
 
-pub const Frame = struct { top: Anchor, window: vaxis.Window };
+pub const Frame = struct {
+    top: Anchor,
+    window: vaxis.Window,
+    end: usize = std.math.maxInt(usize),
+
+    pub fn limit(f: Frame, len: usize) usize {
+        return @min(f.end, len);
+    }
+};
 pub const Position = struct {
     entry: usize,
     row: u16,
@@ -18,8 +26,12 @@ pub const Position = struct {
 
 pub fn position(frame: Frame, entries: []Entry, col: u16, row: u16) ?Position {
     if (frame.window.height == 0) return null;
-    var remaining: u32 = @as(u32, frame.top.row) + @min(row, frame.window.height - 1);
-    for (entries[frame.top.entry..], frame.top.entry..) |*entry, i| {
+    const y: u16 = @intCast(frame.window.y_off);
+    if (row < y) return null;
+    var remaining: u32 = @as(u32, frame.top.row) + @min(row - y, frame.window.height - 1);
+    const end = frame.limit(entries.len);
+    if (frame.top.entry >= end) return null;
+    for (entries[frame.top.entry..end], frame.top.entry..) |*entry, i| {
         if (remaining < entry.extent(frame.window)) return .{ .entry = i, .row = @intCast(remaining), .col = col };
         remaining -= entry.extent(frame.window);
     }
@@ -36,7 +48,8 @@ pub const History = struct {
 
     pub fn highlight(h: History, screen: *vaxis.Screen, frame: Frame, entries: []Entry) void {
         const range = h.ordered();
-        for (0..@min(frame.window.height, screen.height)) |row| {
+        const y: usize = @intCast(frame.window.y_off);
+        for (y..@min(y + frame.window.height, screen.height)) |row| {
             const p = position(frame, entries, 0, @intCast(row)) orelse break;
             const first = if (p.entry == range.first.entry and p.row == range.first.row) range.first.col else 0;
             const last = if (p.entry == range.last.entry and p.row == range.last.row) range.last.col else screen.width -| 1;

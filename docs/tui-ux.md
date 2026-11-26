@@ -38,7 +38,7 @@ The framed input sits flush with the last terminal row. At heights of at least 8
 
 ## Simple mode
 
-`/simple` or Ctrl+S toggles a persisted reading mode without a notice, including during a Turn. Normal mode is the default. Kitty binds Ctrl+Shift+S to paste-from-selection by default; use Ctrl+S there. Ctrl+Shift+S also toggles Simple mode when delivered distinctly by the terminal. Raw mode disables IXON so Ctrl+S does not freeze output. `/help` lists `Ctrl+S simple mode`.
+`/simple` toggles the reading mode, and `/pages` toggles the paged view. Ctrl+S cycles Normal → Simple → Pages → Normal. Changes persist without a notice, including during a Turn. Normal mode is the default. Ctrl+Shift+S also cycles when delivered distinctly by the terminal; Kitty binds that chord to paste-from-selection by default, so use Ctrl+S there. Raw mode disables IXON so Ctrl+S does not freeze output. `/help` lists `Ctrl+S cycle view`.
 
 Simple mode hides Turn footers; `/status` retains all details. Width, margins, turn spacing and the bordered input box match Normal mode, including the input flush with the last row. The input has no placeholder. Its bottom border is always plain; at 80% context usage or above a dim ` context N% ` is right-aligned inside the corners of the top border.
 

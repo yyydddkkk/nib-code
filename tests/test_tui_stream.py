@@ -149,8 +149,84 @@ def test_large_paste_does_not_redraw_per_key(tmp):
         terminal.wait_turn(reply.text)
 
 
+def test_turn_pages(tmp):
+    first, second = Reply("First page answer"), Reply("Second page answer", gated=True)
+    prev, next_page = "\x1b[D", "\x1b[C"
+    with fixture(tmp, [first, second]) as (terminal, home, _):
+        def visible():
+            return screen(terminal.read(), 120, 32)
+
+        terminal.send("\x13")
+        wait_for(lambda: (home / "config.toml").exists() and 'ui = "simple"' in (home / "config.toml").read_text(), "Ctrl+S enters Simple")
+        terminal.send("\x13")
+        wait_for(lambda: [(i, row.strip()) for i, row in enumerate(visible()) if row.strip()] == [(15, ">")],
+                 "blank centered prompt without a frame")
+        assert 'ui = "pages"' in (home / "config.toml").read_text()
+
+        terminal.send("Frst prompt" + "\x1b[D" * 11 + "\x1b[C" + "i")
+        wait_for(lambda: "> First prompt" in visible()[15], "left moves inside the draft")
+        terminal.send("\r")
+        terminal.wait_turn(first.text)
+        assert visible()[2].lstrip() == "> First prompt"
+        assert "─" not in "\n".join(visible())
+        assert visible()[4].strip() == visible()[5].strip() == ""
+        assert visible()[6].strip() == first.text
+        assert visible()[-1].strip() == "01 / 01"
+
+        terminal.send(next_page)
+        wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
+        terminal.send("Second prompt\r")
+        assert second.received.wait(5), "second Turn did not start"
+        wait_for(lambda: "> Second prompt" in visible()[2], "second prompt lands while the model waits")
+        terminal.send(next_page)
+        wait_for(lambda: visible()[15].strip() == ">", "right opens a blank page during a running Turn")
+        terminal.send(prev)
+        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[4],
+                 "left returns directly to the running Turn without canceling it")
+        terminal.send(next_page)
+        wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
+        terminal.send("draft\x1b[D!")
+        wait_for(lambda: "> draf!t" in visible()[15], "left edits once typing begins")
+        terminal.send(prev * 6 + "<" + next_page + "=")
+        wait_for(lambda: "> <d=raf!t" in visible()[15], "arrows edit even at the start of a nonempty draft")
+        terminal.send("\x1b")
+        wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[4],
+                 "Escape parks the draft without canceling the Turn")
+        assert visible()[5].strip() == ""
+        assert visible()[-1].strip() == "02 / 02"
+        terminal.send(prev)
+        wait_for(lambda: visible()[-1].strip() == "01 / 02", "browse an older Turn with a parked draft")
+        assert "Waiting for model" not in "\n".join(visible())
+        terminal.send(next_page + next_page)
+        wait_for(lambda: "> <d=raf!t" in visible()[15], "returning to the draft restores the text")
+        terminal.send("+")
+        wait_for(lambda: "> <d=+raf!t" in visible()[15], "returning restores the cursor")
+        terminal.send("\x1b[F\x15" + prev)
+        wait_for(lambda: "> Second prompt" in visible()[2], "left goes back after typing and deleting the draft")
+        second.release.set()
+        terminal.wait_turn(second.text)
+        assert visible()[2].lstrip() == "> Second prompt"
+        assert first.text not in "\n".join(visible())
+
+        terminal.send(prev)
+        wait_for(lambda: "01 / 02" in visible()[-1], "left returns to the first Turn")
+        assert first.text in "\n".join(visible()) and second.text not in "\n".join(visible())
+        terminal.send(next_page)
+        wait_for(lambda: "02 / 02" in visible()[-1], "right returns to the second Turn")
+        assert second.text in "\n".join(visible()) and first.text not in "\n".join(visible())
+        terminal.send(next_page)
+        wait_for(lambda: visible()[15].strip() == ">", "right opens the next draft")
+        terminal.send("\x1b")
+        wait_for(lambda: "02 / 02" in visible()[-1], "Escape closes the unsent draft")
+        terminal.send("\x13")
+        wait_for(lambda: "╰" in visible()[-1] and first.text in "\n".join(visible()), "Ctrl+S restores the Normal transcript")
+        assert 'ui = "normal"' in (home / "config.toml").read_text()
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-tui-stream-") as directory:
+        test_turn_pages(Path(directory) / "pages")
+        print("test_turn_pages: ok")
         test_large_paste_does_not_redraw_per_key(Path(directory) / "paste")
         print("test_large_paste_does_not_redraw_per_key: ok")
         test_incremental_stream(Path(directory) / "incremental")

@@ -276,6 +276,7 @@ def test_during_run_and_resume(tmp):
         terminal.wait_turn("run-finished")
         before = history(home)
         assert [m["role"] for m in before] == ["system", "user", "assistant", "tool", "user", "user", "assistant"]
+        assert [i for i, m in enumerate(before) if m.get("interjection")] == [4, 5]
         terminal.close()
         report = json.loads(subprocess.check_output(["python3", str(ROOT / "scripts/stats.py"),
                                                      str(home / "sessions"), "--json"]))
@@ -294,6 +295,7 @@ def test_during_run_and_resume(tmp):
             message.pop("tool_summary", None)
             message.pop("step_calls_omitted", None)
             message.pop("run_ok", None)
+            message.pop("interjection", None)
             message.pop("bash_replacements", None)
             if message["role"] == "tool":
                 message.pop("background_id", None)

@@ -97,6 +97,7 @@ pub const Status = struct {
 /// Printed slices must survive until vaxis renders the frame.
 pub const Text = struct {
     status: [512]u8 = undefined,
+    page_index: [64]u8 = undefined,
     activity: [512]u8 = undefined,
     narrow_activity: [512]u8 = undefined,
 

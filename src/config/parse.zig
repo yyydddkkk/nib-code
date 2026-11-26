@@ -51,7 +51,7 @@ pub const File = struct {
     sandbox: provider.Sandbox = .{},
     hooks: provider.Hooks = .{},
     provider_id: ?provider.Id = null,
-    simple: bool = false,
+    ui: mode.Ui = .normal,
     open: ?[]const u8 = null,
     ui_value: ?Span = null,
     effort: ?[]const u8 = null,
@@ -405,8 +405,7 @@ pub fn parse(a: Allocator, diagnostics: Allocator, text: []const u8, path: []con
                     file.provider_name = decoded;
                     file.provider_line = p.line;
                 } else if (index == 2) {
-                    if (!std.mem.eql(u8, decoded, mode.value) and !std.mem.eql(u8, decoded, "normal")) return p.bad("ui must be simple or normal", .{});
-                    file.simple = std.mem.eql(u8, decoded, mode.value);
+                    file.ui = std.meta.stringToEnum(mode.Ui, decoded) orelse return p.bad("ui must be normal, simple or pages", .{});
                     const value_start = start + @intFromPtr(value.ptr) - @intFromPtr(raw.ptr);
                     file.ui_value = .{ .start = value_start, .end = value_start + consumed };
                 } else if (index == 3) {

@@ -20,6 +20,7 @@ pub const max_segments = 16;
 pub const Kind = enum { user, assistant, run, background, info, err, bill, failure, changes };
 
 pub const Entry = struct {
+    turn_heading: bool = false,
     kind: Kind,
     simple: bool = false,
     gap: u16 = 1,

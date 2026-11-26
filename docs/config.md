@@ -29,7 +29,7 @@ Prefer TUI `/provider` for services (including `Add endpoint…`, which appends 
 # Optional top-level keys
 provider = "codex"
 effort = "high"
-ui = "normal" # normal (default) or simple
+ui = "normal" # normal (default), simple, or pages
 open = "zed {path}:{line}" # optional: command run when a file path is clicked
 
 [codex]
@@ -244,4 +244,4 @@ Session logs record the event, expanded command, exit code (124 for timeout), an
 
 `open = "zed {path}:{line}"` makes file paths in the TUI clickable (see [tui-ux.md](tui-ux.md)). The value is a command template: it is split on whitespace into arguments (no shell, so there is no quoting), `{path}` becomes the absolute path and `{line}` the line from a `:line` suffix (1 when absent) in every argument. The command starts detached with stdin, stdout and stderr closed, so it must open a GUI editor or an already running one; it is not waited for. Unset by default, which leaves paths as plain text. An empty value is a configuration error.
 
-`/simple` and Ctrl+S atomically persist the top-level `ui` choice for the next launch. Invalid values are configuration errors.
+`/simple`, `/pages`, and Ctrl+S atomically persist the top-level `ui` choice for the next launch. Ctrl+S cycles Normal → Simple → Pages → Normal. Invalid values are configuration errors.
