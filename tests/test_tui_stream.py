@@ -155,7 +155,9 @@ def test_turn_pages(tmp):
         def visible():
             return screen(terminal.read(), 120, 32)
 
-        terminal.send("/pages\r")
+        terminal.send("\x13")
+        wait_for(lambda: (home / "config.toml").exists() and 'ui = "simple"' in (home / "config.toml").read_text(), "Ctrl+S enters Simple")
+        terminal.send("\x13")
         wait_for(lambda: [(i, row.strip()) for i, row in enumerate(visible()) if row.strip()] == [(15, ">")],
                  "blank centered prompt without a frame")
         assert 'ui = "pages"' in (home / "config.toml").read_text()
@@ -165,6 +167,7 @@ def test_turn_pages(tmp):
         terminal.send("\r")
         terminal.wait_turn(first.text)
         assert visible()[1].lstrip() == "> First prompt"
+        assert "─" not in "\n".join(visible())
         assert "01 / 01" in visible()[-1]
 
         terminal.send("\x1b[C")
@@ -200,8 +203,8 @@ def test_turn_pages(tmp):
         wait_for(lambda: visible()[15].strip() == ">", "right opens the next draft")
         terminal.send("\x1b")
         wait_for(lambda: "02 / 02" in visible()[-1], "Escape closes the unsent draft")
-        terminal.send("/pages\r")
-        wait_for(lambda: "╰" in visible()[-1] and first.text in "\n".join(visible()), "Normal transcript restored")
+        terminal.send("\x13")
+        wait_for(lambda: "╰" in visible()[-1] and first.text in "\n".join(visible()), "Ctrl+S restores the Normal transcript")
         assert 'ui = "normal"' in (home / "config.toml").read_text()
 
 

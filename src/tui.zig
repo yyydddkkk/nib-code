@@ -580,7 +580,7 @@ pub const App = struct {
         const armed = app.quit_armed;
         app.quit_armed = false;
         if ((k.matches(@import("tui/mode.zig").key, .{ .ctrl = true }) or k.matches(@import("tui/mode.zig").key, .{ .ctrl = true, .shift = true }))) {
-            try app.toggleSimple();
+            try app.cycleUi();
             return true;
         }
         if (k.matches('c', .{ .ctrl = true })) {
@@ -1030,6 +1030,10 @@ pub const App = struct {
         const control_hit = e.control(frame.window, row) orelse return;
         e.toggleControl(control_hit);
         app.scroll.toggled(frame.top, control_hit.action == null and app.latestPageDetails() == entry);
+    }
+
+    fn cycleUi(app: *App) !void {
+        try app.setUi(if (app.cfg.turn_pages) .normal else if (app.cfg.simple) .pages else .simple);
     }
 
     pub fn toggleSimple(app: *App) !void {
@@ -1997,7 +2001,7 @@ test "Run hover has lower contrast than other controls with or without an RGB re
     try t.expectEqualDeep(vaxis.Color{ .rgb = .{ 227, 232, 237 } }, app.run_hover_bg);
 }
 
-test "Simple key variants and command toggle silently and persist" {
+test "Ctrl+S variants cycle view modes silently, persist, and keep the draft" {
     const t = std.testing;
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
@@ -2013,11 +2017,21 @@ test "Simple key variants and command toggle silently and persist" {
     app.cfg = session.cfg;
     app.selection = .{};
     app.input = .{};
+    defer app.input.deinit(t.allocator);
+    app.transcript = .{};
+    app.pages = .{};
     app.pasting = false;
-    for ([_]bool{ false, true }) |shift| {
+    app.quit_armed = false;
+    try app.input.replace(t.allocator, "keep this draft");
+    for ([_]Ui{ .simple, .pages, .normal }, [_]bool{ false, true, false }) |ui, shift| {
         _ = try app.onKey(.{ .codepoint = @import("tui/mode.zig").key, .mods = .{ .ctrl = true, .shift = shift } });
-        try t.expectEqual(!shift, app.cfg.simple);
+        try t.expectEqual(ui == .simple, app.cfg.simple);
+        try t.expectEqual(ui == .pages, app.cfg.turn_pages);
+        try t.expectEqualStrings("keep this draft", app.input.text());
         try t.expect(app.notice == null);
+        const config_text = try tmp.dir.readFileAlloc(t.io, "config.toml", t.allocator, .limited(1024));
+        defer t.allocator.free(config_text);
+        try t.expect(std.mem.indexOf(u8, config_text, @tagName(ui)) != null);
     }
     try commands.execute(&app, .simple, "", "/simple");
     try t.expect(app.cfg.simple);

@@ -13,7 +13,6 @@ pub const Frame = @import("selection/history.zig").Frame;
 const max_menu_rows = 11;
 const pages = @import("pages.zig");
 const muted: vaxis.Style = .{ .dim = true };
-const heading_style: vaxis.Style = .{ .bold = true };
 
 pub fn draftPrompt(win: vaxis.Window, input: *const Editor) pages.Prompt {
     var max_width: u16 = 0;
@@ -30,14 +29,18 @@ fn promptBody(win: vaxis.Window, p: pages.Prompt) vaxis.Window {
     return win.child(.{ .x_off = p.x + @as(u16, if (p.width > 2) 2 else 0), .y_off = p.y, .width = p.bodyWidth(), .height = @min(p.rows, win.height -| p.y) });
 }
 
-fn mark(win: vaxis.Window, p: pages.Prompt) void {
-    if (p.width > 2) put(win, p.x, p.y, ">");
+fn mark(win: vaxis.Window, p: pages.Prompt, bg: vaxis.Color) void {
+    if (p.width > 2) win.writeCell(p.x, p.y, .{ .char = .{ .grapheme = ">", .width = 1 }, .style = .{ .dim = true, .bg = bg } });
 }
 
-fn rule(win: vaxis.Window, p: pages.Prompt) void {
-    const y = p.y +| p.rows;
-    if (y >= win.height or p.width < 8) return;
-    for (p.x..p.x + p.width) |x| put(win, @intCast(x), y, "─");
+fn headingStyle(win: vaxis.Window, p: pages.Prompt, s: status.Status) vaxis.Style {
+    const bg = if (s.user_bg != .default) s.user_bg else s.run_hover_bg;
+    if (bg != .default) win.child(.{ .x_off = p.x, .y_off = p.y, .width = p.width, .height = p.rows }).fill(.{
+        .char = .{ .grapheme = " ", .width = 1 },
+        .style = .{ .bg = bg },
+    });
+    mark(win, p, bg);
+    return .{ .bold = true, .bg = bg };
 }
 
 pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candidate, menu_sel: usize, s: status.Status, text: *status.Text) void {
@@ -48,7 +51,7 @@ pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candi
     const placeholder = input.placeholder;
     input.placeholder = "";
     defer input.placeholder = placeholder;
-    mark(win, p);
+    mark(win, p, .default);
     input.draw(promptBody(win, p));
     const below = p.y + p.rows;
     const menu_y = below +| 1;
@@ -72,11 +75,10 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
     const width = win.width - 2 * edge;
     if (transition) |t| {
         const p = t.prompt;
-        mark(win, p);
+        const heading_style = headingStyle(win, p, s);
         var body = promptBody(win, p);
         body.width = @min(body.width, t.wrap);
         _ = body.child(.{ .y_off = -@as(i17, p.skip) }).printSegment(.{ .text = t.text, .style = heading_style }, .{ .wrap = .grapheme });
-        rule(win, p);
         return null;
     }
 
@@ -89,15 +91,14 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         const measured = body.printSegment(.{ .text = head }, .{ .wrap = .grapheme, .commit = false });
         p.rows = @min(p.rows, measured.row +| 1);
         body.height = p.rows;
-        mark(win, p);
+        const heading_style = headingStyle(win, p, s);
         if (measured.row >= p.rows and p.rows > 0) {
             if (p.rows > 1) _ = body.child(.{ .height = p.rows - 1 }).printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
-            _ = body.child(.{ .y_off = p.rows - 1, .height = 1 }).printSegment(.{ .text = "…", .style = muted }, .{ .wrap = .none });
+            _ = body.child(.{ .y_off = p.rows - 1, .height = 1 }).printSegment(.{ .text = "…", .style = .{ .dim = true, .bg = heading_style.bg } }, .{ .wrap = .none });
         } else {
             _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
         }
-        if (win.height >= 6) rule(win, p);
-        top_row = @min(win.height, y +| p.rows +| @as(u16, if (win.height >= 8) 2 else if (win.height >= 6) 1 else 0));
+        top_row = @min(win.height, y +| p.rows +| @as(u16, if (win.height >= 6) 1 else 0));
     }
 
     const footer = if (win.height - top_row >= 2) @as(u16, 1) else 0;
@@ -349,7 +350,8 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         var editor: Editor = .{};
         defer editor.deinit(gpa);
         var text: status.Text = .{};
-        const s: status.Status = .{ .cfg = mock_cfg };
+        const tint: vaxis.Color = .{ .rgb = .{ 25, 28, 32 } };
+        const s: status.Status = .{ .cfg = mock_cfg, .user_bg = tint };
         const question = "Where does it wait?\nCheck the caller, too.";
         try editor.replace(gpa, question);
         drawDraft(win, &editor, &.{}, 0, s, &text);
@@ -372,14 +374,20 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         try testing.expect(!screen.cursor_vis);
         try testing.expectEqualStrings(">", screen.readCell(mid.x, mid.y).?.char.grapheme);
         try testing.expectEqualStrings("C", screen.readCell(mid.x + 2, mid.y + 1).?.char.grapheme);
-        try testing.expectEqualStrings("─", screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows).?.char.grapheme);
+        try testing.expectEqualDeep(tint, screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows - 1).?.style.bg);
+        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(mid.x, mid.y + mid.rows).?.style.bg);
 
         const frame = drawPage(win, t.entries.items, page, &scroll, null, s, &text).?;
         const visible = try snapshot(gpa, &screen);
         defer gpa.free(visible);
         try testing.expect(std.mem.indexOf(u8, visible, "First page only.") != null);
         try testing.expect(std.mem.indexOf(u8, visible, "Second page only.") == null);
-        try testing.expectEqualStrings(">", screen.readCell(pages.margin(cols), 1).?.char.grapheme);
+        const edge = pages.margin(cols);
+        try testing.expectEqualStrings(">", screen.readCell(edge, 1).?.char.grapheme);
+        try testing.expectEqualDeep(tint, screen.readCell(cols - edge - 1, 2).?.style.bg);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(edge, 3).?.style.bg);
+        try testing.expect(std.mem.indexOf(u8, visible, "─") == null);
         const history = @import("selection/history.zig");
         try testing.expectEqual(null, history.position(frame, t.entries.items, 4, 1));
         try testing.expectEqual(@as(usize, 1), history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off)).?.entry);

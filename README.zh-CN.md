@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 ## 使用
 
-`/simple` 或 Ctrl+S 只留下对话。
+`/simple` 切换到更安静的阅读视图。`/pages` 每页显示一个 Turn，左右键翻页，新输入从屏幕中央开始。Ctrl+S 按 Normal → Simple → Pages → Normal 循环切换。
 
 可选的沙箱内 `after_edit` 和 `turn_end` 命令：[hooks 配置](docs/config.md#hooks)。
 
