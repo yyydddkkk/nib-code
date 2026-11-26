@@ -61,7 +61,7 @@ pub const Selection = struct {
         if (click) |c| s.click = c;
         if (m.type == .press and m.button == .left) {
             if (frame) |f| {
-                if (m.row >= 0 and m.row < f.window.height and s.anchor != null) {
+                if (m.row >= f.window.y_off and m.row < @as(i32, f.window.y_off) + f.window.height and s.anchor != null) {
                     if (history.position(f, entries, s.end.col, s.end.row)) |p| s.history = .{ .anchor = p, .end = p };
                 }
             }
@@ -70,10 +70,11 @@ pub const Selection = struct {
     }
 
     fn updateEnd(s: *Selection, frame: history.Frame, entries: []Entry, col: u16, row: u16) void {
-        if (entries.len == 0) return;
-        const p = history.position(frame, entries, col, row) orelse history.Position{
-            .entry = entries.len - 1,
-            .row = entries[entries.len - 1].height(frame.window),
+        const end = frame.limit(entries.len);
+        if (frame.top.entry >= end) return;
+        const p = history.position(frame, entries, col, @max(row, @as(u16, @intCast(frame.window.y_off)))) orelse history.Position{
+            .entry = end - 1,
+            .row = entries[end - 1].height(frame.window),
             .col = col,
         };
         s.history.?.end = p;

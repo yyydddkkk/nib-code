@@ -209,7 +209,7 @@ pub const Inbox = struct {
         for (q.batch.items.items) |item| {
             if (background_only and (item.background == null or item.detached)) continue;
             selected.items.appendAssumeCapacity(item);
-            try messages.append(gpa, .{ .role = "user", .content = try arena.dupe(u8, item.text), .source = if (item.background != null) .background else null, .background_kind = if (item.background) |b| b.kind else null, .background_ok = if (item.background) |b| b.ok else null, .background_id = if (item.background) |b| try arena.dupe(u8, b.id) else null, .background_run = if (item.background) |b| if (b.completion) |value| try cloneCompletion(arena, value) else null else null });
+            try messages.append(gpa, .{ .role = "user", .content = try arena.dupe(u8, item.text), .source = if (item.background != null) .background else null, .interjection = if (item.background == null) true else null, .background_kind = if (item.background) |b| b.kind else null, .background_ok = if (item.background) |b| b.ok else null, .background_id = if (item.background) |b| try arena.dupe(u8, b.id) else null, .background_run = if (item.background) |b| if (b.completion) |value| try cloneCompletion(arena, value) else null else null });
         }
         try pending.appendSlice(gpa, messages.items);
         var retained: usize = 0;

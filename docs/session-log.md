@@ -121,7 +121,7 @@ child_costs.by_parent_system joins `parent_session_id` to input parent header sy
 
 `--group-by version|system|patches|profile|tuning` uses header nib_version/system_sha/patches_off/profile/tuning (tuning groups as sorted `name=variant` pairs; missing is unknown) (the model-family [Profile](../CONTEXT.md) resolved when the Session started), retaining overall/core reports per group via group_by/groups JSON. Missing old tags unknown; newer version/hash headers omitting patches mean none; lists group as sorted sets. transport uses actual complete-Step transports below.
 
-Optional complete-Step `turn_step` is 1-based within Turn; interjections do not start Turns, new resumed Turns reset 1. Old logs estimate user-message boundaries excluding backgrounds and may overcount interjections as Turns.
+Optional complete-Step `turn_step` is 1-based within Turn; interjections do not start Turns, new resumed Turns reset 1. Old logs estimate user-message boundaries excluding backgrounds and may overcount interjections as Turns. Inserted user messages carry `interjection: true` in the log so Pages mode can restore them within their Turn; this field is not sent to providers.
 
 agents/bash_calls report foreground/background counts and background_steps. Valid calls drive foreground; agents roots only, bash includes children; exclude dispatched=false. Background counts prefer independent started, old fallback background: true/id calls. Join ids to finished/lost/source=background results, supporting old background_agent. Count complete main Steps after starting Step/before result insertion, excluding start/consuming requests; median/p90/samples per task. Require same Session, full selected/uninterrupted pairs, no zero-fill across gaps/incomplete pairs.
 

@@ -149,8 +149,50 @@ def test_large_paste_does_not_redraw_per_key(tmp):
         terminal.wait_turn(reply.text)
 
 
+def test_turn_pages(tmp):
+    first, second = Reply("First page answer"), Reply("Second page answer")
+    with fixture(tmp, [first, second]) as (terminal, home, _):
+        def visible():
+            return screen(terminal.read(), 120, 32)
+
+        terminal.send("/pages\r")
+        wait_for(lambda: [(i, row.strip()) for i, row in enumerate(visible()) if row.strip()] == [(15, ">")],
+                 "blank centered prompt without a frame")
+        assert 'ui = "pages"' in (home / "config.toml").read_text()
+
+        terminal.send("Frst prompt" + "\x1b[D" * 11 + "\x1b[C" + "i")
+        wait_for(lambda: "> First prompt" in visible()[15], "left moves inside the draft")
+        terminal.send("\r")
+        terminal.wait_turn(first.text)
+        assert visible()[1].lstrip() == "> First prompt"
+        assert "01 / 01" in visible()[-1]
+
+        terminal.send("\x1b[C")
+        wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
+        terminal.send("Second prompt\r")
+        terminal.wait_turn(second.text)
+        assert visible()[1].lstrip() == "> Second prompt"
+        assert first.text not in "\n".join(visible())
+
+        terminal.send("\x1b[D")
+        wait_for(lambda: "01 / 02" in visible()[-1], "left returns to the first Turn")
+        assert first.text in "\n".join(visible()) and second.text not in "\n".join(visible())
+        terminal.send("\x1b[C")
+        wait_for(lambda: "02 / 02" in visible()[-1], "right returns to the second Turn")
+        assert second.text in "\n".join(visible()) and first.text not in "\n".join(visible())
+        terminal.send("\x1b[C")
+        wait_for(lambda: visible()[15].strip() == ">", "right opens the next draft")
+        terminal.send("\x1b")
+        wait_for(lambda: "02 / 02" in visible()[-1], "Escape closes the unsent draft")
+        terminal.send("/pages\r")
+        wait_for(lambda: "╰" in visible()[-1] and first.text in "\n".join(visible()), "Normal transcript restored")
+        assert 'ui = "normal"' in (home / "config.toml").read_text()
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-tui-stream-") as directory:
+        test_turn_pages(Path(directory) / "pages")
+        print("test_turn_pages: ok")
         test_large_paste_does_not_redraw_per_key(Path(directory) / "paste")
         print("test_large_paste_does_not_redraw_per_key: ok")
         test_incremental_stream(Path(directory) / "incremental")

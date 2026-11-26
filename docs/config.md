@@ -29,7 +29,7 @@ Prefer TUI `/provider` for services (including `Add endpoint…`, which appends 
 # Optional top-level keys
 provider = "codex"
 effort = "high"
-ui = "normal" # normal (default) or simple
+ui = "normal" # normal (default), simple, or pages
 open = "zed {path}:{line}" # optional: command run when a file path is clicked
 
 [codex]

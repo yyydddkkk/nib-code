@@ -26,7 +26,9 @@ const Ticker = @import("tui/turn.zig").Ticker;
 const Frames = @import("tui/frames.zig").Frames;
 const bill = @import("tui/bill.zig");
 const open = @import("tui/open.zig");
+const pages = @import("tui/pages.zig");
 const title = @import("tui/title.zig");
+const Ui = @import("tui/mode.zig").Ui;
 const TurnSummary = @import("session/events.zig").TurnSummary;
 const ToolSummary = @import("session/tool_summary.zig").Summary;
 
@@ -183,6 +185,7 @@ pub fn run(init: std.process.Init, session: *Session) !void {
     app.menu.wake = .{ .ctx = &app, .call = pathsReady };
 
     try app.transcript.addHistory(gpa, session.history.items);
+    app.pages.composing = app.currentPage().count == 0;
     for (session.history.items) |m| {
         if (m.source != .undo and std.mem.eql(u8, m.role, "user")) try app.input.remember(gpa, m.content orelse "");
     }
@@ -201,12 +204,12 @@ pub fn run(init: std.process.Init, session: *Session) !void {
         if (motion and old_hover == app.hovered and old_hover_row == app.hovered_row and std.meta.eql(old_link, app.link)) continue;
         const refresh = event.refresh();
         const frame_start = std.Io.Clock.Timestamp.now(io, .awake);
-        if (frames.due(frame_start, if (refresh != .immediate and app.transcript.hasBacklog()) .content else refresh)) {
+        if (frames.due(frame_start, if (refresh != .immediate and (app.flight != null or app.transcript.hasBacklog())) .content else refresh)) {
             app.transcript.advanceVisible(frame_start);
             try app.render();
             frames.painted(frame_start);
         }
-        ticker.busy.store(frames.pending or app.transcript.hasBacklog() or app.turn != null or app.session.tools.background.anyPending(io), .release);
+        ticker.busy.store(app.flight != null or frames.pending or app.transcript.hasBacklog() or app.turn != null or app.session.tools.background.anyPending(io), .release);
     }
 }
 
@@ -246,6 +249,10 @@ pub const App = struct {
     title_project: ?[]u8 = null,
     title_branch: ?[]u8 = null,
     title_buf: [512]u8 = undefined,
+    pages: pages.Pages = .{},
+    flight: ?pages.Flight = null,
+    pendingFlight: ?pages.Flight = null,
+    flight_text: std.ArrayList(u8) = .empty,
     /// Shown on the status line until the next key or click; not part of the transcript.
     notice: ?[]const u8 = null,
     notice_buf: [256]u8 = undefined,
@@ -300,6 +307,8 @@ pub const App = struct {
         app.prediction.deinit(app.gpa);
         app.files.deinit(app.gpa);
         for ([_]?[]u8{ app.project, app.work_dir, app.title_project, app.title_branch }) |owned| if (owned) |text| app.gpa.free(text);
+        app.pages.saved.deinit(app.gpa);
+        app.flight_text.deinit(app.gpa);
         app.flow.deinit();
         app.stopReflecting();
         app.clearStepEffort();
@@ -343,6 +352,7 @@ pub const App = struct {
                 return app.onKey(k);
             },
             .paste_start => {
+                if (app.cfg.turn_pages and !app.flow.active() and !app.menu.isPinned()) try app.openDraft();
                 app.pasting = true;
                 app.paste_buf.clearRetainingCapacity();
             },
@@ -366,7 +376,7 @@ pub const App = struct {
                     app.link = null;
                     if (app.selection.dragged) return true;
                     if (app.body) |body| {
-                        if (m.col >= body.window.x_off and m.col < body.window.x_off + body.window.width and m.row >= 0 and m.row < body.window.height) {
+                        if (m.col >= body.window.x_off and m.col < body.window.x_off + body.window.width and m.row >= body.window.y_off and m.row < @as(i32, body.window.y_off) + body.window.height) {
                             if (@import("tui/selection/history.zig").position(body, app.transcript.entries.items, @intCast(m.col), @intCast(m.row))) |p| {
                                 if (app.transcript.entries.items[p.entry].control(body.window, p.row)) |control_hit| {
                                     app.hovered = p.entry;
@@ -548,7 +558,7 @@ pub const App = struct {
         return true;
     }
 
-    fn page(app: *App) i64 {
+    fn scrollDistance(app: *App) i64 {
         return @max(app.vx.window().height / 2, 1);
     }
 
@@ -584,6 +594,19 @@ pub const App = struct {
             try providers.key(app, k);
             return true;
         }
+        if (app.cfg.turn_pages and !app.pages.composing) {
+            if (k.matches(vaxis.Key.left, .{}) or k.matches(vaxis.Key.right, .{})) {
+                try app.flipPage(k.matches(vaxis.Key.right, .{}));
+                return true;
+            }
+            if (k.matches(vaxis.Key.up, .{}) or k.matches(vaxis.Key.down, .{})) {
+                app.scroll.pending += if (k.matches(vaxis.Key.up, .{})) @as(i64, -1) else 1;
+                return true;
+            }
+            if (k.matches(vaxis.Key.enter, .{}) or k.matches(vaxis.Key.tab, .{}) or k.text != null or k.matches('v', .{ .ctrl = true }) or isNewline(k, false)) {
+                try app.openDraft();
+            }
+        }
         app.menu.sync(app.io, input, app.session);
         const selected = app.menu.selected(input.text());
         const before = std.hash.Wyhash.hash(0, input.text());
@@ -609,13 +632,17 @@ pub const App = struct {
             try input.replace(gpa, line);
             if (app.turn == null or commands.allowedWhileBusy(line)) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
         } else if (k.matches(vaxis.Key.escape, .{})) {
-            if (app.turn) |t| t.cancel.store(true, .release);
+            if (app.cfg.turn_pages and app.pages.composing and app.currentPage().count != 0) {
+                try app.input.replace(gpa, "");
+                app.menu.inputChanged("");
+                app.pages.composing = false;
+            } else if (app.turn) |t| t.cancel.store(true, .release);
         } else if (k.matches(vaxis.Key.page_up, .{})) {
-            app.scroll.pending -= app.page();
+            app.scroll.pending -= app.scrollDistance();
         } else if (k.matches(vaxis.Key.page_down, .{})) {
-            app.scroll.pending = if (app.scroll.top != null) std.math.maxInt(i32) else app.page();
+            app.scroll.pending = if (app.scroll.top != null) std.math.maxInt(i32) else app.scrollDistance();
         } else if (k.matches('o', .{ .ctrl = true })) {
-            if (app.transcript.latestDetails()) |i| app.toggleEntry(i);
+            if (app.latestPageDetails()) |i| app.toggleEntry(i);
         } else if (k.matches('v', .{ .ctrl = true })) {
             try app.attachClipboardImage();
         } else if (k.matches(vaxis.Key.up, .{ .shift = true })) {
@@ -631,11 +658,15 @@ pub const App = struct {
                 app.notice = std.fmt.bufPrint(&app.notice_buf, "{s} has no image input · remove the [Image] blocks", .{app.cfg.model}) catch null;
             } else if (input.imageCount() > 0 and app.turn != null) {
                 app.notice = "Turn running · images send with the next message";
-            } else if (app.turn == null or (commands.parse(input.text()) == null or app.session.isPluginCommand(input.text())) or commands.allowedWhileBusy(input.text())) submitted = try input.take(gpa) else app.notice = "Turn running · retry command when it ends";
+            } else if (app.turn == null or (commands.parse(input.text()) == null or app.session.isPluginCommand(input.text())) or commands.allowedWhileBusy(input.text())) {
+                if (app.cfg.turn_pages and app.turn == null and input.text().len != 0 and (commands.parse(input.text()) == null or app.session.isPluginCommand(input.text()))) try app.captureFlight();
+                submitted = try input.take(gpa);
+            } else app.notice = "Turn running · retry command when it ends";
         } else {
             _ = try input.key(gpa, k);
         }
         if (std.hash.Wyhash.hash(0, input.text()) != before) app.menu.inputChanged(input.text());
+        defer app.pendingFlight = null;
         if (submitted) |line| try app.submit(line);
         return true;
     }
@@ -690,11 +721,12 @@ pub const App = struct {
     /// Takes ownership of `line`.
     fn submit(app: *App, line: []u8) !void {
         const gpa = app.gpa;
-        app.scroll = .{};
+        if (!app.cfg.turn_pages) app.scroll = .{};
         app.menu.forgetSessions();
         if (line.len == 0) return gpa.free(line);
         if (!app.session.isPluginCommand(line)) if (commands.parse(line)) |parsed| {
             defer gpa.free(line);
+            app.pages.composing = false;
             return switch (parsed) {
                 .unknown => |name| app.report(.err, "unknown command /{s} · /help lists commands", .{name}),
                 .known => |c| app.command(c.command, c.arg, line),
@@ -709,9 +741,11 @@ pub const App = struct {
             const id = try app.session.enqueue(line);
             try app.transcript.add(gpa, .user, line);
             app.transcript.entries.items[app.transcript.entries.items.len - 1].queued = id;
+            app.pages.composing = false;
             return;
         }
         try app.startTurnWithImages(line, app.input.sent_images.items);
+        app.flight = app.pendingFlight;
     }
 
     /// Takes ownership of text without interpreting slash commands.
@@ -722,7 +756,14 @@ pub const App = struct {
     fn startTurnWithImages(app: *App, text: []u8, images: []const @import("image.zig").Image) !void {
         errdefer app.gpa.free(text);
         app.dropPrediction();
+        const page_before = app.currentPage();
+        if (app.cfg.turn_pages and page_before.latest()) {
+            if (page_before.count > 0) try app.pages.save(app.gpa, page_before, app.scroll);
+            app.scroll = .{};
+        }
         try app.transcript.add(app.gpa, .user, text);
+        app.transcript.entries.items[app.transcript.entries.items.len - 1].turn_heading = true;
+        app.pages.composing = app.input.text().len != 0;
         app.turn = try Turn.spawnWithImages(app.gpa, app.session, app.loop, text, images, false);
         app.live_steps = 0;
         app.turn_runs = 0;
@@ -827,6 +868,7 @@ pub const App = struct {
             const restored = if (draft.len == 0) try app.gpa.dupe(u8, text) else try std.fmt.allocPrint(app.gpa, "{s}\n\n{s}", .{ text, draft });
             defer app.gpa.free(restored);
             try app.input.replace(app.gpa, restored);
+            app.pages.composing = true;
             app.menu.inputChanged(app.input.text());
             try app.report(.info, "{d} queued message{s} returned to input", .{ batch.items.items.len, if (batch.items.items.len == 1) "" else "s" });
         }
@@ -869,7 +911,7 @@ pub const App = struct {
         const body = (app.body orelse return null).window;
         const x: u16 = @intCast(col);
         const y: u16 = @intCast(row);
-        if (x < body.x_off or x >= body.x_off + body.width or y >= body.height or entry >= app.transcript.entries.items.len) return null;
+        if (x < body.x_off or x >= body.x_off + body.width or y < body.y_off or y >= @as(i32, body.y_off) + body.height or entry >= app.transcript.entries.items.len) return null;
         if (app.files_revision != app.transcript.revision) {
             app.files.clear(app.gpa);
             app.files_revision = app.transcript.revision;
@@ -910,6 +952,14 @@ pub const App = struct {
         return true;
     }
 
+    fn captureFlight(app: *App) !void {
+        const win = app.vx.window();
+        if (win.width < 16 or win.height < 8) return;
+        app.flight_text.clearRetainingCapacity();
+        try app.flight_text.appendSlice(app.gpa, app.input.text());
+        app.pendingFlight = .{ .from = view.draftPrompt(win, &app.input), .at = .now(app.io, .awake), .cols = win.width, .rows = win.height };
+    }
+
     fn titleLine(app: *App) []const u8 {
         if (!app.title_loaded) {
             if (app.title_project) |old| app.gpa.free(old);
@@ -927,23 +977,73 @@ pub const App = struct {
         return title.compose(&app.title_buf, project, app.title_branch, app.cfg.model, app.cfg.effectiveEffort(), app.cfg.codexServiceTier() != null);
     }
 
+    fn currentPage(app: *const App) pages.Pages.Page {
+        return app.pages.current(app.transcript.entries.items);
+    }
+
+    pub fn resetPages(app: *App) void {
+        app.pages.reset();
+        app.pages.composing = app.currentPage().count == 0;
+        app.scroll = .{};
+        app.body = null;
+        app.flight = null;
+    }
+
+    fn latestPageDetails(app: *App) ?usize {
+        if (!app.cfg.turn_pages) return app.transcript.latestDetails();
+        const page = app.currentPage();
+        return app.transcript.latestDetailsIn(page.start, page.end);
+    }
+
+    fn openDraft(app: *App) !void {
+        const page = app.currentPage();
+        if (!page.latest()) try app.pages.switchTo(app.gpa, page, page.count - 1, &app.scroll);
+        app.pages.composing = true;
+        app.flight = null;
+        app.body = null;
+    }
+
+    fn flipPage(app: *App, forward: bool) !void {
+        const page = app.currentPage();
+        if (forward and page.latest()) return app.openDraft();
+        if (!forward and page.index == 0) return;
+        app.flight = null;
+        app.body = null;
+        app.link = null;
+        app.hovered = null;
+        try app.pages.switchTo(app.gpa, page, if (forward) page.index + 1 else page.index - 1, &app.scroll);
+    }
+
     fn clickEntry(app: *App, entry: usize, row: u16) void {
         const frame = app.body orelse return;
         if (entry >= app.transcript.entries.items.len) return;
         const e = &app.transcript.entries.items[entry];
         const control_hit = e.control(frame.window, row) orelse return;
         e.toggleControl(control_hit);
-        app.scroll.toggled(frame.top, control_hit.action == null and app.transcript.latestDetails() == entry);
+        app.scroll.toggled(frame.top, control_hit.action == null and app.latestPageDetails() == entry);
     }
 
     pub fn toggleSimple(app: *App) !void {
-        const simple = !app.cfg.simple;
-        @import("config.zig").saveSimple(app.gpa, app.io, app.session.options.home, simple) catch |err| {
-            try app.report(.err, "could not save simple mode: {s}", .{@errorName(err)});
+        try app.setUi(if (app.cfg.simple) .normal else .simple);
+    }
+
+    pub fn togglePages(app: *App) !void {
+        try app.setUi(if (app.cfg.turn_pages) .normal else .pages);
+    }
+
+    fn setUi(app: *App, ui: Ui) !void {
+        config.saveUi(app.gpa, app.io, app.session.options.home, ui) catch |err| {
+            try app.report(.err, "could not save UI mode: {s}", .{@errorName(err)});
             return;
         };
-        app.cfg.simple = simple;
-        app.session.cfg.simple = simple;
+        if (app.cfg.turn_pages != (ui == .pages)) {
+            app.resetPages();
+            if (app.input.text().len > 0) app.pages.composing = true;
+        }
+        app.cfg.simple = ui == .simple;
+        app.session.cfg.simple = app.cfg.simple;
+        app.cfg.turn_pages = ui == .pages;
+        app.session.cfg.turn_pages = app.cfg.turn_pages;
         app.selection.clear();
         app.hovered = null;
     }
@@ -951,7 +1051,7 @@ pub const App = struct {
     fn toggleEntry(app: *App, index: usize) void {
         app.transcript.toggle(index);
         const frame = app.body orelse return;
-        app.scroll.toggled(frame.top, app.transcript.latestDetails() == index);
+        app.scroll.toggled(frame.top, app.latestPageDetails() == index);
     }
 
     fn render(app: *App) !void {
@@ -973,10 +1073,8 @@ pub const App = struct {
             app.hovered = null;
             app.link = null;
         }
-        const empty = app.transcript.entries.items.len == 0;
-        if (!empty) app.title_loaded = false;
-        const heading = if (empty and !app.signed_out) app.titleLine() else "";
-        app.body = view.drawFrame(app.vx.window(), app.transcript.entries.items, visible_input, &app.scroll, menu, @min(app.menu.sel, menu.len -| 1), .{
+        const page = app.currentPage();
+        var s: status.Status = .{
             .cfg = app.cfg,
             .user_bg = app.user_bg,
             .code_bg = app.code_bg,
@@ -986,16 +1084,33 @@ pub const App = struct {
             .run_hover_bg = app.run_hover_bg,
             .usage = app.usage,
             .steps = app.steps,
-            .background_count = app.background_count,
+            .background_count = if (!app.cfg.turn_pages or page.latest()) app.background_count else 0,
             .context = app.context,
-            .busy = if (app.turn != null) app.activity.label(app.io) else null,
+            .busy = if (app.turn != null and (!app.cfg.turn_pages or page.latest())) app.activity.label(app.io) else null,
             .notice = app.notice,
             .detail = app.activityDetail(),
             .hint = if (app.flow.active()) app.flow.hint(&app.flow_hint) else if (app.menu.isPinned()) "Choose a service" else "",
             .signed_out = app.signed_out,
-            .title = heading,
             .revision = app.transcript.revision,
-        }, &app.status_text);
+        };
+        const win = app.vx.window();
+        const selected = @min(app.menu.sel, menu.len -| 1);
+        if (!app.cfg.turn_pages) {
+            const empty = app.transcript.entries.items.len == 0;
+            if (!empty) app.title_loaded = false;
+            s.title = if (empty and !app.signed_out) app.titleLine() else "";
+            app.body = view.drawFrame(win, app.transcript.entries.items, visible_input, &app.scroll, menu, selected, s, &app.status_text);
+        } else if (app.pages.composing or app.flow.active() or app.menu.isPinned()) {
+            view.drawDraft(win, visible_input, menu, selected, s, &app.status_text);
+            app.body = null;
+        } else {
+            const transition: ?view.Transition = if (app.flight) |f| if (f.sample(.now(app.io, .awake), win.width, win.height)) |p|
+                .{ .prompt = p, .wrap = f.from.bodyWidth(), .text = app.flight_text.items }
+            else
+                null else null;
+            if (transition == null) app.flight = null;
+            app.body = view.drawPage(win, app.transcript.entries.items, page, &app.scroll, transition, s, &app.status_text);
+        }
         if (app.link) |l| if (l.row < app.vx.screen.height) for (l.x0..@min(@as(usize, l.x1) + 1, app.vx.screen.width)) |col| {
             const cell = &app.vx.screen.buf[@as(usize, l.row) * app.vx.screen.width + col];
             cell.style.ul_style = .single;

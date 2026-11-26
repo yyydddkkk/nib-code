@@ -250,6 +250,10 @@ fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8,
 }
 
 pub fn saveSimple(a: Allocator, io: std.Io, home_path: []const u8, simple: bool) !void {
+    return saveUi(a, io, home_path, if (simple) .simple else .normal);
+}
+
+pub fn saveUi(a: Allocator, io: std.Io, home_path: []const u8, ui: mode.Ui) !void {
     const path = try std.fs.path.join(a, &.{ home_path, "config.toml" });
     defer a.free(path);
     const text = try parse_mod.read(a, io, path);
@@ -261,7 +265,7 @@ pub fn saveSimple(a: Allocator, io: std.Io, home_path: []const u8, simple: bool)
     const file = try parse_mod.parse(scratch.allocator(), a, text, path, &detail);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(a);
-    const value = if (simple) mode.value else "normal";
+    const value = @tagName(ui);
     if (file.ui_value) |span| {
         try out.appendSlice(a, text[0..span.start]);
         try out.print(a, "\"{s}\"", .{value});
@@ -528,7 +532,7 @@ test "MCP atomic toggles preserve nested definitions and CRLF comments" {
     try t.expect((try @import("../config.zig").loadMcp(a, t.io, home_path))[0].enabled);
 }
 
-test "simple persistence preserves surrounding configuration and rejects invalid values" {
+test "UI persistence preserves surrounding configuration and rejects invalid values" {
     const t = std.testing;
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
@@ -540,11 +544,13 @@ test "simple persistence preserves surrounding configuration and rejects invalid
     var env: Env = .init(a);
     defer env.deinit();
     var detail: ?[]u8 = null;
-    for ([_]bool{ true, false, true }) |simple| {
-        try saveSimple(a, t.io, root, simple);
+    for ([_]mode.Ui{ .simple, .normal, .pages, .simple }) |ui| {
+        try saveUi(a, t.io, root, ui);
         const text = try tmp.dir.readFileAlloc(t.io, "config.toml", a, .limited(10000));
         try t.expect(std.mem.endsWith(u8, text, "# keep\n[codex]\n"));
-        try t.expectEqual(simple, (try resolve_mod.resolve(a, &env, text, "test", &detail, null)).simple);
+        const resolved = try resolve_mod.resolve(a, &env, text, "test", &detail, null);
+        try t.expectEqual(ui == .simple, resolved.simple);
+        try t.expectEqual(ui == .pages, resolved.turn_pages);
     }
     for ([_][]const u8{ "ui = true", "ui = \"bad\"", "ui = \"normal\"\nui = \"simple\"" }) |text| try t.expectError(error.InvalidConfig, parse_mod.parse(a, a, text, "test", &detail));
 }

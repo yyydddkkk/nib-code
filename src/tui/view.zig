@@ -11,6 +11,121 @@ const status = @import("status.zig");
 pub const Frame = @import("selection/history.zig").Frame;
 
 const max_menu_rows = 11;
+const pages = @import("pages.zig");
+const muted: vaxis.Style = .{ .dim = true };
+const heading_style: vaxis.Style = .{ .bold = true };
+
+pub fn draftPrompt(win: vaxis.Window, input: *const Editor) pages.Prompt {
+    var max_width: u16 = 0;
+    var lines = std.mem.splitScalar(u8, if (input.text().len == 0) input.ghost else input.text(), '\n');
+    while (lines.next()) |line| max_width = @max(max_width, win.gwidth(line));
+    const limit = @min(76, win.width -| (2 * pages.margin(win.width)));
+    const width = @min(limit, max_width +| 3);
+    const p: pages.Prompt = .{ .x = (win.width - width) / 2, .y = 0, .width = width, .rows = 1 };
+    const rows = @min(@max(1, win.height / 3), input.rows(win.child(.{ .width = p.bodyWidth() })));
+    return .{ .x = p.x, .y = (win.height - rows) / 2, .width = p.width, .rows = rows, .skip = input.top_row };
+}
+
+fn promptBody(win: vaxis.Window, p: pages.Prompt) vaxis.Window {
+    return win.child(.{ .x_off = p.x + @as(u16, if (p.width > 2) 2 else 0), .y_off = p.y, .width = p.bodyWidth(), .height = @min(p.rows, win.height -| p.y) });
+}
+
+fn mark(win: vaxis.Window, p: pages.Prompt) void {
+    if (p.width > 2) put(win, p.x, p.y, ">");
+}
+
+fn rule(win: vaxis.Window, p: pages.Prompt) void {
+    const y = p.y +| p.rows;
+    if (y >= win.height or p.width < 8) return;
+    for (p.x..p.x + p.width) |x| put(win, @intCast(x), y, "─");
+}
+
+pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candidate, menu_sel: usize, s: status.Status, text: *status.Text) void {
+    win.clear();
+    win.hideCursor();
+    if (win.width == 0 or win.height == 0) return;
+    const p = draftPrompt(win, input);
+    const placeholder = input.placeholder;
+    input.placeholder = "";
+    defer input.placeholder = placeholder;
+    mark(win, p);
+    input.draw(promptBody(win, p));
+    const below = p.y + p.rows;
+    const menu_y = below +| 1;
+    const layout = menuLayout(menu, menu_sel, @min(max_menu_rows, win.height -| menu_y));
+    if (layout.rows > 0) {
+        drawMenu(win, menu_y, menu, menu_sel, layout, s);
+    } else if (menu_y < win.height) {
+        const label = if (s.signed_out and s.notice == null) "No provider · /provider to sign in" else text.formatWidth(s, false, win.width -| 2);
+        const width = @min(win.gwidth(label), win.width);
+        printFitted(win.child(.{ .x_off = (win.width - width) / 2, .y_off = menu_y, .height = 1, .width = width }), label, s.activityStyle());
+    }
+}
+
+pub const Transition = struct { prompt: pages.Prompt, wrap: u16, text: []const u8 };
+
+pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll: *Viewport, transition: ?Transition, s: status.Status, text: *status.Text) ?Frame {
+    win.clear();
+    win.hideCursor();
+    if (win.width == 0 or win.height == 0) return null;
+    const edge = pages.margin(win.width);
+    const width = win.width - 2 * edge;
+    if (transition) |t| {
+        const p = t.prompt;
+        mark(win, p);
+        var body = promptBody(win, p);
+        body.width = @min(body.width, t.wrap);
+        _ = body.child(.{ .y_off = -@as(i17, p.skip) }).printSegment(.{ .text = t.text, .style = heading_style }, .{ .wrap = .grapheme });
+        rule(win, p);
+        return null;
+    }
+
+    var top_row: u16 = 0;
+    if (page.heading) |i| {
+        const y = pages.headingRow(win.height);
+        const head = all[i].text.items;
+        var p: pages.Prompt = .{ .x = edge, .y = y, .width = width, .rows = @min(win.height - y, @max(1, win.height / 3)) };
+        var body = promptBody(win, p);
+        const measured = body.printSegment(.{ .text = head }, .{ .wrap = .grapheme, .commit = false });
+        p.rows = @min(p.rows, measured.row +| 1);
+        body.height = p.rows;
+        mark(win, p);
+        if (measured.row >= p.rows and p.rows > 0) {
+            if (p.rows > 1) _ = body.child(.{ .height = p.rows - 1 }).printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
+            _ = body.child(.{ .y_off = p.rows - 1, .height = 1 }).printSegment(.{ .text = "…", .style = muted }, .{ .wrap = .none });
+        } else {
+            _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
+        }
+        if (win.height >= 6) rule(win, p);
+        top_row = @min(win.height, y +| p.rows +| @as(u16, if (win.height >= 8) 2 else if (win.height >= 6) 1 else 0));
+    }
+
+    const footer = if (win.height - top_row >= 2) @as(u16, 1) else 0;
+    const body_x = if (width >= 8 and page.heading != null) edge + 2 else edge;
+    const body = win.child(.{ .x_off = body_x, .y_off = top_row, .width = win.width - edge - body_x, .height = win.height - top_row - footer });
+    const entries = all[page.start..page.end];
+    prepareEntries(entries, s.cfg.simple);
+    var local = scroll.*;
+    if (local.top) |*top| top.entry -|= page.start;
+    var top = local.layout(entries, body);
+    local.observe(s.revision, scroll.top != null);
+    if (local.top) |*at| at.entry += page.start;
+    scroll.* = local;
+    drawBody(win, body, entries, top, page.start, s);
+    top.entry += page.start;
+
+    if (footer != 0) {
+        const index = if (page.count == 0) "" else std.fmt.bufPrint(&text.page_index, "{d:0>2} / {d:0>2}", .{ page.index + 1, page.count }) catch "";
+        const index_w = if (index.len + 2 < width) win.gwidth(index) else 0;
+        if (index_w > 0) printFitted(win.child(.{ .x_off = win.width - edge - index_w, .y_off = win.height - 1, .width = index_w, .height = 1 }), index, muted);
+        const status_w = width -| (if (index_w > 0) index_w + 2 else 0);
+        var activity = s;
+        activity.new_output = local.new_output;
+        const label = text.formatWidth(activity, local.top != null, status_w);
+        printFitted(win.child(.{ .x_off = body_x, .y_off = win.height - 1, .width = status_w -| (body_x - edge), .height = 1 }), label, activity.activityStyle());
+    }
+    return .{ .top = top, .window = body, .end = page.end };
+}
 
 pub fn draw(win: vaxis.Window, entries: []Entry, input: *Editor, scroll: *Viewport, menu: []const commands.Candidate, menu_sel: usize, s: status.Status, text: *status.Text) void {
     _ = drawFrame(win, entries, input, scroll, menu, menu_sel, s, text);
@@ -20,13 +135,7 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
     outer.clear();
     const win = outer;
     win.hideCursor();
-    for (entries, 0..) |*e, i| {
-        if (e.simple != s.cfg.simple) e.cached = null;
-        e.simple = s.cfg.simple;
-        const hidden = s.cfg.simple and (e.kind == .bill or e.kind == .changes);
-        const joined = e.kind == .bill and i + 1 < entries.len and entries[i + 1].kind == .changes;
-        e.gap = if (hidden or joined) 0 else 1;
-    }
+    prepareEntries(entries, s.cfg.simple);
     if (win.height == 0 or win.width == 0) return null;
 
     const framed = win.height >= 6 and win.width >= 8;
@@ -56,29 +165,7 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
         scroll.observe(s.revision, saved_scroll.top != null);
         activity_status.new_output = scroll.new_output;
     }
-    var y: i32 = -@as(i32, top.row);
-    for (entries[top.entry..], top.entry..) |*e, index| {
-        if (y >= body_h) break;
-        e.user_bg = s.user_bg;
-        e.code_bg = s.code_bg;
-        const h = e.height(body);
-        if (y + h > 0) _ = e.print(body.child(.{ .y_off = @intCast(y), .height = h }), true);
-        if (s.hovered == index) {
-            const control_hit = e.control(body, s.hovered_row orelse 0);
-            const first = if (control_hit) |c| c.first else 0;
-            const rows = if (control_hit) |c| c.rows else 0;
-            const bg = if (e.kind == .run) s.run_hover_bg else s.hover_bg;
-            for (0..body_h) |row| {
-                if (@as(i32, @intCast(row)) < y + first or @as(i32, @intCast(row)) >= y + first + rows) continue;
-                for (0..body.width) |col| {
-                    const cell = &win.screen.buf[row * win.screen.width + col + @as(usize, @intCast(body.x_off))];
-                    cell.style.bg = bg;
-                    cell.default = false;
-                }
-            }
-        }
-        y += e.extent(body);
-    }
+    drawBody(win, body, entries, top, 0, s);
 
     if (s.signed_out and entries.len == 0 and body_h > 0) {
         _ = body.printSegment(.{ .text = "No provider · /provider to sign in", .style = .{ .dim = true } }, .{ .wrap = .none });
@@ -89,43 +176,7 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
     if (activity_h > 0) {
         _ = win.child(.{ .x_off = 1, .y_off = body_h + activity_h - 1, .height = 1 }).printSegment(.{ .text = text.formatWidth(activity_status, scroll.top != null, win.width -| 2), .style = s.activityStyle() }, .{ .wrap = .none });
     }
-    var model_width: u16 = 0;
-    var service_width: u16 = 0;
-    for (menu_layout.first..menu_layout.end) |i| {
-        if (menu[i].service) |service| {
-            model_width = @max(model_width, win.gwidth(menu[i].label));
-            service_width = @max(service_width, win.gwidth(service));
-        }
-    }
-    var menu_y = body_h + activity_h;
-    for (menu_layout.first..menu_layout.end) |i| {
-        const c = menu[i];
-        if (groupHeader(menu, i, menu_layout.first)) |group| {
-            _ = win.child(.{ .x_off = 2, .y_off = menu_y, .height = 1 }).printSegment(.{ .text = commands.groupName(group), .style = .{ .bold = true, .dim = true } }, .{ .wrap = .none });
-            menu_y += 1;
-        }
-        const chosen = i == menu_sel;
-        const row = win.child(.{ .x_off = 2, .y_off = menu_y, .height = 1 });
-        if (c.service) |service| {
-            const service_w = @min(service_width, row.width / 3);
-            const current_w: u16 = if (row.width >= 36) 9 else 0;
-            const label_w = @min(model_width, row.width -| (service_w + current_w + 2));
-            printFitted(row.child(.{ .width = label_w }), c.label, .{});
-            if (row.width > label_w + 2) printFitted(row.child(.{ .x_off = label_w + 2, .width = service_w }), service, .{ .dim = true });
-            if (current_w > 0) printFitted(row.child(.{ .x_off = label_w + service_w + 4 }), c.detail, .{ .dim = true });
-        } else {
-            const label_width = if (c.is_path) (if (c.detail.len == 0) row.width else @min(row.width, 24)) else if (c.command == .provider and c.value != null) @min(row.width, 14) else @min(row.width, 12);
-            printFitted(row.child(.{ .width = label_width }), c.label, .{});
-            if (row.width > label_width + 2) printFitted(row.child(.{ .x_off = label_width + 2 }), c.detail, .{ .dim = true });
-        }
-        if (chosen) for (0..row.width) |col| {
-            const cell = &win.screen.buf[@as(usize, menu_y) * win.screen.width + col + 2];
-            if (s.hover_bg == .default) cell.style.reverse = true else cell.style.bg = s.hover_bg;
-            cell.default = false;
-        };
-        menu_y += 1;
-    }
-
+    drawMenu(win, body_h + activity_h, menu, menu_sel, menu_layout, s);
     const input_y = body_h + activity_h + menu_h;
     if (framed) {
         horizontal(win, input_y, "╭", "╮");
@@ -165,6 +216,82 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
 fn statusHeight(fixed: bool, visible: bool, available: u16) u16 {
     if (!fixed and !visible) return 0;
     return @min(@as(u16, if (fixed and visible) 2 else 1), available);
+}
+
+fn prepareEntries(entries: []Entry, simple: bool) void {
+    for (entries, 0..) |*e, i| {
+        if (e.simple != simple) e.cached = null;
+        e.simple = simple;
+        const hidden = simple and (e.kind == .bill or e.kind == .changes);
+        const joined = e.kind == .bill and i + 1 < entries.len and entries[i + 1].kind == .changes;
+        e.gap = if (hidden or joined) 0 else 1;
+    }
+}
+
+fn drawBody(win: vaxis.Window, body: vaxis.Window, entries: []Entry, top: @import("viewport.zig").Anchor, start: usize, s: status.Status) void {
+    const body_h = body.height;
+    var y: i32 = -@as(i32, top.row);
+    for (entries[top.entry..], top.entry..) |*e, index| {
+        if (y >= body_h) break;
+        e.user_bg = s.user_bg;
+        e.code_bg = s.code_bg;
+        const h = e.height(body);
+        if (y + h > 0) _ = e.print(body.child(.{ .y_off = @intCast(y), .height = h }), true);
+        if (s.hovered == index + start) {
+            const control_hit = e.control(body, s.hovered_row orelse 0);
+            const first = if (control_hit) |c| c.first else 0;
+            const rows = if (control_hit) |c| c.rows else 0;
+            const bg = if (e.kind == .run) s.run_hover_bg else s.hover_bg;
+            for (0..body_h) |row| {
+                if (@as(i32, @intCast(row)) < y + first or @as(i32, @intCast(row)) >= y + first + rows) continue;
+                for (0..body.width) |col| {
+                    const cell = &win.screen.buf[(@as(usize, @intCast(body.y_off)) + row) * win.screen.width + col + @as(usize, @intCast(body.x_off))];
+                    cell.style.bg = bg;
+                    cell.default = false;
+                }
+            }
+        }
+        y += e.extent(body);
+    }
+}
+
+fn drawMenu(win: vaxis.Window, y: u16, menu: []const commands.Candidate, menu_sel: usize, menu_layout: MenuLayout, s: status.Status) void {
+    var menu_y = y;
+    var model_width: u16 = 0;
+    var service_width: u16 = 0;
+    for (menu_layout.first..menu_layout.end) |i| {
+        if (menu[i].service) |service| {
+            model_width = @max(model_width, win.gwidth(menu[i].label));
+            service_width = @max(service_width, win.gwidth(service));
+        }
+    }
+    for (menu_layout.first..menu_layout.end) |i| {
+        const c = menu[i];
+        if (groupHeader(menu, i, menu_layout.first)) |group| {
+            _ = win.child(.{ .x_off = 2, .y_off = menu_y, .height = 1 }).printSegment(.{ .text = commands.groupName(group), .style = .{ .bold = true, .dim = true } }, .{ .wrap = .none });
+            menu_y += 1;
+        }
+        const chosen = i == menu_sel;
+        const row = win.child(.{ .x_off = 2, .y_off = menu_y, .height = 1 });
+        if (c.service) |service| {
+            const service_w = @min(service_width, row.width / 3);
+            const current_w: u16 = if (row.width >= 36) 9 else 0;
+            const label_w = @min(model_width, row.width -| (service_w + current_w + 2));
+            printFitted(row.child(.{ .width = label_w }), c.label, .{});
+            if (row.width > label_w + 2) printFitted(row.child(.{ .x_off = label_w + 2, .width = service_w }), service, .{ .dim = true });
+            if (current_w > 0) printFitted(row.child(.{ .x_off = label_w + service_w + 4 }), c.detail, .{ .dim = true });
+        } else {
+            const label_width = if (c.is_path) (if (c.detail.len == 0) row.width else @min(row.width, 24)) else if (c.command == .provider and c.value != null) @min(row.width, 14) else @min(row.width, 12);
+            printFitted(row.child(.{ .width = label_width }), c.label, .{});
+            if (row.width > label_width + 2) printFitted(row.child(.{ .x_off = label_width + 2 }), c.detail, .{ .dim = true });
+        }
+        if (chosen) for (0..row.width) |col| {
+            const cell = &win.screen.buf[@as(usize, menu_y) * win.screen.width + col + 2];
+            if (s.hover_bg == .default) cell.style.reverse = true else cell.style.bg = s.hover_bg;
+            cell.default = false;
+        };
+        menu_y += 1;
+    }
 }
 
 const MenuLayout = struct { first: usize = 0, end: usize = 0, rows: u16 = 0 };
@@ -212,6 +339,53 @@ fn horizontal(win: vaxis.Window, y: u16, left: []const u8, right: []const u8) vo
 
 const testing = std.testing;
 const mock_cfg: provider.Config = .{ .base_url = "", .api_key = "", .model = "mock" };
+
+test "Pages frames preserve the draft, moving heading and turn boundary at common widths" {
+    const gpa = testing.allocator;
+    for ([_]u16{ 60, 120, 160 }) |cols| {
+        var screen = try vaxis.Screen.init(gpa, .{ .cols = cols, .rows = 24, .x_pixel = 0, .y_pixel = 0 });
+        defer screen.deinit(gpa);
+        const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = cols, .height = 24, .screen = &screen };
+        var editor: Editor = .{};
+        defer editor.deinit(gpa);
+        var text: status.Text = .{};
+        const s: status.Status = .{ .cfg = mock_cfg };
+        const question = "Where does it wait?\nCheck the caller, too.";
+        try editor.replace(gpa, question);
+        drawDraft(win, &editor, &.{}, 0, s, &text);
+        const from = draftPrompt(win, &editor);
+        try testing.expect(screen.cursor_vis);
+        try testing.expectEqualStrings(">", screen.readCell(from.x, from.y).?.char.grapheme);
+
+        var t: Transcript = .{};
+        defer t.deinit(gpa);
+        try t.add(gpa, .user, question);
+        try t.add(gpa, .assistant, "First page only.");
+        try t.add(gpa, .user, "Different question");
+        try t.add(gpa, .assistant, "Second page only.");
+        const page: pages.Pages.Page = .{ .heading = 0, .start = 1, .end = 2, .count = 2 };
+        var scroll: Viewport = .{};
+        const at: std.Io.Clock.Timestamp = .now(testing.io, .awake);
+        const f: pages.Flight = .{ .from = from, .at = at, .cols = cols, .rows = 24 };
+        const mid = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(60) }), cols, 24).?;
+        try testing.expectEqual(null, drawPage(win, t.entries.items, page, &scroll, .{ .prompt = mid, .wrap = from.bodyWidth(), .text = question }, s, &text));
+        try testing.expect(!screen.cursor_vis);
+        try testing.expectEqualStrings(">", screen.readCell(mid.x, mid.y).?.char.grapheme);
+        try testing.expectEqualStrings("C", screen.readCell(mid.x + 2, mid.y + 1).?.char.grapheme);
+        try testing.expectEqualStrings("─", screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows).?.char.grapheme);
+
+        const frame = drawPage(win, t.entries.items, page, &scroll, null, s, &text).?;
+        const visible = try snapshot(gpa, &screen);
+        defer gpa.free(visible);
+        try testing.expect(std.mem.indexOf(u8, visible, "First page only.") != null);
+        try testing.expect(std.mem.indexOf(u8, visible, "Second page only.") == null);
+        try testing.expectEqualStrings(">", screen.readCell(pages.margin(cols), 1).?.char.grapheme);
+        const history = @import("selection/history.zig");
+        try testing.expectEqual(null, history.position(frame, t.entries.items, 4, 1));
+        try testing.expectEqual(@as(usize, 1), history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off)).?.entry);
+        try testing.expectEqual(null, history.position(frame, t.entries.items, 4, @intCast(frame.window.y_off + 3)));
+    }
+}
 
 test "draw benchmark: 5000 entries" {
     const benchmark = testing.environ.getPosix("NIB_TUI_BENCH") != null;

@@ -9,7 +9,7 @@ const provider = @import("../provider.zig");
 const auth = @import("../auth.zig");
 const providers = @import("providers.zig");
 
-pub const Command = enum { simple, help, new, @"resume", compact, undo, provider, model, effort, fast, copy, reflect, js, tasks, stop, status, skills, mcp, plugins };
+pub const Command = enum { simple, pages, help, new, @"resume", compact, undo, provider, model, effort, fast, copy, reflect, js, tasks, stop, status, skills, mcp, plugins };
 
 pub const Choices = enum { none, models, efforts, sessions, tasks, services };
 
@@ -28,6 +28,7 @@ pub const Spec = struct {
 
 pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .simple = .{ .group = .view, .help = "toggle " ++ mode.name ++ " mode", .while_busy = true },
+    .pages = .{ .group = .view, .help = "toggle Turn pages", .while_busy = true },
     .mcp = .{ .group = .view, .args = "[on|off <id>]", .help = "list or enable MCP servers for new sessions" },
     .plugins = .{ .group = .view, .args = "[on|off <name>]", .help = "list or enable plugins for new sessions" },
     .skills = .{ .group = .view, .args = "[on|off <name>]", .help = "list or enable skills for new sessions" },
@@ -48,7 +49,7 @@ pub const specs = std.enums.EnumArray(Command, Spec).init(.{
     .js = .{ .group = .send, .args = "<code>", .help = "run JavaScript", .needs_arg = true },
 });
 
-pub const keys = "Enter send · Shift+Enter newline · Esc cancel\n" ++ mode.shortcut ++ " simple mode · Ctrl+O latest details · click a block summary for details\nPgUp/PgDn scroll · ↑ input history · Ctrl+C twice to quit";
+pub const keys = "Enter send · Shift+Enter newline · Esc cancel\n" ++ mode.shortcut ++ " simple mode · Ctrl+O latest details · click a block summary for details\nPgUp/PgDn scroll · ↑ input history · Ctrl+C twice to quit\nPages: ←/→ turn · ↑/↓ scroll · → at latest opens input";
 
 const slash_names = blk: {
     var names: [std.enums.values(Command).len][]const u8 = undefined;
@@ -243,6 +244,7 @@ pub fn select(app: *App, selection: config.ModelSelection, note: ?[]const u8) !v
     };
     if (fresh) {
         app.transcript.clear(gpa);
+        app.resetPages();
         app.background_count = 0;
         app.usage = .{};
         app.steps = 0;
@@ -264,6 +266,7 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
     const session = app.session;
     switch (c) {
         .simple => try app.toggleSimple(),
+        .pages => try app.togglePages(),
         .status => {
             if (app.cfg.codexServiceTier() != null) try app.report(.info, "Fast requested", .{});
             const skills = session.log.skills;
@@ -427,6 +430,7 @@ pub fn execute(app: *App, c: Command, arg: []const u8, line: []const u8) !void {
             app.transcript.clear(gpa);
             app.background_count = 0;
             try app.transcript.addHistory(gpa, session.history.items);
+            app.resetPages();
             app.usage = .{};
             app.steps = 0;
             app.last_summary = null;

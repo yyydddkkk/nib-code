@@ -98,6 +98,7 @@ pub const KeySource = enum { none, env, store };
 
 pub const Config = struct {
     simple: bool = false,
+    turn_pages: bool = false,
     open: ?[]const u8 = null,
     sandbox: Sandbox = .{},
     hooks: Hooks = .{},
@@ -269,6 +270,7 @@ pub const Message = struct {
     tool_summary: ?@import("session/tool_summary.zig").Summary = null,
     step_calls_omitted: ?u64 = null,
     source: ?enum { background, undo } = null,
+    interjection: ?bool = null,
     background_id: ?[]const u8 = null,
     background_ok: ?bool = null,
     background_run: ?@import("session/events.zig").RunCompletion = null,

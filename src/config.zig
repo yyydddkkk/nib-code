@@ -28,6 +28,7 @@ pub const savePlugin = edit_mod.savePlugin;
 pub const saveMcp = edit_mod.saveMcp;
 pub const saveSkill = edit_mod.saveSkill;
 pub const saveSimple = edit_mod.saveSimple;
+pub const saveUi = edit_mod.saveUi;
 
 pub fn home(a: Allocator, env: *const Env) ![]const u8 {
     if (env.get("NIB_HOME")) |value| return a.dupe(u8, value);
