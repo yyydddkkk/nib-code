@@ -1,6 +1,12 @@
 const std = @import("std");
 
-pub const Policy = enum(u8) { legacy, credentials_v1 };
+pub const Policy = enum(u8) {
+    legacy,
+    credentials_v1,
+    diagnostics_v2,
+
+    pub const current: Policy = .diagnostics_v2;
+};
 pub const marker = "[REDACTED]";
 pub const Text = enum { plain, rendered };
 
@@ -44,10 +50,12 @@ pub fn mask(a: std.mem.Allocator, text: []const u8, mode: Text) !?[]u8 {
     return maskAt(a, text, mode, null);
 }
 
-pub fn maskAt(a: std.mem.Allocator, text: []const u8, mode: Text, location: ?*usize) !?[]u8 {
+pub const Location = struct { byte: usize, exact: bool = true };
+
+pub fn maskAt(a: std.mem.Allocator, text: []const u8, mode: Text, location: ?*Location) !?[]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(a);
-    const point = if (location) |pos| pos.* else 0;
+    const point = if (location) |pos| pos.byte else 0;
     var quoted = false;
     var start: usize = 0;
     var copied: usize = 0;
@@ -69,7 +77,12 @@ pub fn maskAt(a: std.mem.Allocator, text: []const u8, mode: Text, location: ?*us
         if ((byte == 'g' or byte == 's') and credential(text[start..end])) {
             try out.appendSlice(a, text[copied..start]);
             if (location) |pos| {
-                if (point >= end) pos.* -= end - start - marker.len else if (point >= start) pos.* = out.items.len;
+                if (point >= end) {
+                    pos.byte -= end - start - marker.len;
+                } else if (point >= start) {
+                    pos.byte = out.items.len;
+                    pos.exact = point == start;
+                }
             }
             try out.appendSlice(a, marker);
             copied = end;

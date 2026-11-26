@@ -164,7 +164,7 @@ class ReplayTests(unittest.TestCase):
         calls = jsonl(path)
         self.assertEqual(calls[0]["args"], {"path": "sample.txt"})
         self.assertEqual(json.loads(calls[0]["result"])["text"], raw)
-        self.assertEqual(calls[-1]["meta"]["output_policy"], 1)
+        self.assertEqual(calls[-1]["meta"]["output_policy"], 2)
         current = self.replay(session, "--run", "1:0")
         self.assertIs(current["match"], True)
         self.assertEqual(current["output"], "before: [REDACTED] :after")
@@ -191,6 +191,24 @@ class ReplayTests(unittest.TestCase):
             'console.log(await tools.bash({command: "printf side > side-effect; printf bash-output"}));',
         ])
 
+    def test_syntax_excerpt_replays_in_recorded_format(self):
+        session = self.ask(['/* ' + SYNTHETIC_TOKEN + ' ' + '你' * 12 + ' */ const broken = ;'])
+        current = self.replay(session, "--run", "1:0")
+        self.assertIs(current["match"], True)
+        self.assertRegex(current["output"], r"source line 1: .*\[REDACTED\].*;\n +\^\n")
+        assert_no_token(self, current["output"])
+        path = self.calls_path(session)
+        calls = jsonl(path)
+        calls[-1]["meta"]["output_policy"] = 1
+        path.write_text("".join(json.dumps(row) + "\n" for row in calls))
+        main = self.home / "sessions" / f"{session}.jsonl"
+        legacy_text = re.sub(r"\n +\^\n", "\n", current["output"])
+        main.write_text(main.read_text().replace(json.dumps(current["output"], ensure_ascii=False),
+                                                json.dumps(legacy_text, ensure_ascii=False)))
+        legacy = self.replay(session, "--run", "1:0")
+        self.assertIs(legacy["match"], True)
+        self.assertEqual(legacy["output"], legacy_text)
+
     def test_patch_rerun_resume_validation_and_replay(self):
         code = 'console.log(await tools.bash({command: "echo effect >> effects"})); throw new Error("bad");'
         session = self.ask([code])
@@ -204,10 +222,16 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(report["matched"], 3, report)
         for args in [repair("5:0", "fixed", "wrong"), repair("99:0", "x", "y"),
                      repair("1:0", "", "x"), repair("1:0", "missing", "x"),
-                     repair("1:0", ";", "x"), {"base": "1:0", "edits": []},
-                     {"base": "1:0", "edits": [{"old_text": '"bad"', "new_text": '"changed"'},
-                                                   {"old_text": "absent", "new_text": "x"}]}]:
+                     repair("1:0", ";", "x"), {"base": "1:0", "edits": []}]:
             self.ask([args], resume=session)
+        for old_text, reason in [("", "is empty"), ('"bad"', "did not match"), ('"changed"', "matched more than once")]:
+            self.ask([{"base": "1:0", "edits": [
+                {"old_text": '"bad"', "new_text": '"changed" + "changed"'},
+                {"old_text": old_text, "new_text": "x"},
+            ]}], resume=session)
+            diagnostic = [m["content"] for m in self.mock.requests[-1]["messages"] if m["role"] == "tool"][-1]
+            self.assertIn(f"edit 2 of 2: old_text {reason}", diagnostic)
+            self.assertNotIn('"changed"', diagnostic)
         self.assertEqual((self.cwd / "effects").read_text().splitlines(), ["effect"] * 3)
         records = jsonl(self.home / "sessions" / f"{session}.jsonl")
         sources = [r["source"] for r in records if "source" in r]
