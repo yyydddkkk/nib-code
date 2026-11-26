@@ -122,10 +122,10 @@ const Engine = struct {
 };
 
 pub fn execute(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entries: []const Entry, start_ms_epoch: i64, end: record.End, script_mode: bool) !Report {
-    return executeSession(gpa, io, code, entries, start_ms_epoch, end, script_mode, false);
+    return executeSession(gpa, io, code, entries, start_ms_epoch, end, script_mode, false, .credentials_v1);
 }
 
-pub fn executeSession(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entries: []const Entry, start_ms_epoch: i64, end: record.End, script_mode: bool, child: bool) !Report {
+pub fn executeSession(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entries: []const Entry, start_ms_epoch: i64, end: record.End, script_mode: bool, child: bool, policy: sandbox.redaction.Policy) !Report {
     var engine: Engine = .{ .gpa = gpa, .entries = entries, .script = script_mode, .incomplete = end == .timeout or end == .cancelled };
     defer {
         for (engine.bindings.items) |binding| if (binding.missing) |msg| gpa.free(msg);
@@ -146,7 +146,7 @@ pub fn executeSession(gpa: std.mem.Allocator, io: std.Io, code: []const u8, entr
         engine.incomplete = engine.incomplete or entry.truncated;
     }
     var virtual: sandbox.Virtual = .{ .ctx = &engine, .create = Engine.create, .select = Engine.select, .result = Engine.result, .stopped = Engine.stopped, .start_ms_epoch = start_ms_epoch };
-    const outcome = try sandbox.eval(gpa, io, code, .{}, .{ .ctx = &engine, .names = names.items, .call = Engine.forbidden, .virtual = &virtual }, null);
+    const outcome = try sandbox.eval(gpa, io, code, .{ .output_policy = policy }, .{ .ctx = &engine, .names = names.items, .call = Engine.forbidden, .virtual = &virtual }, null);
     errdefer outcome.deinit(gpa);
     if (engine.failed) return error.OutOfMemory;
     if (!script_mode and engine.divergence == null and (engine.bindings.items.len != entries.len or engine.seq != entries.len)) {

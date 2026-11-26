@@ -1,6 +1,7 @@
 const std = @import("std");
 const Tools = @import("../tools.zig").Tools;
 const process = @import("../tools/process.zig");
+const redaction = @import("../sandbox/redaction.zig");
 pub const timeout_ms = 30_000;
 pub const Failure = struct { command: []const u8, exit_code: i32, output: []const u8 };
 
@@ -49,7 +50,10 @@ pub fn run(t: *Tools, a: std.mem.Allocator, event: []const u8, commands: []const
             output = result.output;
         } else |err| output = @errorName(err);
         const duration: u64 = @intCast(@max(command_start.untilNow(t.io).raw.toMilliseconds(), 0));
-        if (t.background.log) |log| try log.hook(t.io, a, event, command, code, duration);
+        if (t.background.log) |log| {
+            const masked = if (std.mem.eql(u8, event, "after_edit")) try redaction.mask(a, command, .rendered) else null;
+            try log.hook(t.io, a, event, masked orelse command, code, duration);
+        }
         if (code != 0) return .{ .command = command, .exit_code = code, .output = output };
     }
     return null;
@@ -64,8 +68,15 @@ pub fn afterEdit(t: *Tools, gpa: std.mem.Allocator, tracker: *const @import("../
     const paths = try a.alloc([]const u8, tracker.entries.items.len);
     for (tracker.entries.items, paths) |entry, *path| path.* = entry.path;
     if (try run(t, a, "after_edit", cfg.hooks.after_edit, paths, "", timeout_ms)) |failure| {
-        outcome.hook = try std.json.Stringify.valueAlloc(gpa, .{ .hook = failure }, .{});
-        outcome.hook_notice = try std.fmt.allocPrint(gpa, "hook {s} · exit {d}", .{ failure.command, failure.exit_code });
+        const safe: Failure = .{
+            .command = (try redaction.mask(a, failure.command, .rendered)) orelse failure.command,
+            .output = (try redaction.mask(a, failure.output, .plain)) orelse failure.output,
+            .exit_code = failure.exit_code,
+        };
+        const hook = try std.json.Stringify.valueAlloc(gpa, .{ .hook = safe }, .{});
+        errdefer gpa.free(hook);
+        outcome.hook_notice = try std.fmt.allocPrint(gpa, "hook {s} · exit {d}", .{ safe.command, safe.exit_code });
+        outcome.hook = hook;
     }
 }
 
@@ -148,4 +159,27 @@ test "after-edit batches both tracked paths into one failure payload" {
     defer outcome.deinit(t.allocator);
     try afterEdit(&tools, t.allocator, &tracker, &outcome);
     try t.expectEqualStrings("{\"hook\":{\"command\":\"exit 7 # 'first' 'second'\",\"exit_code\":7,\"output\":\"\"}}", outcome.hook);
+}
+
+test "after-edit masks a failed hook without changing the executed command" {
+    const t = std.testing;
+    const secret = redaction.test_openai;
+    const command = "token='" ++ secret ++ "'; [ \"${#token}\" = " ++ std.fmt.comptimePrint("{d}", .{secret.len}) ++ " ] || exit 2; printf '%s' \"$token\"; exit 7";
+    var tools: Tools = .{ .io = t.io, .home = "/unused", .cfg = .{ .base_url = "", .api_key = "", .model = "mock", .sandbox = .{ .mode = .off }, .hooks = .{ .after_edit = &.{command} } } };
+    var tracker: @import("../tools/changes.zig").Tracker = .{};
+    defer tracker.discard(t.allocator);
+    const cwd = try std.process.currentPathAlloc(t.io, t.allocator);
+    defer t.allocator.free(cwd);
+    const path = try std.fs.path.join(t.allocator, &.{ cwd, "file" });
+    defer t.allocator.free(path);
+    try tracker.record(t.allocator, path, null, "edited");
+    var outcome: @import("../sandbox.zig").Outcome = .{ .ok = true, .text = &.{}, .logs = &.{} };
+    defer outcome.deinit(t.allocator);
+    try afterEdit(&tools, t.allocator, &tracker, &outcome);
+    const payload = try std.json.parseFromSlice(struct { hook: Failure }, t.allocator, outcome.hook, .{});
+    defer payload.deinit();
+    try t.expectEqual(@as(i32, 7), payload.value.hook.exit_code);
+    try t.expectEqualStrings(redaction.marker, payload.value.hook.output);
+    try t.expect(std.mem.indexOf(u8, payload.value.hook.command, "token='[REDACTED]'") != null);
+    try t.expect(std.mem.indexOf(u8, outcome.hook_notice, "token='[REDACTED]'") != null);
 }

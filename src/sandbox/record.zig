@@ -215,7 +215,7 @@ pub const Recorder = struct {
     }
 
     fn flush(r: *Recorder, end: End) !void {
-        try r.line(.{ .step = r.step, .run = r.run, .meta = .{ .start_ms_epoch = r.start_ms_epoch, .run_output_bytes = r.run_output_bytes, .end = @tagName(end), .incomplete = if (r.incomplete) @as(?bool, true) else null } });
+        try r.line(.{ .step = r.step, .run = r.run, .meta = .{ .start_ms_epoch = r.start_ms_epoch, .run_output_bytes = r.run_output_bytes, .output_policy = @backingInt(@import("redaction.zig").Policy.credentials_v1), .end = @tagName(end), .incomplete = if (r.incomplete) @as(?bool, true) else null } });
         const target = r.parent orelse r;
         target.mutex.lockUncancelable(r.io);
         defer target.mutex.unlock(r.io);

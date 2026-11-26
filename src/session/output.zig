@@ -345,6 +345,54 @@ test "console capture limit preserves later entries and exact omission counts" {
     try testing.expect(std.mem.indexOf(u8, out, "[console output truncated]") == null);
 }
 
+test "credential masking precedes console and artifact cuts and drives omission counts" {
+    const token = sandbox.redaction.test_github;
+    const script = "const t = '" ++ token ++ "'; console.log('x'.repeat(27) + ':' + t + ' ' + '界'.repeat(20) + ' ' + t + ':tail');";
+    const o = try evaluate(script, .{ .max_log_bytes = 64, .max_full_log_bytes = 134 });
+    defer o.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 116), o.log_bytes);
+    try testing.expect(o.log_truncated);
+    try testing.expect(!o.full_logs_truncated);
+    const partial = try evaluate(script, .{ .max_log_bytes = 64, .max_full_log_bytes = 101 });
+    defer partial.deinit(testing.allocator);
+    try testing.expect(partial.full_logs_truncated);
+    try testing.expectEqual(@as(usize, 101), partial.full_logs.len);
+    try testing.expect(std.mem.endsWith(u8, partial.full_logs, "["));
+    const formatted = try format(testing.allocator, o, 96);
+    defer testing.allocator.free(formatted);
+    try testing.expect(formatted.len <= 96);
+    for ([_][]const u8{ o.logs, o.full_logs, partial.full_logs, formatted }) |text| {
+        try testing.expect(std.unicode.utf8ValidateSlice(text));
+        for ([_][]const u8{ token, token[0..4], token[token.len - 12 ..] }) |part| {
+            try testing.expect(std.mem.indexOf(u8, text, part) == null);
+        }
+    }
+    try testing.expect(std.mem.indexOf(u8, o.logs, "of 116 bytes omitted") != null);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, o.full_logs, sandbox.redaction.marker));
+}
+
+test "completion masking precedes the final output budget" {
+    const token = sandbox.redaction.test_github;
+    const script = "'x'.repeat(60) + ': ' + '" ++ token ++ "' + ' : ' + '界'.repeat(1000) + ':tail'";
+    const legacy = try evaluate(script, .{ .output_policy = .legacy });
+    defer legacy.deinit(testing.allocator);
+    const before = try format(testing.allocator, legacy, 256);
+    defer testing.allocator.free(before);
+    try testing.expect(std.mem.indexOf(u8, before, token) == null);
+    try testing.expect(std.mem.indexOf(u8, before, token[0..12]) != null);
+
+    const masked = try evaluate(script, .{});
+    defer masked.deinit(testing.allocator);
+    const after = try format(testing.allocator, masked, 256);
+    defer testing.allocator.free(after);
+    try testing.expect(after.len <= 256);
+    try testing.expect(std.unicode.utf8ValidateSlice(after));
+    try testing.expect(std.mem.indexOf(u8, after, ": [REDACTED] : ") != null);
+    try testing.expect(std.mem.indexOf(u8, after, token[0..12]) == null);
+    try testing.expect(std.mem.indexOf(u8, after, token[token.len - 12 ..]) == null);
+    try testing.expect(std.mem.endsWith(u8, after, ":tail\"\n"));
+}
+
 test "many console entries have bounded metadata and a numbered omission range" {
     const o = try evaluate("for (let i = 0; i < 10000; i++) console.log('x');", .{});
     defer o.deinit(testing.allocator);

@@ -30,7 +30,7 @@ Without --script, execute original main-log Run code. Match calls in creation or
 
 `tools.sleep(ms)` also records normal arguments/results/rejections. Replay returns recordings without timers/waits or advancing fixed `Date.now()`; bound polling by count rather than wall deadlines alone.
 
-Format with normal Run rules and compare byte-for-byte against the Run’s own output in the main log, excluding any folded Inbox text. Background Runs use their final committed completion, not the original registration notice. Matching calls with different final output also diverge; match means more than identical arguments.
+Format with normal Run rules and compare byte-for-byte against the Run’s own output in the main log, excluding any folded Inbox text. Background Runs use their final committed completion, not the original registration notice. Matching calls with different final output also diverge; match means more than identical arguments. A new recording includes an `output_policy` version for this comparison (`1` for [credential masking](run-output.md#credential-masking)). Without a version, replay compares using the original capture rules privately. The reported output always uses the current masking policy, and an output mismatch does not include the compared texts.
 
 ### Diagnostic scripts
 
@@ -72,7 +72,7 @@ Every line carries step/run. Each Run writes zero or more call rows, then **one 
 | Row | Fields | Meaning |
 | --- | --- | --- |
 | Call | step, run, index, seq, name, args, ok, result / error | Actual result/rejection, optionally sha256/truncated |
-| Metadata | step, run, `meta: {start_ms_epoch, end, incomplete?}` | Run-start Unix ms and termination: ok/error/timeout/cancelled; incomplete: true only for created tools not delivered to JS |
+| Metadata | step, run, `meta: {start_ms_epoch, end, run_output_bytes?, output_policy?, incomplete?}` | Run-start Unix ms and termination: ok/error/timeout/cancelled; incomplete: true only for created tools not delivered to JS |
 
 index is 0-based Promise creation order; seq is 0-based observed settlement order, potentially different under concurrency. args is a JSON value, not string. First `ok=true` result is **raw serialized tool-return JSON text as a string**; duplicates use `{"same_as":"<sha256>"}` inside result, not top-level. `ok=false` error remains rejection text, **never deduplicated**. Replay restores JS values/rejected Promises.
 
@@ -124,7 +124,7 @@ Replay uses normal default sandbox limits, including 5-minute JS budgets. Origin
 
 ## Privacy and capability boundaries
 
-- Default recording adds disk copies of **actual tool returns**, potentially code/full files/bash output/URLs/personal data/credentials hidden by model truncation. 0600 restricts other local users, not encryption or current-user/backup/tool reads.
+- Opt-in recording adds disk copies of **actual tool returns**, potentially code/full files/bash output/URLs/personal data/credentials hidden by model truncation. 0600 restricts other local users, not encryption or current-user/backup/tool reads.
 - Sidecars do not automatically enter provider requests/resume history/reflection. Reflection permits only the specified main log, no sessions enumeration or calls/sibling/child logs. Session lists/stats skip calls too; public issues retain redaction. These are prompt/dataflow boundaries, not malicious-model filesystem isolation.
 - Disabling does not delete recordings. Inspect main/sidecar files separately before sharing/backup/cleanup; redacted main logs do not imply redacted sidecars. Never upload `.calls.jsonl` to public issues.
 - Replay **cannot replay models**, restore reasoning, or test another model’s decisions: saved Runs are not reproducible provider requests.

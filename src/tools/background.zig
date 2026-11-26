@@ -128,7 +128,7 @@ pub const Background = struct {
             defer gpa.free(prefix);
             const outputs_dir = try t.outputsDir(gpa);
             defer if (outputs_dir) |dir| gpa.free(dir);
-            const raw_full: ?[]u8 = switch (job.kind) {
+            const full_text: ?[]u8 = switch (job.kind) {
                 .bash => if (parsed.value.object.get("output")) |out_val| switch (out_val) {
                     .string => |text| blk: {
                         if (std.mem.eql(u8, state, "timed_out")) {
@@ -149,9 +149,9 @@ pub const Background = struct {
                 } else null,
                 .run => unreachable,
             };
-            defer if (raw_full) |raw| gpa.free(raw);
+            defer if (full_text) |text| gpa.free(text);
             const save: ?output.Save = if (outputs_dir) |dir| .{ .io = t.io, .dir = dir } else null;
-            const formatted = try output.formatMessageSaved(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save, raw_full);
+            const formatted = try output.formatMessageSaved(gpa, prefix, json, if (t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save, full_text);
             defer gpa.free(formatted);
             if (job.kind == .agent) {
                 t.agent_sessions.mutex.lockUncancelable(t.io);
@@ -525,15 +525,56 @@ pub const Background = struct {
 };
 
 fn messageResult(gpa: std.mem.Allocator, kind: BackgroundEvent.Kind, id: []const u8, result: @import("../sandbox.zig").ToolResult) ![]u8 {
-    if (result == .err) return if (kind == .agent)
-        std.json.Stringify.valueAlloc(gpa, .{ .ok = false, .id = id, .text = "", .changes = @as([]const struct {}, &.{}), .@"error" = result.err }, .{})
-    else
-        std.json.Stringify.valueAlloc(gpa, .{ .@"error" = result.err }, .{});
-    if (kind == .bash) return gpa.dupe(u8, result.ok);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (result == .err) {
+        const safe = try maskText(a, result.err);
+        return if (kind == .agent)
+            std.json.Stringify.valueAlloc(gpa, .{ .ok = false, .id = id, .text = "", .changes = @as([]const struct {}, &.{}), .@"error" = safe }, .{})
+        else
+            std.json.Stringify.valueAlloc(gpa, .{ .@"error" = safe }, .{});
+    }
+    if (kind == .bash) {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, result.ok, .{});
+        try maskField(a, parsed, "output");
+        return std.json.Stringify.valueAlloc(gpa, parsed, .{});
+    }
     const Parsed = struct { ok: bool, id: ?[]const u8 = null, text: []const u8, changes: std.json.Value, @"error": ?[]const u8 = null };
-    const parsed = try std.json.parseFromSlice(Parsed, gpa, result.ok, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    return std.json.Stringify.valueAlloc(gpa, parsed.value, .{ .emit_null_optional_fields = false });
+    var parsed = try std.json.parseFromSliceLeaky(Parsed, a, result.ok, .{ .ignore_unknown_fields = true });
+    parsed.text = try maskText(a, parsed.text);
+    if (parsed.@"error") |text| parsed.@"error" = try maskText(a, text);
+    if (parsed.changes == .array) for (parsed.changes.array.items) |change| try maskField(a, change, "path");
+    return std.json.Stringify.valueAlloc(gpa, parsed, .{ .emit_null_optional_fields = false });
+}
+
+fn maskText(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    return (try @import("../sandbox/redaction.zig").mask(a, text, .plain)) orelse text;
+}
+
+fn maskField(a: std.mem.Allocator, value: std.json.Value, key: []const u8) !void {
+    if (value != .object) return error.InvalidBackgroundResult;
+    if (value.object.getPtr(key)) |field| if (field.* == .string) {
+        field.string = try maskText(a, field.string);
+    };
+}
+
+test "background agent text and failures are masked before formatting" {
+    const t = std.testing;
+    const token = @import("../sandbox/redaction.zig").test_openai;
+    for ([_]@import("../sandbox.zig").ToolResult{
+        .{ .ok = @constCast("{\"ok\":true,\"id\":\"a1\",\"text\":\"\\n" ++ token ++ "\",\"changes\":[{\"path\":\"" ++ token ++ "\"}],\"usage\":{}}") },
+        .{ .ok = @constCast("{\"ok\":false,\"id\":\"a1\",\"text\":\"partial\",\"changes\":[],\"error\":\"failure: " ++ token ++ "\"}") },
+        .{ .err = @constCast("failed: " ++ token) },
+    }, [_][]const u8{
+        "{\"ok\":true,\"id\":\"a1\",\"text\":\"\\n[REDACTED]\",\"changes\":[{\"path\":\"[REDACTED]\"}]}",
+        "{\"ok\":false,\"id\":\"a1\",\"text\":\"partial\",\"changes\":[],\"error\":\"failure: [REDACTED]\"}",
+        "{\"ok\":false,\"id\":\"a1\",\"text\":\"\",\"changes\":[],\"error\":\"failed: [REDACTED]\"}",
+    }) |result, expected| {
+        const published = try messageResult(t.allocator, .agent, "a1", result);
+        defer t.allocator.free(published);
+        try t.expectEqualStrings(expected, published);
+    }
 }
 
 test "background worker failures are reported once and stop being pending" {

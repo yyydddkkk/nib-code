@@ -4,6 +4,7 @@ from mock_http import ThreadingHTTPServer
 import http.server
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import signal
@@ -15,6 +16,7 @@ import time
 import unittest
 
 from mock_agent import reply
+from redaction_fixtures import SYNTHETIC_TOKEN, assert_no_token
 from test_agent import alive
 from test_agent_reuse import system
 from test_interjections import Terminal
@@ -106,7 +108,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if index == 0:
                 status = int(case.removeprefix("user-wait-"))
                 command = ("while [ ! -e release-worker ]; do sleep .02; done; sleep .2; "
-                           f"printf complete > artifact; printf worker-result; exit {status}")
+                           f"printf complete > artifact; cat fixture.txt; exit {status}")
                 code = "await tools.bash(" + json.dumps(dict(command=command, background=True)) + ")"
             elif index == 1:
                 code = "await tools.write({path:'expected',content:'complete'})"
@@ -136,7 +138,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif case == "reject":
                 code = "await tools.sleep(200); throw new Error('late failure')"
             elif case == "budget":
-                code = "console.log('prefix-before-yield'); await tools.sleep(200); console.log('x'.repeat(40000)); 'tail-result'"
+                code = ("console.log('prefix-before-yield'); await tools.sleep(200); "
+                        "const r = await tools.read({path:'fixture.txt'}); console.log(r.text); 'tail-result'")
             elif case == "multiple":
                 code = "await tools.sleep(400); await tools.write({path:'first.txt',content:'first'}); 'first-result'"
             elif case == "slots":
@@ -563,6 +566,7 @@ class BackgroundRunTests(unittest.TestCase):
 
     def test_codex_user_delivery_waits_by_id_then_verifies(self):
         self.use_codex()
+        (self.cwd / "fixture.txt").write_text("worker-result: " + SYNTHETIC_TOKEN)
         for status in (0, 7):
             with self.subTest(status=status):
                 self.server.case = f"user-wait-{status}"
@@ -580,7 +584,7 @@ class BackgroundRunTests(unittest.TestCase):
                 result = json.loads(runs[2]["output"].removeprefix("result: "))
                 waited, = result["results"]
                 self.assertEqual((waited["id"], waited["kind"], waited["ok"]), ("b1", "bash", status == 0))
-                self.assertEqual(json.loads(waited["output"]), {"exit_code": status, "output": "worker-result"})
+                self.assertEqual(json.loads(waited["output"]), {"exit_code": status, "output": "worker-result: [REDACTED]"})
                 self.assertEqual(json.loads(runs[3]["output"].removeprefix("result: ")),
                                  {"exit_code": 0, "output": "verified"})
                 final = self.server.requests[-1]["input"]
@@ -592,6 +596,7 @@ class BackgroundRunTests(unittest.TestCase):
                 self.assertEqual(finished["id"], "b1")
                 self.assertFalse(any(m.get("waiting") for row in rows for m in row.get("messages", [])))
                 self.assertEqual(events[-1]["end"]["text"], "done")
+                assert_no_token(self, json.dumps(events), json.dumps(rows), json.dumps(final))
 
     def test_tool_delivery_falls_back_to_a_user_message_when_the_model_waits_by_replying(self):
         self.server.case = "wait"
@@ -629,6 +634,7 @@ class BackgroundRunTests(unittest.TestCase):
         self.assertIn("waited for background tasks: run r1", events[-1]["error"]["message"])
 
     def test_late_failure_and_console_budget(self):
+        (self.cwd / "fixture.txt").write_text("start: " + SYNTHETIC_TOKEN + " " + "x" * 40000)
         for case in ("reject", "budget"):
             with self.subTest(case=case):
                 self.server.case = case
@@ -644,6 +650,10 @@ class BackgroundRunTests(unittest.TestCase):
                     self.assertIn("prefix-before-yield", output)
                     self.assertIn("tail-result", output)
                     self.assertIn("omitted", output)
+                    self.assertIn("start: [REDACTED]", output)
+                    artifact = Path(re.search(r"\[full output: ([^\]]+)\]", output)[1]).read_text()
+                    self.assertIn("start: [REDACTED]", artifact)
+                    assert_no_token(self, json.dumps(events), json.dumps(rows), json.dumps(self.server.requests), artifact)
 
     def test_multiple_runs_keep_changes_separate(self):
         self.server.case = "multiple"

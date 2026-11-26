@@ -17,6 +17,7 @@ import time
 import unittest
 
 from background_assertions import stop_result
+from redaction_fixtures import SYNTHETIC_TOKEN, assert_no_token
 
 import mock_agent
 from background_assertions import assert_background_bytes, root_records
@@ -245,6 +246,8 @@ class Mock(ThreadingHTTPServer):
                 for command in commands) + "; results"
         if self.case == "child_bash":
             return "await tools.agent({prompt:'child:bash'})"
+        if self.case == "agent-redaction":
+            return "await tools.agent({prompt:'child:redaction',background:true})"
         if self.case == "run_failure":
             return "await " + bash(self.waiting_command()) + "; throw new Error('launching Run failed')"
         if self.case == "limit":
@@ -255,7 +258,7 @@ class Mock(ThreadingHTTPServer):
             return "try { await " + bash("sudo true") + " } catch(e) { e.message }"
         if self.case == "timeout":
             program = ("import os,time,pathlib; pathlib.Path('worker.started').write_text(str(os.getpid())); "
-                       "print('before-timeout', flush=True); time.sleep(30); print('after-timeout')")
+                       "print(pathlib.Path('fixture.txt').read_text(), flush=True); time.sleep(30); print('after-timeout')")
             return "await " + bash(shlex.join([sys.executable, "-c", program]), cwd="nested", timeout_ms=500)
         if self.case == "nonzero":
             return "await " + bash("echo failed; exit 7")
@@ -267,7 +270,7 @@ class Mock(ThreadingHTTPServer):
             return "await " + bash(command, timeout_ms=2000)
         if self.case == "long":
             return "await " + bash(shlex.join([sys.executable, "-c",
-                                              'print("head:" + "中文🙂" * 10000 + ":tail")']))
+                                              'import pathlib; print("head: " + pathlib.Path("fixture.txt").read_text() + " " + "中文🙂" * 10000 + ":tail")']))
         if self.case == "cancel":
             program = ("import os,time,pathlib; pathlib.Path('worker.started').write_text(str(os.getpid())); "
                        "time.sleep(30)")
@@ -309,6 +312,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif prompt == "child:one":
             self.server.child_gate.wait(15)
             text = "child complete"
+        elif prompt == "child:redaction":
+            text = "agent head: " + SYNTHETIC_TOKEN + " " + "a" * 20000 + " agent tail"
         elif prompt == "child:bash":
             if step == 0:
                 code, text = "await " + bash("echo child-bash-done"), "child started"
@@ -959,7 +964,20 @@ class BackgroundBashTests:
         self.completion(mock.requests[-1]["messages"])
         self.assertEqual(events[-1]["end"]["text"], "complete")
 
+    def test_background_agent_redacts_completion_and_artifact(self):
+        mock = self.mock("agent-redaction")
+        events = self.finish(self.start())
+        requests = mock.observed()
+        message = next(content(m) for m in requests[-1]["messages"]
+                       if content(m).startswith("[background agent a1 finished]\n"))
+        self.assertIn("agent head: [REDACTED]", message)
+        saved = Path(re.search(r"\[full output: ([^\]]+)\]", message)[1]).read_text()
+        self.assertTrue(saved.startswith("agent head: [REDACTED]"))
+        self.assertIn("agent tail", saved)
+        assert_no_token(self, saved, json.dumps(events), json.dumps(self.log(events)), json.dumps(requests))
+
     def test_large_output_is_bounded(self):
+        (self.cwd / "fixture.txt").write_text(SYNTHETIC_TOKEN)
         mock = self.mock("long")
         events = self.finish(self.start())
         message = self.completion(mock.observed()[-1]["messages"])
@@ -974,7 +992,9 @@ class BackgroundBashTests:
         saved_match = re.search(r"\[full output: ([^\]]+)\]", content(message))
         self.assertIsNotNone(saved_match, content(message)[-240:])
         saved_text = Path(saved_match.group(1)).read_text()
-        self.assertTrue(saved_text.startswith("exit_code: 0\n\nhead:"))
+        self.assertTrue(saved_text.startswith("exit_code: 0\n\nhead: [REDACTED]"))
+        self.assertIn("head: [REDACTED]", content(message))
+        assert_no_token(self, saved_text, json.dumps(events), json.dumps(self.log(events)), json.dumps(mock.requests))
         self.assertIn(":tail", saved_text)
         self.assertGreater(len(saved_text.encode("utf-8")), 16 * 1024)
 
@@ -998,12 +1018,14 @@ class BackgroundBashTests:
         mock = self.mock("timeout")
         nested = self.cwd / "nested"
         nested.mkdir()
+        (nested / "fixture.txt").write_text("before-timeout: " + SYNTHETIC_TOKEN)
         events = self.finish(self.start())
         result = json.loads(content(self.completion(mock.observed()[-1]["messages"])).split("\n", 1)[1])
         self.assertIs(result["timed_out"], True)
         self.assertIsNone(result["exit_code"])
         self.assertGreaterEqual(result["elapsed_ms"], 500)
-        self.assertEqual(result["output"], "before-timeout\n")
+        self.assertEqual(result["output"], "before-timeout: [REDACTED]\n")
+        assert_no_token(self, json.dumps(events), json.dumps(self.log(events)), json.dumps(mock.requests))
         self.assertFalse(next(e["background"]["ok"] for e in events
                               if e.get("background", {}).get("state") == "finished"))
         self.assertIn("timed_out", [e["progress"]["state"] for e in events
