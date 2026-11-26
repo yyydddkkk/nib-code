@@ -594,20 +594,21 @@ pub const App = struct {
             try providers.key(app, k);
             return true;
         }
-        if (app.cfg.turn_pages and app.pages.focus == .blank and k.matches(vaxis.Key.left, .{}) and app.currentPage().count > 0) {
-            app.pages.focus = .page;
+        if (app.cfg.turn_pages and (k.matches(vaxis.Key.left, .{ .ctrl = true }) or k.matches(vaxis.Key.right, .{ .ctrl = true }))) {
+            try app.flipPage(k.matches(vaxis.Key.right, .{ .ctrl = true }));
             return true;
         }
         if (app.cfg.turn_pages and app.pages.focus == .page) {
-            if (k.matches(vaxis.Key.left, .{}) or k.matches(vaxis.Key.right, .{})) {
-                try app.flipPage(k.matches(vaxis.Key.right, .{}));
+            if (k.matches(vaxis.Key.left, .{}) or k.matches(vaxis.Key.right, .{})) return true;
+            if (k.matches(vaxis.Key.enter, .{})) {
+                try app.openDraft(.editing);
                 return true;
             }
             if (k.matches(vaxis.Key.up, .{}) or k.matches(vaxis.Key.down, .{})) {
                 app.scroll.pending += if (k.matches(vaxis.Key.up, .{})) @as(i64, -1) else 1;
                 return true;
             }
-            if (k.matches(vaxis.Key.enter, .{}) or k.matches(vaxis.Key.tab, .{}) or k.text != null or k.matches('v', .{ .ctrl = true }) or isNewline(k, false)) {
+            if (k.matches(vaxis.Key.tab, .{}) or k.text != null or k.matches('v', .{ .ctrl = true }) or isNewline(k, false)) {
                 try app.openDraft(.editing);
             }
         }
@@ -1014,7 +1015,11 @@ pub const App = struct {
 
     fn flipPage(app: *App, forward: bool) !void {
         const page = app.currentPage();
-        if (forward and page.latest()) return app.openDraft(.blank);
+        if (app.pages.focus != .page) {
+            if (!forward and page.count > 0) app.pages.focus = .page;
+            return;
+        }
+        if (forward and page.latest()) return app.openDraft(if (app.input.text().len == 0) .blank else .editing);
         if (!forward and page.index == 0) return;
         app.flight = null;
         app.body = null;
@@ -1117,8 +1122,8 @@ pub const App = struct {
             view.drawDraft(win, visible_input, menu, selected, s, &app.status_text);
             app.body = null;
         } else {
-            const transition: ?view.Transition = if (app.flight) |f| if (f.sample(.now(app.io, .awake), win.width, win.height)) |p|
-                .{ .prompt = p, .wrap = f.from.bodyWidth(), .text = app.flight_text.items }
+            const transition: ?view.Transition = if (app.flight) |f| if (f.sample(.now(app.io, .awake), win.width, win.height)) |frame|
+                .{ .frame = frame, .wrap = f.from.bodyWidth(), .text = app.flight_text.items, .base_bg = app.terminal_bg }
             else
                 null else null;
             if (transition == null) app.flight = null;

@@ -33,14 +33,27 @@ fn mark(win: vaxis.Window, p: pages.Prompt, bg: vaxis.Color) void {
     if (p.width > 2) win.writeCell(p.x, p.y, .{ .char = .{ .grapheme = ">", .width = 1 }, .style = .{ .dim = true, .bg = bg } });
 }
 
-fn headingStyle(win: vaxis.Window, p: pages.Prompt, s: status.Status) vaxis.Style {
-    const bg = if (s.user_bg != .default) s.user_bg else s.run_hover_bg;
+fn headingBackground(s: status.Status) vaxis.Color {
+    return if (s.user_bg != .default) s.user_bg else s.run_hover_bg;
+}
+
+fn shadeHeading(win: vaxis.Window, p: pages.Prompt, bg: vaxis.Color) void {
     if (bg != .default) win.child(.{ .x_off = p.x, .y_off = p.y - p.pad, .width = p.width, .height = p.rows + p.pad * 2 }).fill(.{
         .char = .{ .grapheme = " ", .width = 1 },
         .style = .{ .bg = bg },
     });
     mark(win, p, bg);
-    return .{ .bold = true, .bg = bg };
+}
+
+fn flightBackground(target: vaxis.Color, base: ?[3]u8, tint: f64) vaxis.Color {
+    if (tint <= 0) return .default;
+    if (tint >= 1 or target != .rgb or base == null) return target;
+    var rgb: [3]u8 = undefined;
+    for (&rgb, base.?, target.rgb) |*ch, from, to| {
+        const a: f64 = @floatFromInt(from);
+        ch.* = @intFromFloat(@round(a + (@as(f64, @floatFromInt(to)) - a) * tint));
+    }
+    return .{ .rgb = rgb };
 }
 
 pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candidate, menu_sel: usize, s: status.Status, text: *status.Text) void {
@@ -65,7 +78,12 @@ pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candi
     }
 }
 
-pub const Transition = struct { prompt: pages.Prompt, wrap: u16, text: []const u8 };
+pub const Transition = struct {
+    frame: pages.Flight.Frame,
+    wrap: u16,
+    text: []const u8,
+    base_bg: ?[3]u8,
+};
 
 pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll: *Viewport, transition: ?Transition, s: status.Status, text: *status.Text) ?Frame {
     win.clear();
@@ -73,15 +91,6 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
     if (win.width == 0 or win.height == 0) return null;
     const edge = pages.margin(win.width);
     const width = win.width - 2 * edge;
-    if (transition) |t| {
-        const p = t.prompt;
-        const heading_style = headingStyle(win, p, s);
-        var body = promptBody(win, p);
-        body.width = @min(body.width, t.wrap);
-        _ = body.child(.{ .y_off = -@as(i17, p.skip) }).printSegment(.{ .text = t.text, .style = heading_style }, .{ .wrap = .grapheme });
-        return null;
-    }
-
     var top_row: u16 = 0;
     if (page.heading) |i| {
         const y = pages.headingRow(win.height);
@@ -92,14 +101,30 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         const measured = body.printSegment(.{ .text = head }, .{ .wrap = .grapheme, .commit = false });
         p.rows = @min(p.rows, measured.row +| 1);
         body.height = p.rows;
-        const heading_style = headingStyle(win, p, s);
-        if (measured.row >= p.rows and p.rows > 0) {
-            if (p.rows > 1) _ = body.child(.{ .height = p.rows - 1 }).printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
-            _ = body.child(.{ .y_off = p.rows - 1, .height = 1 }).printSegment(.{ .text = "…", .style = .{ .dim = true, .bg = heading_style.bg } }, .{ .wrap = .none });
-        } else {
-            _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
-        }
         top_row = @min(win.height, y +| p.rows +| pad * 2);
+        if (transition) |t| {
+            const moving = t.frame.prompt;
+            const bg = flightBackground(headingBackground(s), t.base_bg, t.frame.tint);
+            shadeHeading(win, moving, bg);
+            var words = promptBody(win, moving);
+            words.width = @min(words.width, t.wrap);
+            if (moving.skip > 0) {
+                words = words.child(.{ .y_off = -@as(i17, moving.skip) });
+                words.parent_y_off = -@as(i17, moving.skip);
+            }
+            _ = words.printSegment(.{ .text = t.text, .style = .{ .bg = bg } }, .{ .wrap = .grapheme });
+            if (!t.frame.reveal or moving.y +| moving.rows +| moving.pad > top_row) return null;
+        } else {
+            const bg = headingBackground(s);
+            shadeHeading(win, p, bg);
+            const heading_style: vaxis.Style = .{ .bold = true, .bg = bg };
+            if (measured.row >= p.rows and p.rows > 0) {
+                if (p.rows > 1) _ = body.child(.{ .height = p.rows - 1 }).printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
+                _ = body.child(.{ .y_off = p.rows - 1, .height = 1 }).printSegment(.{ .text = "…", .style = .{ .dim = true, .bg = bg } }, .{ .wrap = .none });
+            } else {
+                _ = body.printSegment(.{ .text = head, .style = heading_style }, .{ .wrap = .grapheme });
+            }
+        }
     }
 
     const footer = if (win.height - top_row >= 2) @as(u16, 1) else 0;
@@ -370,16 +395,27 @@ test "Pages frames preserve the draft, moving heading and turn boundary at commo
         var scroll: Viewport = .{};
         const at: std.Io.Clock.Timestamp = .now(testing.io, .awake);
         const f: pages.Flight = .{ .from = from, .at = at, .cols = cols, .rows = 24 };
-        const mid = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(60) }), cols, 24).?;
-        try testing.expectEqual(null, drawPage(win, t.entries.items, page, &scroll, .{ .prompt = mid, .wrap = from.bodyWidth(), .text = question }, s, &text));
+        const base = [3]u8{ 10, 10, 10 };
+        const start = f.sample(at, cols, 24).?;
+        try testing.expectEqual(null, drawPage(win, t.entries.items, page, &scroll, .{ .frame = start, .wrap = from.bodyWidth(), .text = question, .base_bg = base }, s, &text));
         try testing.expect(!screen.cursor_vis);
+        try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(from.x, from.y).?.style.bg);
+        try testing.expect(!screen.readCell(from.x + 2, from.y).?.style.bold);
+
+        const middle = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(140) }), cols, 24).?;
+        const mid = middle.prompt;
+        try testing.expectEqual(null, drawPage(win, t.entries.items, page, &scroll, .{ .frame = middle, .wrap = from.bodyWidth(), .text = question, .base_bg = base }, s, &text));
         try testing.expectEqualStrings(">", screen.readCell(mid.x, mid.y).?.char.grapheme);
         try testing.expectEqualStrings("C", screen.readCell(mid.x + 2, mid.y + 1).?.char.grapheme);
-        try testing.expectEqualDeep(tint, screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows - 1).?.style.bg);
-        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y).?.style.bg);
-        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y - 1).?.style.bg);
-        try testing.expectEqualDeep(tint, screen.readCell(mid.x, mid.y + mid.rows).?.style.bg);
+        const blended = flightBackground(tint, base, middle.tint);
+        try testing.expect(blended.rgb[0] > base[0] and blended.rgb[0] < tint.rgb[0]);
+        try testing.expectEqualDeep(blended, screen.readCell(mid.x + mid.width - 1, mid.y + mid.rows - 1).?.style.bg);
+        try testing.expectEqualDeep(blended, screen.readCell(mid.x, mid.y - 1).?.style.bg);
         try testing.expectEqualDeep(vaxis.Color.default, screen.readCell(mid.x, mid.y + mid.rows + 1).?.style.bg);
+
+        const landing = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(200) }), cols, 24).?;
+        const near = drawPage(win, t.entries.items, page, &scroll, .{ .frame = landing, .wrap = from.bodyWidth(), .text = question, .base_bg = base }, s, &text).?;
+        try testing.expectEqualStrings("F", screen.readCell(@intCast(near.window.x_off), @intCast(near.window.y_off)).?.char.grapheme);
 
         const frame = drawPage(win, t.entries.items, page, &scroll, null, s, &text).?;
         const visible = try snapshot(gpa, &screen);

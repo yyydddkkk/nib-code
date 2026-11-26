@@ -8,7 +8,7 @@ A coding agent written in Zig 0.17, with command name `nib`.
 - Parallel e2e: after `zig build`, run `scripts/test-all.sh [N]` locally (default 4 workers); it reads the list above, prints only failures and a summary, and retains failing logs. Tests use isolated temporary homes and dynamic ports.
 - Install to `~/.local/bin/nib`: `zig build -Doptimize=ReleaseFast --prefix ~/.local`; version in `build.zig.zon`; view with `nib --version`.
 - TUI `/provider` picks a service and signs in (masked key, ChatGPT browser/device login, `Add endpoint…`; `/provider logout <id>`); `/model` picks a model across configured or signed-in services, switching the service too. Both save the choice and start a new Session if Steps already exist. CLI: `nib login [service] [--device]`, `nib logout <service>`. Credentials live in `$NIB_HOME/auth.json` ([ADR 0022](docs/adr/0022-provider-sign-in.md)).
-- TUI Pages mode: `/pages` toggles a persisted one-Turn-at-a-time view (`ui = "pages"`); Left/Right flip Turns when browsing, Right on the latest Turn opens the centered prompt.
+- TUI Pages mode: `/pages` toggles a persisted one-Turn-at-a-time view (`ui = "pages"`); Ctrl+Left/Right flip Turns, Ctrl+Right on the latest Turn opens the centered prompt.
 - TUI view shortcut: Ctrl+S cycles Normal → Simple → Pages → Normal and saves the choice. Ctrl+Shift+S also works when delivered by the terminal. `/simple` still toggles the Simple reading view directly.
 - Run: `./zig-out/bin/nib` (TUI), `nib ask '<prompt>'`, `nib js '<code>'`; use `/compact` in the TUI to compact context manually.
 - Resume: `nib -c` / `nib --continue`; `nib --resume <32-character-lowercase-hex-ID>`. Also supported by `ask`; options may precede or follow the prompt.

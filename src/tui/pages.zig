@@ -69,27 +69,42 @@ pub const Prompt = struct {
 };
 
 pub const Flight = struct {
-    pub const duration = 200;
+    pub const duration = 230;
     from: Prompt,
     at: std.Io.Clock.Timestamp,
     cols: u16,
     rows: u16,
 
-    pub fn sample(f: Flight, at: std.Io.Clock.Timestamp, cols: u16, rows: u16) ?Prompt {
+    pub const Frame = struct {
+        prompt: Prompt,
+        tint: f64,
+        reveal: bool,
+    };
+
+    pub fn sample(f: Flight, at: std.Io.Clock.Timestamp, cols: u16, rows: u16) ?Frame {
         const ms = f.at.durationTo(at).raw.toMilliseconds();
         if (ms >= duration or cols != f.cols or rows != f.rows) return null;
-        const left: f64 = 1 - @as(f64, @floatFromInt(@max(0, ms))) / duration;
-        const t = 1 - left * left * left;
-        const x = mix(f.from.x, margin(cols), t);
-        const right = mix(f.from.x + f.from.width, cols - margin(cols), t);
+        const travel = ease(ms, 0, 194);
+        const spread = ease(ms, 32, 218);
+        const x = mix(f.from.x, margin(cols), travel);
+        const right = mix(x + f.from.width, cols - margin(cols), spread);
         return .{
-            .x = x,
-            .y = mix(f.from.y, headingRow(rows), t),
-            .width = right -| x,
-            .rows = f.from.rows,
-            .skip = f.from.skip,
-            .pad = mix(f.from.pad, headingPadding(rows), t),
+            .prompt = .{
+                .x = x,
+                .y = mix(f.from.y, headingRow(rows), travel),
+                .width = right - x,
+                .rows = f.from.rows,
+                .skip = f.from.skip,
+                .pad = mix(0, headingPadding(rows), spread),
+            },
+            .tint = ease(ms, 32, 196),
+            .reveal = ms >= 180,
         };
+    }
+
+    fn ease(ms: i64, start: i64, end: i64) f64 {
+        const t = @as(f64, @floatFromInt(std.math.clamp(ms, start, end) - start)) / @as(f64, @floatFromInt(end - start));
+        return t * t * (3 - 2 * t);
     }
 
     fn mix(a: u16, b: u16, t: f64) u16 {
@@ -137,11 +152,21 @@ test "Turn pages ignore interjections and keep independent viewports" {
 test "flight opens both sides as it rises, then lands or snaps on resize" {
     const at: std.Io.Clock.Timestamp = .now(std.testing.io, .awake);
     const f: Flight = .{ .from = .{ .x = 47, .y = 15, .width = 26, .rows = 2 }, .at = at, .cols = 120, .rows = 32 };
-    try std.testing.expectEqual(f.from, f.sample(at, 120, 32).?);
-    const mid = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(80) }), 120, 32).?;
-    try std.testing.expect(mid.x < f.from.x and mid.y < f.from.y);
-    try std.testing.expect(mid.x + mid.width > f.from.x + f.from.width);
-    try std.testing.expectEqual(@as(u16, 2), mid.rows);
-    try std.testing.expectEqual(null, f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(200) }), 120, 32));
+    const start = f.sample(at, 120, 32).?;
+    try std.testing.expectEqual(f.from, start.prompt);
+    try std.testing.expectEqual(0, start.tint);
+    const early = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(16) }), 120, 32).?;
+    try std.testing.expect(f.from.x - early.prompt.x <= 1);
+    try std.testing.expectEqual(f.from.width, early.prompt.width);
+    try std.testing.expectEqual(0, early.tint);
+    const mid = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(125) }), 120, 32).?;
+    try std.testing.expect(mid.prompt.x < f.from.x and mid.prompt.y < f.from.y);
+    try std.testing.expect(mid.prompt.x + mid.prompt.width > f.from.x + f.from.width);
+    try std.testing.expectEqual(@as(u16, 2), mid.prompt.rows);
+    try std.testing.expect(mid.tint > 0 and mid.tint < 1 and !mid.reveal);
+    const landing = f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(200) }), 120, 32).?;
+    try std.testing.expect(landing.reveal);
+    try std.testing.expectEqual(@as(u16, 2), landing.prompt.y);
+    try std.testing.expectEqual(null, f.sample(at.addDuration(.{ .clock = .awake, .raw = .fromMilliseconds(Flight.duration) }), 120, 32));
     try std.testing.expectEqual(null, f.sample(at, 60, 32));
 }

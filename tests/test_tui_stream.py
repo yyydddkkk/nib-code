@@ -151,6 +151,7 @@ def test_large_paste_does_not_redraw_per_key(tmp):
 
 def test_turn_pages(tmp):
     first, second = Reply("First page answer"), Reply("Second page answer", gated=True)
+    prev, next_page = "\x1b[1;5D", "\x1b[1;5C"
     with fixture(tmp, [first, second]) as (terminal, home, _):
         def visible():
             return screen(terminal.read(), 120, 32)
@@ -170,36 +171,42 @@ def test_turn_pages(tmp):
         assert "─" not in "\n".join(visible())
         assert "01 / 01" in visible()[-1]
 
-        terminal.send("\x1b[C")
+        terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank Turn")
         terminal.send("Second prompt\r")
         assert second.received.wait(5), "second Turn did not start"
         wait_for(lambda: "> Second prompt" in visible()[2], "second prompt lands while the model waits")
-        terminal.send("\x1b[C")
+        terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens a blank page during a running Turn")
-        terminal.send("\x1b[D")
+        terminal.send(prev)
         wait_for(lambda: "> Second prompt" in visible()[2] and "Waiting for model" in visible()[-1],
                  "left returns directly to the running Turn without canceling it")
-        terminal.send("\x1b[C")
+        terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens the draft again")
         terminal.send("draft\x1b[D!")
         wait_for(lambda: "> draf!t" in visible()[15], "left edits once typing begins")
-        terminal.send("\x1b[F\x15\x1b[Dx")
-        wait_for(lambda: "> x" in visible()[15], "deleting draft text does not re-enable page navigation")
-        terminal.send("\x1b")
-        wait_for(lambda: "> Second prompt" in visible()[2], "Escape closes the edited draft")
+        terminal.send(prev)
+        wait_for(lambda: "> Second prompt" in visible()[2], "Ctrl+Left leaves the draft without discarding it")
+        terminal.send(next_page)
+        wait_for(lambda: "> draf!t" in visible()[15], "Ctrl+Right restores the draft")
+        terminal.send("\x1b[F\x15" + prev)
+        wait_for(lambda: "> Second prompt" in visible()[2], "Ctrl+Left works after typing and deleting the draft")
         second.release.set()
         terminal.wait_turn(second.text)
         assert visible()[2].lstrip() == "> Second prompt"
         assert first.text not in "\n".join(visible())
 
-        terminal.send("\x1b[D")
+        terminal.send("\x1b[D" + next_page)
+        wait_for(lambda: visible()[15].strip() == ">", "plain left does not navigate while browsing")
+        terminal.send(prev)
+        wait_for(lambda: "02 / 02" in visible()[-1], "Ctrl+Left closes the empty draft")
+        terminal.send(prev)
         wait_for(lambda: "01 / 02" in visible()[-1], "left returns to the first Turn")
         assert first.text in "\n".join(visible()) and second.text not in "\n".join(visible())
-        terminal.send("\x1b[C")
+        terminal.send(next_page)
         wait_for(lambda: "02 / 02" in visible()[-1], "right returns to the second Turn")
         assert second.text in "\n".join(visible()) and first.text not in "\n".join(visible())
-        terminal.send("\x1b[C")
+        terminal.send(next_page)
         wait_for(lambda: visible()[15].strip() == ">", "right opens the next draft")
         terminal.send("\x1b")
         wait_for(lambda: "02 / 02" in visible()[-1], "Escape closes the unsent draft")

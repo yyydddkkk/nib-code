@@ -60,7 +60,7 @@ For daily development without replacing stable `nib`, [install `nib-dev` from lo
 
 ## Use
 
-`/simple` switches to a quieter reading view. `/pages` shows one Turn at a time, with left/right navigation and a centered prompt. Ctrl+S cycles Normal → Simple → Pages → Normal.
+`/simple` switches to a quieter reading view. `/pages` shows one Turn at a time, with Ctrl+Left/Right navigation and a centered prompt. Ctrl+S cycles Normal → Simple → Pages → Normal.
 
 Optional sandboxed `after_edit` and `turn_end` commands: [hooks](docs/config.md#hooks).
 
