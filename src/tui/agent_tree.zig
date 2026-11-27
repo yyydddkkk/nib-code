@@ -37,8 +37,8 @@ pub const Tree = struct {
 
 const Row = struct {
     text: []u8,
-    tool_start: usize,
     prompt_start: usize,
+    command_word_len: usize,
     prompt_end: usize,
     status_end: usize,
     tools_end: usize,
@@ -49,12 +49,11 @@ const Row = struct {
         var text: std.ArrayList(u8) = .empty;
         errdefer text.deinit(gpa);
         try text.print(gpa, "  {s} {s}{s} ", .{ if (last) "└─" else "├─", p.id, if (p.fork) " fork" else "" });
-        const tool_start = text.items.len;
-        if (p.kind == .bash) try text.appendSlice(gpa, "bash ");
         const prompt_start = text.items.len;
         var end: usize = 0;
         var chars: usize = 0;
-        const prompt = if (p.kind == .run and std.mem.eql(u8, p.prompt, "Run")) "" else p.prompt;
+        const prompt = if (p.kind == .bash) std.mem.trimStart(u8, p.prompt, &std.ascii.whitespace) else p.prompt;
+        const command_word_len = if (p.kind == .bash) std.mem.indexOfAny(u8, prompt, &std.ascii.whitespace) orelse prompt.len else 0;
         var it = vaxis.unicode.graphemeIterator(prompt);
         while (it.next()) |grapheme| {
             const bytes = grapheme.bytes(prompt);
@@ -93,8 +92,8 @@ const Row = struct {
         }
         return .{
             .text = try text.toOwnedSlice(gpa),
-            .tool_start = tool_start,
             .prompt_start = prompt_start,
+            .command_word_len = command_word_len,
             .prompt_end = prompt_end,
             .status_end = status_end,
             .tools_end = tools_end,
@@ -112,12 +111,12 @@ const Row = struct {
         const files = fit(win, row.text[row.tools_end..], win.width -| (fixed +| width(win, prompt.text) +| width(win, prompt.suffix)), false);
         const dim: vaxis.Style = .{ .dim = true };
         const object = @import("transcript/label.zig").object;
-        const command_style = if (row.tool_start < row.prompt_start) object else dim;
+        const word_end = @min(row.command_word_len, prompt.text.len);
         _ = win.print(&.{
-            .{ .text = prefix[0..row.tool_start], .style = dim },
-            .{ .text = prefix[row.tool_start..], .style = object },
-            .{ .text = prompt.text, .style = command_style },
-            .{ .text = prompt.suffix, .style = command_style },
+            .{ .text = prefix, .style = dim },
+            .{ .text = prompt.text[0..word_end], .style = object },
+            .{ .text = prompt.text[word_end..], .style = dim },
+            .{ .text = prompt.suffix, .style = dim },
             .{ .text = status, .style = row.status_style },
             .{ .text = used.text, .style = dim },
             .{ .text = used.suffix, .style = dim },
@@ -240,7 +239,7 @@ test "mixed task ids retain input order and background hides terminal states unt
         .{ .id = "a2", .prompt = "last", .background = true, .state = .failed, .step = 7 },
     });
     try testing.expectEqualStrings("  ├─ a10 first · running · step 2", tree.rows.items[0].text);
-    try testing.expectEqualStrings("  ├─ b2 bash echo ready · 3m12s · waiting", tree.rows.items[1].text);
+    try testing.expectEqualStrings("  ├─ b2 echo ready · 3m12s · waiting", tree.rows.items[1].text);
     try testing.expectEqualStrings("  └─ a2 last · failed · step 7", tree.rows.items[2].text);
 }
 
@@ -262,6 +261,37 @@ test "bash elapsed formatting at the minute boundary" {
     }
 }
 
+test "numbered bash rows color only the first command word" {
+    const gpa = testing.allocator;
+    var screen = try vaxis.Screen.init(gpa, .{ .cols = 70, .rows = 4, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(gpa);
+    const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 70, .height = 4, .screen = &screen };
+    var tree: Tree = .{};
+    defer tree.deinit(gpa);
+    try tree.update(gpa, &.{
+        .{ .id = "b12", .kind = .bash, .prompt = "git status --short" },
+        .{ .id = "b13", .kind = .bash, .prompt = "\n  gh\tpr list" },
+        .{ .id = "b14", .kind = .bash, .prompt = "set -eu\nprintf ready" },
+        .{ .id = "b15", .kind = .bash, .prompt = "bash -n script.sh" },
+    });
+    _ = tree.print(win, true);
+    const lines = [_][]const u8{
+        "  ├─ b12 git status --short · <1s · running",
+        "  ├─ b13 gh pr list · <1s · running",
+        "  ├─ b14 set -eu printf ready · <1s · running",
+        "  └─ b15 bash -n script.sh · <1s · running",
+    };
+    const word_lengths = [_]u16{ 3, 2, 3, 4 };
+    const cyan = @import("transcript/label.zig").object.fg;
+    for (lines, word_lengths, 0..) |line, len, y| {
+        try expectLine(&screen, @intCast(y), line);
+        for (0..screen.width) |x| {
+            const cell = screen.readCell(@intCast(x), @intCast(y)).?;
+            try testing.expectEqual(x >= 9 and x < 9 + len, std.meta.eql(cell.style.fg, cyan));
+        }
+    }
+}
+
 test "narrow bash rows preserve id duration and delivery state before command" {
     const gpa = testing.allocator;
     var screen = try vaxis.Screen.init(gpa, .{ .cols = 60, .rows = 3, .x_pixel = 0, .y_pixel = 0 });
@@ -274,8 +304,8 @@ test "narrow bash rows preserve id duration and delivery state before command" {
         .{ .id = "b3", .kind = .bash, .prompt = "abcdefghijklmnopqrstuvwxyz", .background = true, .state = .done, .elapsed_ms = 192_000 },
     });
     _ = tree.print(win, true);
-    try expectLine(&screen, 0, "  ├─ b2 bash abcdef… · 42s · running");
-    try expectLine(&screen, 1, "  └─ b3 bash abcd… · 3m12s · waiting");
+    try expectLine(&screen, 0, "  ├─ b2 abcdefghijk… · 42s · running");
+    try expectLine(&screen, 1, "  └─ b3 abcdefghi… · 3m12s · waiting");
     try expectLine(&screen, 2, "");
 }
 
@@ -306,10 +336,10 @@ test "detached shows terminal states while ordinary background waits for deliver
         .{ .id = "b3", .kind = .bash, .prompt = "exit", .background = true, .detached = true, .state = .done },
         .{ .id = "b4", .kind = .bash, .prompt = "stop", .background = true, .detached = true, .state = .canceled },
     });
-    try testing.expectEqualStrings("  ├─ b1 bash server · <1s · running · detached", tree.rows.items[0].text);
-    try testing.expectEqualStrings("  ├─ b2 bash test · <1s · running", tree.rows.items[1].text);
-    try testing.expectEqualStrings("  ├─ b3 bash exit · <1s · completed · detached", tree.rows.items[2].text);
-    try testing.expectEqualStrings("  └─ b4 bash stop · <1s · canceled · detached", tree.rows.items[3].text);
+    try testing.expectEqualStrings("  ├─ b1 server · <1s · running · detached", tree.rows.items[0].text);
+    try testing.expectEqualStrings("  ├─ b2 test · <1s · running", tree.rows.items[1].text);
+    try testing.expectEqualStrings("  ├─ b3 exit · <1s · completed · detached", tree.rows.items[2].text);
+    try testing.expectEqualStrings("  └─ b4 stop · <1s · canceled · detached", tree.rows.items[3].text);
 }
 
 test "fork label follows task id" {

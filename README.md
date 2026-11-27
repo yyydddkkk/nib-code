@@ -94,7 +94,7 @@ Project conventions go in `AGENTS.md`; personal ones in `~/.nib/AGENTS.md`.
   Run · edit 2 files · bash
     src/grep.zig +38 −9 · src/tools.zig +2 −1
     read src/grep.zig · read src/tools.zig · grep src
-    └─ b1 bash zig build test · 1s · completed ✓ exit 0
+    └─ b1 zig build test · 1s · completed ✓ exit 0
 
   1 Run · 2 steps · 41s · 6.6k tokens
 ```

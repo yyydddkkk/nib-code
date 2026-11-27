@@ -729,7 +729,7 @@ test "turn cleanup removes background working rows without removing delivered re
     try testing.expectEqual(@as(usize, 2), t.entries.items[0].agents.items.len);
     try t.clearBackgroundProgress(gpa);
     try testing.expectEqual(@as(usize, 1), t.entries.items[0].agents.items.len);
-    try testing.expectEqualStrings("  └─ b2 bash echo done · <1s · completed", t.entries.items[0].agent_tree.rows.items[0].text);
+    try testing.expectEqualStrings("  └─ b2 echo done · <1s · completed", t.entries.items[0].agent_tree.rows.items[0].text);
     try testing.expectEqualStrings("Run", t.entries.items[0].label.items);
     try testing.expectEqualStrings("b2 bash · completed · exit 0", t.entries.items[1].label.items);
 }
@@ -755,7 +755,7 @@ test "background bash shows command and elapsed time until its result arrives" {
     try testing.expectEqualStrings("Run · b1 running", t.entries.items[0].label.items);
     toggleAll(&t);
     var segs: [max_segments]vaxis.Segment = undefined;
-    try testing.expectEqualStrings("  └─ b1 bash sleep 2 echo done · 1s · running", t.entries.items[0].agent_tree.rows.items[0].text);
+    try testing.expectEqualStrings("  └─ b1 sleep 2 echo done · 1s · running", t.entries.items[0].agent_tree.rows.items[0].text);
     try t.backgroundResult(gpa, .bash, "b1", true, "{\"exit_code\":0,\"output\":\"done\\n\"}");
     try testing.expectEqualStrings("Run", t.entries.items[0].label.items);
     try testing.expectEqualStrings("b1 bash · completed · exit 0", t.entries.items[1].label.items);
@@ -1340,14 +1340,14 @@ test "mixed ids replace in creation order and settle only when delivered" {
     try testing.expectEqualStrings("b2", t.entries.items[0].agents.items[1].id);
     try testing.expectEqualStrings("a2", t.entries.items[0].agents.items[2].id);
     try testing.expectEqualStrings("  ├─ a10 updated · running · step 3", t.entries.items[0].agent_tree.rows.items[0].text);
-    try testing.expectEqualStrings("  ├─ b2 bash echo ready · 3m12s · waiting", t.entries.items[0].agent_tree.rows.items[1].text);
+    try testing.expectEqualStrings("  ├─ b2 echo ready · 3m12s · waiting", t.entries.items[0].agent_tree.rows.items[1].text);
     try testing.expectEqualStrings("  └─ a2 last · failed · step 2", t.entries.items[0].agent_tree.rows.items[2].text);
     try t.endRun(gpa, true, "started", 100, .{});
     try t.startRun(gpa, "tools.read({})");
     try t.progress(gpa, .{ .id = "b2", .kind = .bash, .prompt = "echo ready", .background = true, .state = .done, .elapsed_ms = 192_000 });
     try testing.expectEqual(@as(usize, 0), t.entries.items[1].agents.items.len);
     try t.backgroundResult(gpa, .bash, "b2", true, "{\"exit_code\":0,\"output\":\"ready\"}");
-    try testing.expectEqualStrings("  ├─ b2 bash echo ready · 3m12s · completed", t.entries.items[0].agent_tree.rows.items[1].text);
+    try testing.expectEqualStrings("  ├─ b2 echo ready · 3m12s · completed", t.entries.items[0].agent_tree.rows.items[1].text);
     try testing.expect(t.entries.items[0].agents.items[2].background);
     try t.lostBackground(gpa, .agent, "a2", "[background agent a2 lost: process ended]");
     try testing.expectEqualStrings("  └─ a2 last · failed · step 2", t.entries.items[0].agent_tree.rows.items[2].text);
@@ -1422,7 +1422,7 @@ test "session IDs route progress across repeated Turn Run numbers and late termi
     try t.progress(gpa, .{ .id = "b1", .run = 1, .kind = .bash, .prompt = "sleep 30", .elapsed_ms = 4000 });
     try t.endRun(gpa, false, "stop", 4000, .{});
     try t.progress(gpa, .{ .id = "b1", .run = 1, .kind = .bash, .prompt = "sleep 30", .elapsed_ms = 4100, .state = .canceled });
-    try testing.expectEqualStrings("  └─ b1 bash sleep 30 · 4s · canceled", t.entries.items[1].agent_tree.rows.items[1].text);
+    try testing.expectEqualStrings("  └─ b1 sleep 30 · 4s · canceled", t.entries.items[1].agent_tree.rows.items[1].text);
 }
 
 test "background bash timeout is labeled without discarding the result" {
@@ -1798,7 +1798,7 @@ test "foreground command facts remain attached after their Run moves to backgrou
     try t.backgroundResult(a, .run, "r1", true, "script returned");
     const e = &t.entries.items[0];
     try testing.expectEqual(@as(usize, 1), e.agents.items.len);
-    try testing.expectEqualStrings("  └─ b1 bash zig build test · <1s · failed ✗ exit 1", e.agent_tree.rows.items[0].text);
+    try testing.expectEqualStrings("  └─ b1 zig build test · <1s · failed ✗ exit 1", e.agent_tree.rows.items[0].text);
     try testing.expect(e.hasWarning());
 }
 

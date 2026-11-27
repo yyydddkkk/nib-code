@@ -601,7 +601,7 @@ class BackgroundBashTests:
         terminal.send("initial\r")
         wait_for(lambda: len(mock.observed()) == 2)
         pids = self.marked_pids()
-        wait_for(lambda: any("b1 bash" in row for row in screen(terminal.read(), 120, 32)))
+        wait_for(lambda: any(f"b1 {shlex.quote(sys.executable)[:32]}" in row for row in screen(terminal.read(), 120, 32)))
         mock.model_gate.set()
         self.wait_final(terminal, "initial complete")
         self.assertTrue(all(alive(pid) for pid in pids))
@@ -726,7 +726,7 @@ class BackgroundBashTests:
         terminal = self.detached_terminal()
         wait_for(lambda: len(mock.observed()) == 2)
         pids = self.marked_pids()
-        wait_for(lambda: any(re.search(r"b2 bash.*detached", row)
+        wait_for(lambda: any(f"b2 {shlex.quote(sys.executable)[:32]}" in row and " · detached" in row
                              for row in screen(terminal.read(), 120, 32)))
         mock.model_gate.set()
         self.wait_final(terminal, "initial complete")
@@ -736,7 +736,7 @@ class BackgroundBashTests:
         pids += self.marked_pids("other")
         self.assertEqual(self.last_run_value(), {"id": "b3"})
         self.assertTrue(all(alive(pid) for pid in pids))
-        wait_for(lambda: any("b3 bash" in row for row in screen(terminal.read(), 120, 32)))
+        wait_for(lambda: any(f"b3 {shlex.quote(sys.executable)[:32]}" in row for row in screen(terminal.read(), 120, 32)))
         terminal.send("stop counters\r")
         self.wait_final(terminal, "stop counters complete")
         self.assertEqual(self.last_run_value(), [stop_result("b2", True),
