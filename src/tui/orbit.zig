@@ -56,17 +56,19 @@ const particles = [_]struct { tilt: f32, speed: f32, phase: f32 }{
 fn dotsAt(ms: u64) [4]Dot {
     var dots: [4]Dot = undefined;
     dots[0] = .{ .x = 0, .y = 0, .radius = 2.2, .alpha = 0.45 };
-    const t = @as(f32, @floatFromInt(ms)) * 0.0021;
+    const t = @as(f32, @floatFromInt(ms)) * 0.002415;
+    const orbit_radius: f32 = 16.5;
     for (particles, dots[1..]) |p, *dot| {
         const angle = t * p.speed + p.phase;
         const z = @sin(angle);
-        const x = @cos(angle) * 15;
-        const y = z * 15 * 0.42;
+        const depth = (z + 1) * 0.5;
+        const x = @cos(angle) * orbit_radius;
+        const y = z * orbit_radius * 0.42;
         dot.* = .{
             .x = x * @cos(p.tilt) - y * @sin(p.tilt),
             .y = x * @sin(p.tilt) + y * @cos(p.tilt),
-            .radius = @max(1.2, 2.4 + z * 1.1),
-            .alpha = 0.25 + (z + 1) * 0.375,
+            .radius = @max(1.7, 2.4 + z * 1.1) * 1.30,
+            .alpha = 0.45 + 0.55 * depth * depth,
         };
     }
     return dots;
@@ -93,12 +95,19 @@ fn raster(ms: u64, aspect: f32, color: u8) [side * side * 4]u8 {
     return bytes;
 }
 
-test "orbit preserves the reference geometry and paints translucent moving particles" {
+test "orbit particles remain visible and vary with depth" {
     const t = std.testing;
     const initial = dotsAt(0);
-    try t.expectApproxEqAbs(@as(f32, 15 * @cos(0.4)), initial[1].x, 0.001);
-    try t.expectApproxEqAbs(@as(f32, 15 * @sin(0.4)), initial[1].y, 0.001);
-    try t.expectEqual(@as(f32, 0.625), initial[1].alpha);
+    try t.expectApproxEqAbs(@as(f32, 16.5 * @cos(0.4)), initial[1].x, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 16.5 * @sin(0.4)), initial[1].y, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 0.5875), initial[1].alpha, 0.001);
+    const far = dotsAt(1951)[1];
+    const near = dotsAt(650)[1];
+    try t.expectApproxEqAbs(@as(f32, 2.21), far.radius, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 0.45), far.alpha, 0.001);
+    try t.expect(dotsAt(1700)[1].alpha > far.alpha);
+    try t.expectApproxEqAbs(@as(f32, 4.55), near.radius, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 1), near.alpha, 0.001);
     const a = raster(0, 1, 220);
     const b = raster(500, 1, 220);
     try t.expectEqual(@as(u8, 0), a[3]);
