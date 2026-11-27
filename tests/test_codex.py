@@ -82,16 +82,17 @@ def assert_timing(records, *, final_only=False):
 
 with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
     tmp = Path(directory)
-    auth_path = tmp / "codex/auth.json"
+    auth_path = tmp / ".codex/auth.json"
     auth(auth_path)
+    cli_auth = auth_path.read_bytes()
     requests_path = tmp / "requests.jsonl"
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("NIB_", "DEEPSEEK_", "OPENAI_", "CODEX_"))}
+           if not key.startswith(("NIB_", "DEEPSEEK_", "OPENAI_", "CODEX_", "ANTHROPIC_", "XAI_"))}
     env.update(NIB_PROVIDER="codex", NIB_CODEX_TRANSPORT="sse", NIB_BASE_URL=f"http://127.0.0.1:{port}",
-               CODEX_HOME=str(auth_path.parent), HOME=str(tmp), NIB_HOME=str(tmp / "nib"), XDG_DATA_HOME=str(tmp / "data"),
+               HOME=str(tmp), NIB_HOME=str(tmp / "nib"), XDG_DATA_HOME=str(tmp / "data"),
                XDG_CONFIG_HOME=str(tmp / "config"))
     cwd = tmp / "project"
     cwd.mkdir()
@@ -135,6 +136,13 @@ with tempfile.TemporaryDirectory(prefix="nib-codex-e2e-") as directory:
             assert (result.returncode == 0) == ok, events
             assert ("end" if ok else "error") in events[-1], events
             return events
+
+        fresh = ask("plain text", overrides={"NIB_PROVIDER": None})
+        assert fresh[-1]["end"]["text"] == "Mock text complete.", fresh
+        assert requests()[0]["path"] == "/codex/responses"
+        assert not (tmp / "nib/auth.json").exists()
+        assert not (tmp / "nib/config.toml").exists()
+        assert auth_path.read_bytes() == cli_auth
 
         summaries = ask("plain text", "--effort", "high", overrides={"NIB_THINKING": "off", "NIB_REASONING_SUMMARY": "auto"})
         assert requests()[-1]["body"]["reasoning"] == {"effort": "high", "summary": "auto"}

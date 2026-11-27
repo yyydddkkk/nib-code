@@ -6,7 +6,7 @@ Other API-key/custom services: [providers.md](providers.md). Codex adds ChatGPT 
 
 Run `nib`, then `/provider` and choose Codex; or `nib login codex`. nib opens the browser (`open` on macOS, `xdg-open` on Linux) and waits on `127.0.0.1:1455` for the callback (`Waiting for ChatGPT sign-in · Esc cancels`). Without a display, over SSH, or when the browser or port is unavailable it uses device-code login instead: the TUI prints `Open <url> and enter code <code>`; `nib login codex --device` forces it. Success prints `Codex · signed in · <plan>`.
 
-The flow is the Codex CLI's (public client id, PKCE, `https://auth.openai.com`; [ADR 0022](adr/0022-provider-sign-in.md)). Tokens go to `$NIB_HOME/auth.json` (mode 0600). If you already use the Codex CLI, nib reads `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`) in place without copying it, and nib's own login takes precedence when both exist. `/provider logout codex` removes only nib's tokens. No telemetry; the only calls are the sign-in, refresh and model requests.
+The flow is the Codex CLI's (public client id, PKCE, `https://auth.openai.com`; [ADR 0022](adr/0022-provider-sign-in.md)). Tokens go to `$NIB_HOME/auth.json` (mode 0600). If you're already signed in to the Codex CLI with file-backed credentials, nib can use that login on first launch with no setup. It reads `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`) in place without copying it, and nib's own login takes precedence when both exist. `/provider` marks the shared login as `signed in via Codex CLI`. `/provider logout codex` removes only nib's tokens. No telemetry; the only calls are the sign-in, refresh and model requests.
 
 ```sh
 nib
