@@ -36,7 +36,10 @@ def serve(root):
 
 def check(exe):
     def run(command, *, error=None, **overrides):
-        result = subprocess.run(command, env=env | overrides, cwd=root, capture_output=True,
+        child_env = env | overrides
+        if Path(command[0]).name.lower() in {'powershell.exe', 'pwsh.exe'}:
+            child_env = {k: v for k, v in child_env.items() if k.upper() != 'PSMODULEPATH'}
+        result = subprocess.run(command, env=child_env, cwd=root, capture_output=True,
                                 text=True, encoding='utf-8', errors='replace', timeout=60)
         if error is not None:
             assert result.returncode != 0 and error.lower() in result.stderr.lower(), result

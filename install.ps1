@@ -41,7 +41,13 @@ try {
         $pattern = '^(?<hash>[0-9a-fA-F]{64})[ \t]+\*?' + [regex]::Escape($asset) + '[ \t]*$'
         $entries = @(Get-Content -LiteralPath $sums | ForEach-Object { if ($_ -cmatch $pattern) { $Matches.hash } })
         if ($entries.Count -ne 1) { throw "Missing or invalid checksum: $asset" }
-        if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $entries[0]) { throw "Checksum mismatch: $asset" }
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [IO.File]::OpenRead($zipPath)
+            try { $actual = [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+            finally { $stream.Dispose() }
+        } finally { $algorithm.Dispose() }
+        if ($actual -ne $entries[0]) { throw "Checksum mismatch: $asset" }
     }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
