@@ -34,9 +34,11 @@ fn runTimed(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool
     defer s.tools.progress.drain(s.io) catch {};
     if (!s.tools.background.anyPending(s.io)) s.tools.progress.clear(s.gpa);
     s.tools.run_id += 1;
-    s.tools.discardChanges(s.gpa);
-    @import("../tools.zig").clearImages(&s.tools.images, s.gpa);
-    var host = s.tools.host();
+    var scope: @import("../tools.zig").RunScope = .{ .tools = &s.tools, .id = s.tools.run_id };
+    defer scope.changes.discard(s.gpa);
+    defer scope.reads.deinit(s.gpa);
+    defer @import("../tools.zig").clearImages(&scope.images, s.gpa);
+    var host = scope.hostWithPoll();
     host.timing = timing;
     if (timing) |t| t.started = .now(s.io, .awake);
     const recorder = if (timing != null) (if (s.recorder) |*r| r else null) else null;
@@ -48,9 +50,11 @@ fn runTimed(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool
     defer if (recorder) |r| r.finish(end);
     var outcome = try sandbox.eval(s.gpa, s.io, code, .{}, host, cancel);
     errdefer outcome.deinit(s.gpa);
-    try @import("hooks.zig").afterEdit(&s.tools, s.gpa, &s.tools.changes, &outcome);
+    try @import("hooks.zig").afterEdit(&s.tools, s.gpa, &scope.changes, &outcome);
     end = if (cancel != null and cancel.?.load(.acquire)) .cancelled else if (outcome.ok) .ok else if (std.mem.eql(u8, outcome.text, "Error: run timed out")) .timeout else .@"error";
-    return .{ .outcome = outcome, .changes = try s.tools.takeChanges(s.gpa, s.arena.allocator()) };
+    const cwd = try std.process.currentPathAlloc(s.io, s.gpa);
+    defer s.gpa.free(cwd);
+    return .{ .outcome = outcome, .changes = try scope.changes.take(s.gpa, s.arena.allocator(), cwd) };
 }
 
 pub const PollTarget = struct {

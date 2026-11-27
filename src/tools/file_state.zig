@@ -20,7 +20,7 @@ pub const State = struct {
         size: u64,
         mtime: i96,
 
-        fn from(stat: std.Io.File.Stat) Version {
+        pub fn from(stat: std.Io.File.Stat) Version {
             return .{ .inode = stat.inode, .size = stat.size, .mtime = stat.mtime.nanoseconds };
         }
     };

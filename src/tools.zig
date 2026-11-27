@@ -50,6 +50,7 @@ const all = [_]Tool{
         .run = files.read,
         .doc =
         \\  // Read requested lines of a UTF-8 file (max 16 MiB) verbatim. offset is 1-based; next_offset is null at EOF.
+        \\  // A non-null next_offset means text is only a page. Use edit for targeted changes, or read all pages from line 1 before rewriting.
         \\  async read({ path, offset = 1, limit = 2000 }) {}, // → { text, next_offset }
         ,
     },
@@ -74,7 +75,8 @@ const all = [_]Tool{
         .run = files.write,
         .doc =
         \\  // Create or overwrite a file, creating parents. Rejects overwrites changed since this session last read or wrote it.
-        \\  async write({ path, content }) {}, // → { bytes }
+        \\  // An overwrite after an incomplete read of the same file in this Run returns a warning without blocking the write.
+        \\  async write({ path, content }) {}, // → { bytes, warning? }
         ,
     },
     .{
@@ -213,6 +215,7 @@ pub const RunScope = struct {
     llm_calls: std.atomic.Value(usize) = .init(0),
     active_tools: [all.len]std.atomic.Value(u32) = @splat(.init(0)),
     changes: @import("tools/changes.zig").Tracker = .{},
+    reads: @import("tools/read_coverage.zig").Coverage = .{},
     images: std.ArrayList(image.Image) = .empty,
     fork: ?@import("tools/agent/input.zig").Fork = null,
 
@@ -232,6 +235,17 @@ pub const RunScope = struct {
 
     pub fn host(scope: *RunScope) sandbox.Host {
         return .{ .ctx = scope, .names = scope.tools.api().names, .call = call, .cancel = &scope.cancel, .admit = admit };
+    }
+
+    pub fn hostWithPoll(scope: *RunScope) sandbox.Host {
+        var result = scope.host();
+        result.poll = poll;
+        return result;
+    }
+
+    fn poll(ctx: *anyopaque) !void {
+        const scope: *RunScope = @ptrCast(@alignCast(ctx));
+        try Tools.poll(scope.tools);
     }
 
     fn call(ctx: *anyopaque, gpa: std.mem.Allocator, name: []const u8, args: []const u8) sandbox.ToolResult {
