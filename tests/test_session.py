@@ -294,9 +294,13 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
         assert summarizing[:len(original["messages"])] == original["messages"]
         assert summarizing[-2]["tool_calls"][0]["id"] == summarizing[-1]["tool_call_id"]
         assert len(summarizing[-1]["content"]) > 10_000
-        assert continuation["roles"] == ["system", "user"] and continuation["has_tools"] == "run"
+        assert continuation["roles"] == ["system", "user", "user"] and continuation["has_tools"] == "run"
         assert continuation["messages"][0] == original["messages"][0]
-        assert continuation["messages"][1]["content"].startswith("Earlier session summary:")
+        assert continuation["messages"][2] == original["messages"][-1]
+        handoff = continuation["messages"][1]["content"]
+        assert handoff.startswith("Earlier session summary:")
+        archived = re.search(r"\[recorded output: (.+)\]", handoff)[1]
+        assert Path(archived).read_text() == summarizing[-1]["content"]
         compact_log = next(Path(large_home["NIB_HOME"]).glob("sessions/*.jsonl"))
         _, records = replay(compact_log)
         replacement_index = next(i for i, r in enumerate(records) if r["from"] == 1
@@ -311,6 +315,40 @@ with tempfile.TemporaryDirectory(prefix="nib-session-e2e-") as directory:
             parsed = [json.loads(line) for line in result.stdout.splitlines()]
             assert all(len(event) == 1 for event in parsed), parsed
             return parsed
+
+        compaction_home = tmp / "compaction-home"
+        compaction_env = {"NIB_HOME": str(compaction_home)}
+        ask("one", overrides=compaction_env)
+        done = events(ask("--json", "-c", "compaction evidence", window="32768", overrides=compaction_env))
+        assert any("compacted context:" in event.get("notice", "") for event in done), done
+        session_id = done[0]["start"]["session_id"]
+        log_path = compaction_home / "sessions" / f"{session_id}.jsonl"
+        _, history_records = replay(log_path)
+        projected = [r for r in history_records if r["messages"] and
+                     r["messages"][0].get("content", "").startswith("Earlier session summary:")]
+        assert len(projected) == 1, projected
+        messages = projected[0]["messages"]
+        assert any(m.get("content") == "compaction evidence" for m in messages), messages
+        saved_result = next(m for m in messages if m["role"] == "tool")
+        reference = re.search(r"\[recorded output: (.+)\]", saved_result["content"])[1]
+        exact_output = next(m["content"] for r in history_records for m in r["messages"]
+                            if m["role"] == "tool" and "ARCHIVED_FIXTURE_MIDDLE" in m["content"])
+        assert len(saved_result["content"]) < len(exact_output) / 8
+        assert "ARCHIVED_FIXTURE_MIDDLE" not in saved_result["content"]
+        assert Path(reference).read_text() == exact_output
+        next_step = next(r for r in history_records[history_records.index(projected[0]) + 1:] if "usage" in r)
+        projected_tokens = projected[0]["context_tokens"]
+        next_prompt_tokens = next_step["usage"]["prompt_tokens"]
+        assert max(projected_tokens, next_prompt_tokens) < 32768 * .10, (projected_tokens, next_prompt_tokens)
+        recovered = events(ask("--json", "--resume", session_id, "recover compaction evidence", overrides=compaction_env))
+        assert any("ARCHIVED_FIXTURE_MIDDLE" in event.get("run_end", {}).get("output", "") for event in recovered), recovered
+        start = len(read_requests(requests_path))
+        ask("--resume", session_id, "compaction evidence", window="32768", overrides=compaction_env)
+        requests = read_requests(requests_path)[start:]
+        update = next(r for r in requests if not r["has_tools"])
+        assert update["messages"][1]["content"] == messages[0]["content"], update
+        assert "update it with the newer history" in update["messages"][-1]["content"], update
+        print(f"Budgeted compaction E2E passed: {projected_tokens} estimated, {next_prompt_tokens} mock input tokens; evidence recovery and summary update")
 
         summary_home = tmp / "summary-home"
         (cwd / "summary.txt").write_text("old")

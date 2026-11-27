@@ -108,6 +108,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 "usage":{"prompt_tokens":prompt_tokens(100),"completion_tokens":10}})
         elif last['role']=='user' or (progress_child and completed_runs < 3):
             code = 'const r = await tools.bash({command: "echo hello from bash; printf \'a\\\\nb\\\\nc\\\\n\' | wc -l"});\nconsole.log("exit", r.exit_code);\nr.output.trim().split("\\n")'
+            if lastuser == 'compaction evidence':
+                code = 'console.log("q".repeat(24).concat("\\n").repeat(200) + "ARCHIVED_FIXTURE_MIDDLE\\n" + "q".repeat(24).concat("\\n").repeat(200))'
+            elif lastuser == 'recover compaction evidence':
+                reference = next(line for m in reversed(msgs) for line in m.get('content', '').splitlines()
+                                 if line.startswith('[recorded output: '))
+                path = reference.removeprefix('[recorded output: ').removesuffix(']')
+                code = 'const page = await tools.read({path: ' + json.dumps(path) + ', offset: 201, limit: 1}); console.log(page.text.trim());'
             if lastuser.startswith('delegate_cancel '):
                 code = 'await tools.agent({prompt: ' + json.dumps('child cancel ' + lastuser.split(' ', 1)[1]) + '})'
             elif lastuser.startswith('delegate_timeout '):
@@ -196,7 +203,8 @@ class H(http.server.BaseHTTPRequestHandler):
             ev({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"run","arguments":""}}]}}]})
             for i in range(0,len(args),7):
                 ev({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":args[i:i+7]}}]}}]})
-            ev({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":prompt_tokens(100),"completion_tokens":20,"prompt_cache_hit_tokens":64}})
+            used = 24_600 if lastuser == 'compaction evidence' else prompt_tokens(100)
+            ev({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":used,"completion_tokens":20,"prompt_cache_hit_tokens":64}})
         else:
             if thinking: ev({"choices":[{"delta":{"reasoning_content":"The result is ready."}}]})
             ev({"choices":[{"delta":{"content":"Tool output: " + last['content'].replace('\n',' | ')}}]})
