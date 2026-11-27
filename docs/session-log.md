@@ -194,7 +194,7 @@ Top-level at uses ms; old logs lack events. Resume skips history, restores b max
 
 stats `bash_superseded` counts selected superseded events, text “Bash supersessions”. --since filters event at; no Step/Turn/failure counts. Resolve data/background results retain existing recording/message paths; [semantics](tool-delegation.md#identical-commands-supersede-stale-execution).
 
-`task_stop` separately records id/reason/stopped without history; TUI reason user requested stop. Tool run_ok/background_id are local restore metadata, not changes to provider bodies.
+`task_stop` separately records id/reason/stopped without history; TUI reason user requested stop. Tool message fields `run_ok`, `background_id`, and `run_changed_files` are local restore metadata, not changes to Provider request bodies. `run_changed_files` preserves the count of confirmed file changes for the foreground Run title without recording the diff; older records without it show Tool counts alone.
 
 Custom headers combine `provider:"custom"` and `custom_provider`; cross-custom-id resume rejects. Optional usage `prompt_cache_write_tokens` defaults zero, already included in prompt totals. stats accumulates cache writes where present.
 

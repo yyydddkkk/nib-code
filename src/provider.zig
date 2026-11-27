@@ -268,6 +268,7 @@ pub const Message = struct {
     step_effort: ?StepEffort = null,
     bash_replacements: ?[]const @import("tools/bash/registry.zig").Event = null,
     run_ok: ?bool = null,
+    run_changed_files: ?usize = null,
     tool_summary: ?@import("session/tool_summary.zig").Summary = null,
     step_calls_omitted: ?u64 = null,
     source: ?enum { background, undo } = null,

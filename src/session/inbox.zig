@@ -3,6 +3,10 @@ const provider = @import("../provider.zig");
 const Delivery = @import("log.zig").Delivery;
 const Background = @import("events.zig").Background;
 
+pub fn resultText(text: []const u8) []const u8 {
+    return if (std.mem.indexOfScalar(u8, text, '\n')) |nl| text[nl + 1 ..] else text;
+}
+
 pub const Batch = struct {
     items: std.ArrayList(Item) = .empty,
 

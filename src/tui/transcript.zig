@@ -71,15 +71,23 @@ pub const Transcript = struct {
     }
 
     pub fn backgroundResult(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool, result: []const u8) !void {
+        try t.finishBackground(gpa, kind, id, ok, result, null);
+    }
+
+    pub const RunDetails = struct { changes: ChangeText, summary: ToolSummary };
+
+    pub fn finishBackground(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool, result: []const u8, details: ?RunDetails) !void {
         t.revision +%= 1;
-        try t.settleBackgroundProgress(gpa, kind, id, ok);
-        if (kind == .run) if (t.backgroundRunEntry(id)) |entry| {
-            entry.output.clearRetainingCapacity();
-            try entry.output.appendSlice(gpa, result);
-            try entry.refreshLabel(gpa);
-            entry.cached = null;
-            return;
-        };
+        const run = if (kind == .run) t.backgroundRunEntry(id) else null;
+        try t.settleBackgroundProgress(gpa, kind, id, ok, run);
+        if (run) |entry| {
+            const state: @TypeOf(entry.run) = if (ok) .ok else switch (entry.run) {
+                .timed_out, .canceled => entry.run,
+                else => .failed,
+            };
+            const changes = if (details) |facts| try facts.changes.clone(gpa) else null;
+            return presentRun(entry, gpa, state, result, changes, if (details) |facts| facts.summary else null);
+        }
         var e: Entry = .{ .kind = .background, .run = if (ok) .ok else .failed };
         errdefer e.deinit(gpa);
         e.task_id = try gpa.dupe(u8, id);
@@ -127,15 +135,9 @@ pub const Transcript = struct {
 
     pub fn lostBackground(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, result: []const u8) !void {
         t.revision +%= 1;
-        try t.settleBackgroundProgress(gpa, kind, id, false);
-        if (kind == .run) if (t.backgroundRunEntry(id)) |entry| {
-            entry.run = .lost;
-            entry.output.clearRetainingCapacity();
-            try entry.output.appendSlice(gpa, result);
-            try entry.refreshLabel(gpa);
-            entry.cached = null;
-            return;
-        };
+        const run = if (kind == .run) t.backgroundRunEntry(id) else null;
+        try t.settleBackgroundProgress(gpa, kind, id, false, run);
+        if (run) |entry| return presentRun(entry, gpa, .lost, result, null, null);
         var e: Entry = .{ .kind = .background, .run = .warning };
         errdefer e.deinit(gpa);
         e.task_id = try gpa.dupe(u8, id);
@@ -144,13 +146,7 @@ pub const Transcript = struct {
         try t.entries.append(gpa, e);
     }
 
-    fn settleBackgroundProgress(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool) !void {
-        for (t.entries.items) |*entry| {
-            if (kind != .run or entry.kind != .run or !std.mem.eql(u8, entry.task_id orelse "", id)) continue;
-            entry.run = if (ok) .ok else if (entry.run == .timed_out or entry.run == .canceled) entry.run else .failed;
-            try entry.refreshLabel(gpa);
-            entry.cached = null;
-        }
+    fn settleBackgroundProgress(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool, run: ?*Entry) !void {
         // Results have only task IDs; registration order is the delivery FIFO.
         for (t.entries.items) |*e| {
             if (e.kind != .run) continue;
@@ -161,8 +157,10 @@ pub const Transcript = struct {
                     if (p.invocation == call.invocation and std.mem.eql(u8, p.id, id)) settleProgress(p, ok);
                 }
                 try e.refreshAgents(gpa);
-                try e.refreshLabel(gpa);
-                e.cached = null;
+                if (run != e) {
+                    try e.refreshLabel(gpa);
+                    e.cached = null;
+                }
                 return;
             }
         }
@@ -486,14 +484,8 @@ pub const Transcript = struct {
             c.deinit(gpa);
             return;
         };
-        e.run = if (e.task_id != null) .background else if (ok) .ok else .failed;
         e.elapsed_ms = elapsed_ms;
-        e.changes.deinit(gpa);
-        e.changes = changes;
-        if (summary) |value| e.tool_summary = try value.clone(gpa);
-        try e.output.appendSlice(gpa, output);
-        try e.refreshLabel(gpa);
-        e.cached = null;
+        try presentRun(e, gpa, if (e.task_id != null) .background else if (ok) .ok else .failed, output, changes, summary);
     }
 
     fn backgroundRunEntry(t: *Transcript, id: []const u8) ?*Entry {
@@ -508,25 +500,26 @@ pub const Transcript = struct {
         t.revision +%= 1;
     }
 
-    pub fn updateBackgroundRun(t: *Transcript, gpa: std.mem.Allocator, id: []const u8, output: []const u8, changes: ChangeText, summary: ToolSummary) !void {
-        for (t.entries.items) |*entry| {
-            if (entry.kind != .run or !std.mem.eql(u8, entry.task_id orelse "", id)) continue;
-            entry.output.clearRetainingCapacity();
-            try entry.output.appendSlice(gpa, output);
-            const changed = try changes.clone(gpa);
-            const used = summary.clone(gpa) catch |err| {
-                var owned = changed;
-                owned.deinit(gpa);
-                return err;
-            };
-            entry.changes.deinit(gpa);
-            entry.changes = changed;
-            if (entry.tool_summary) |old| old.deinit(gpa);
-            entry.tool_summary = used;
-            try entry.refreshLabel(gpa);
-            entry.cached = null;
-            return;
+    // Takes ownership of supplied changes; null leaves existing facts intact.
+    fn presentRun(e: *Entry, gpa: std.mem.Allocator, state: @import("transcript/entry.zig").RunState, output: []const u8, changes: ?ChangeText, summary: ?ToolSummary) !void {
+        var owned = changes;
+        defer if (owned) |*value| value.deinit(gpa);
+        try e.output.ensureTotalCapacity(gpa, output.len);
+        if (summary) |value| {
+            const copy = try value.clone(gpa);
+            if (e.tool_summary) |old| old.deinit(gpa);
+            e.tool_summary = copy;
         }
+        if (owned) |value| {
+            e.changes.deinit(gpa);
+            e.changes = value;
+            owned = null;
+        }
+        e.run = state;
+        e.output.clearRetainingCapacity();
+        e.output.appendSliceAssumeCapacity(output);
+        e.cached = null;
+        try e.refreshLabel(gpa);
     }
 
     pub fn backgroundRun(t: *Transcript, gpa: std.mem.Allocator, id: []const u8) !void {
@@ -559,9 +552,8 @@ pub const Transcript = struct {
                     defer changes.deinit(gpa);
                     const summary = try ToolSummary.init(gpa, completion.calls, completion.run_index, completion.calls_omitted);
                     defer summary.deinit(gpa);
-                    try t.updateBackgroundRun(gpa, m.background_id orelse "?", completion.output, changes, summary);
-                }
-                try t.backgroundResult(gpa, kind, m.background_id orelse "?", m.background_ok orelse parsed_ok, shown orelse result);
+                    try t.finishBackground(gpa, kind, m.background_id orelse "?", m.background_ok orelse parsed_ok, shown orelse completion.output, .{ .changes = changes, .summary = summary });
+                } else try t.backgroundResult(gpa, kind, m.background_id orelse "?", m.background_ok orelse parsed_ok, result);
             } else if (m.source == .undo) {
                 try t.add(gpa, .info, content);
             } else if (std.mem.eql(u8, m.role, "user")) {
@@ -593,16 +585,13 @@ pub const Transcript = struct {
             } else if (std.mem.eql(u8, m.role, "tool")) {
                 if (runs.get(m.tool_call_id orelse "")) |index| {
                     const e = &t.entries.items[index];
-                    e.run = if (m.background_id != null) .background else if (m.run_ok orelse true) .ok else .failed;
                     if (m.background_id) |id| e.task_id = try gpa.dupe(u8, id);
                     for (m.bash_replacements orelse &.{}) |b| {
                         const p: Progress = .{ .id = b.id, .kind = .bash, .prompt = b.command orelse "", .state = .done, .elapsed_ms = b.elapsed_ms orelse 0, .superseded_by = b.superseded_by };
                         try e.agents.append(gpa, try p.clone(gpa));
                     }
                     try e.refreshAgents(gpa);
-                    if (m.tool_summary) |summary| e.tool_summary = try summary.clone(gpa);
-                    try e.output.appendSlice(gpa, content);
-                    try e.refreshLabel(gpa);
+                    try presentRun(e, gpa, if (m.background_id != null) .background else if (m.run_ok orelse true) .ok else .failed, content, .{ .file_count = m.run_changed_files orelse 0 }, m.tool_summary);
                 }
             }
         }
@@ -1265,6 +1254,47 @@ test "restored Run summaries follow run_index and tool_call_id and survive compa
     try t.addHistory(testing.allocator, history.items);
     try testing.expectEqualStrings("Run · edit · +2", t.entries.items[0].label.items);
     try testing.expectEqualStrings("Run · bash ×2 · +3", t.entries.items[1].label.items);
+}
+
+test "restored foreground Run keeps the rendered changed-file count without a diff" {
+    const gpa = testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const log = @import("../session/log.zig");
+    const calls: []const @import("../sandbox/timing.zig").Call = &.{
+        .{ .name = "edit", .start_ms = 0, .end_ms = 1, .ok = true, .run_index = 0 },
+    };
+    var live: Transcript = .{};
+    defer live.deinit(gpa);
+    try live.startRun(gpa, "edit");
+    const summary = try ToolSummary.init(a, calls, 0, 0);
+    try live.endRunWithSummary(gpa, true, "updated", 0, try .init(gpa, &.{.{ .path = "file", .added = 1, .removed = 0, .diff = "+updated\n" }}), summary);
+
+    for ([_]?usize{ 1, null }) |count| {
+        const data = try std.fmt.allocPrint(a, "{f}\n", .{std.json.fmt(log.Record{ .messages = &.{
+            .{ .role = "system", .content = "system" },
+            .{ .role = "assistant", .tool_calls = &.{.{ .id = "edit", .function = .{ .name = "run", .arguments = "{\"code\":\"edit\"}" } }} },
+            .{ .role = "tool", .tool_call_id = "edit", .content = "updated", .run_changed_files = count },
+        }, .calls = calls }, .{ .emit_null_optional_fields = false })});
+        var history: std.ArrayList(provider.Message) = .empty;
+        var tokens: u64 = 0;
+        _ = try log.replay(a, a, data, &history, &tokens);
+        var restored: Transcript = .{};
+        defer restored.deinit(gpa);
+        try restored.addHistory(gpa, history.items);
+        try testing.expectEqual(@as(usize, 0), restored.entries.items[0].changes.files.len);
+        for ([_]bool{ false, true }) |simple| {
+            live.entries.items[0].simple = simple;
+            restored.entries.items[0].simple = simple;
+            const live_text = try entryText(a, &live.entries.items[0], 60);
+            const restored_text = try entryText(a, &restored.entries.items[0], 60);
+            const live_row = std.mem.trimEnd(u8, live_text[0..std.mem.indexOfScalar(u8, live_text, '\n').?], " ");
+            const restored_row = std.mem.trimEnd(u8, restored_text[0..std.mem.indexOfScalar(u8, restored_text, '\n').?], " ");
+            try testing.expectEqualStrings("  edit 1 file", live_row);
+            try testing.expectEqualStrings(if (count == null) "  edit" else live_row, restored_row);
+        }
+    }
 }
 
 test "legacy logs without tool facts keep a plain Run title" {

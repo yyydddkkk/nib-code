@@ -24,7 +24,7 @@ pub fn run(s: *Session, code: []const u8, cancel: ?*const std.atomic.Value(bool)
     errdefer s.tools.background.stop(s.gpa);
     const ran = try runTimed(s, code, cancel, null);
     errdefer ran.outcome.deinit(s.gpa);
-    try s.commitLocalRun(s.tools.run_id);
+    try @import("delivery.zig").commitLocalRun(s, s.tools.run_id);
     if (cancel != null and cancel.?.load(.acquire)) s.tools.background.stop(s.gpa);
     return ran;
 }
@@ -79,7 +79,7 @@ pub const PollTarget = struct {
     }
 };
 
-pub const Executed = struct { cwd: ?[]const u8 = null, scope_id: ?usize = null, executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, completion_summary: ?[]const u8 = null, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
+pub const Executed = struct { cwd: ?[]const u8 = null, scope_id: ?usize = null, executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, completion_summary: ?[]const u8 = null, changed_files: ?usize = null, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
 
 /// Output is arena-owned.
 pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming) !Executed {
@@ -155,7 +155,7 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     const tool_summary = try ToolSummary.init(a, timing.entries[0..timing.count], timing.run_index, timing.omitted - before_omitted);
     try tool_summary.annotateViews(a, ran.?.images);
     try sink.emit(sink.ctx, .{ .run_end = .{ .cwd = cwd, .ok = o.ok, .output = output, .changes = ran.?.changes, .tool_summary = tool_summary } });
-    return .{ .cwd = cwd, .executed_source = if (rerun) code else null, .output = output, .completion_summary = summary, .ok = o.ok, .scope_id = ran.?.scope_id, .empty = summary == null and std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
+    return .{ .cwd = cwd, .executed_source = if (rerun) code else null, .output = output, .completion_summary = summary, .changed_files = if (ran.?.changes.len != 0) ran.?.changes.len else null, .ok = o.ok, .scope_id = ran.?.scope_id, .empty = summary == null and std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
 }
 
 fn customCwd(a: std.mem.Allocator, code: []const u8) !?[]const u8 {
