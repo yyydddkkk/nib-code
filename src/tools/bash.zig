@@ -92,7 +92,15 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         };
         return .{ .ok = result };
     }
-    return execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null, null);
+    var status: ?Status = null;
+    const result = try execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null, &status);
+    if (status) |completed| sandbox.bash_completion = if (completed.elapsed_ms != null)
+        .timed_out
+    else if (completed.exit_code) |code|
+        (if (code == 0) .zero else .nonzero)
+    else
+        .terminated;
+    return result;
 }
 
 pub const Status = struct {

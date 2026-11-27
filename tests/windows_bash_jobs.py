@@ -141,7 +141,12 @@ def check(argv, cwd, env, resume):
                     events = [json.loads(line) for line in out.splitlines()]
                     run = next(e['run_end'] for e in events if 'run_end' in e)
                     assert run['ok'], (case, run)
-                    result = json.loads(run['output'].splitlines()[0])
+                    lines = run['output'].splitlines()
+                    if case == 'exit':
+                        assert lines.pop(0) == 'Bash: 1 command completed; 1 exited nonzero.', run
+                    elif case == 'timeout':
+                        assert lines.pop(0) == 'Bash: 1 command completed; 1 timed out.', run
+                    result = json.loads(lines[0])
                     if case == 'exit':
                         assert result['exit_code'] == 7, result
                         assert result['output'].splitlines() == ['stdout', 'stderr'], result
