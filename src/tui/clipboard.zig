@@ -33,6 +33,7 @@ pub var reader_override: ?*const fn (std.mem.Allocator) Result = null;
 
 pub fn readImage(gpa: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) !Result {
     if (reader_override) |read| return read(gpa);
+    if (@import("builtin").os.tag == .windows) return .no_tool;
     const ran = std.process.run(gpa, io, .{
         .argv = &.{ "/bin/sh", "-c", script },
         .environ_map = env,

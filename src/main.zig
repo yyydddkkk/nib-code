@@ -111,7 +111,6 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
     }
     if (options.continue_latest and options.resume_id != null) return error.ConflictingResumeOptions;
     if (ask and prompt == null) return error.MissingPrompt;
-    if (windows and !ask and !js) return error.WindowsTuiUnavailable;
 
     var client: std.http.Client = .{ .allocator = gpa, .io = init.io };
     defer client.deinit();
@@ -233,7 +232,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         return;
     }
 
-    if (!windows) try tui.run(init, &session);
+    try tui.run(init, &session);
 }
 
 const help =
@@ -298,7 +297,6 @@ fn errorMessage(err: anyerror) []const u8 {
         error.EmptyKey => "API key cannot be empty",
         error.WindowsLoginUnavailable => "Sign-in is unavailable in the Windows CLI preview; set your provider's API key environment variable.",
         error.WindowsUpdateUnavailable => "In-place updates are unavailable in the Windows CLI preview.",
-        error.WindowsTuiUnavailable => "The TUI is unavailable in the Windows CLI preview; use nib ask or nib js.",
         error.WindowsWorkspaceUnavailable => "Workspace isolation is unavailable in the Windows CLI preview.",
         error.SessionProviderMismatch => "Cannot resume this session with a different provider; use its original NIB_PROVIDER or start a new session.",
         error.SessionModelMismatch => "Cannot fork this session with a different model; use the parent session's model.",
