@@ -144,7 +144,7 @@ pub fn run(init: std.process.Init, session: *Session) !void {
     defer tty.deinit();
     const w = tty.writer();
 
-    var vx = try vaxis.init(io, gpa, init.environ_map, .{});
+    var vx = try vaxis.init(io, gpa, init.environ_map, .{ .keep_image_placements = true });
     defer vx.deinit(gpa, w);
 
     var loop: vaxis.Loop(Event) = .init(io, &tty, &vx);

@@ -55,7 +55,7 @@ const particles = [_]struct { tilt: f32, speed: f32, phase: f32 }{
 
 fn dotsAt(ms: u64) [4]Dot {
     var dots: [4]Dot = undefined;
-    dots[0] = .{ .x = 0, .y = 0, .radius = 2.2, .alpha = 0.45 };
+    dots[0] = .{ .x = 0, .y = 0, .radius = 2.55, .alpha = 0.65 };
     const t = @as(f32, @floatFromInt(ms)) * 0.002415;
     const orbit_radius: f32 = 16.5;
     for (particles, dots[1..]) |p, *dot| {
@@ -67,8 +67,8 @@ fn dotsAt(ms: u64) [4]Dot {
         dot.* = .{
             .x = x * @cos(p.tilt) - y * @sin(p.tilt),
             .y = x * @sin(p.tilt) + y * @cos(p.tilt),
-            .radius = @max(1.7, 2.4 + z * 1.1) * 1.30,
-            .alpha = 0.45 + 0.55 * depth * depth,
+            .radius = @max(1.7, 2.4 + z * 1.1) * 1.65,
+            .alpha = 0.60 + 0.40 * depth * depth,
         };
     }
     return dots;
@@ -100,13 +100,14 @@ test "orbit particles remain visible and vary with depth" {
     const initial = dotsAt(0);
     try t.expectApproxEqAbs(@as(f32, 16.5 * @cos(0.4)), initial[1].x, 0.001);
     try t.expectApproxEqAbs(@as(f32, 16.5 * @sin(0.4)), initial[1].y, 0.001);
-    try t.expectApproxEqAbs(@as(f32, 0.5875), initial[1].alpha, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 0.70), initial[1].alpha, 0.001);
+    try t.expectEqual(@as(f32, 0.65), initial[0].alpha);
     const far = dotsAt(1951)[1];
     const near = dotsAt(650)[1];
-    try t.expectApproxEqAbs(@as(f32, 2.21), far.radius, 0.001);
-    try t.expectApproxEqAbs(@as(f32, 0.45), far.alpha, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 2.805), far.radius, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 0.60), far.alpha, 0.001);
     try t.expect(dotsAt(1700)[1].alpha > far.alpha);
-    try t.expectApproxEqAbs(@as(f32, 4.55), near.radius, 0.001);
+    try t.expectApproxEqAbs(@as(f32, 5.775), near.radius, 0.001);
     try t.expectApproxEqAbs(@as(f32, 1), near.alpha, 0.001);
     const a = raster(0, 1, 220);
     const b = raster(500, 1, 220);

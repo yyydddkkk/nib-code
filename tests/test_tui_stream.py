@@ -226,27 +226,46 @@ def test_turn_pages(tmp):
 
 
 def test_orbital_activity(tmp):
-    reply = Reply("done orbiting", gated=True)
+    reply = StreamReply()
+    reply.chunks, reply.gaps = ["streaming_while_orbiting"], [0]
     frame_pattern = re.compile(rb"\x1b_Ga=T,f=32,s=(\d+),v=(\d+),c=2,r=1,C=1,i=(\d+),q=2;([A-Za-z0-9+/=]+)\x1b\\")
-    with fixture(tmp, [reply]) as (terminal, home, _):
-        terminal.send("\x1b_Gi=1;OK\x1b\\")
-        terminal.send("orbit test\r")
-        assert reply.received.wait(5)
-        terminal.until(b"Waiting for model")
-        def received_frames():
-            frames = frame_pattern.findall(terminal.read())
-            return frames if len(frames) >= 3 else None
+    with patch("test_interjections.Handler", StreamHandler):
+        with fixture(tmp, [reply]) as (terminal, home, _):
+            terminal.send("\x1b_Gi=1;OK\x1b\\")
+            terminal.send("orbit test\r")
+            assert reply.received.wait(5)
 
-        frames = wait_for(received_frames, "three orbital frames")
-        w, h, image, first = frames[0]
-        assert all(frame[:3] == (w, h, image) for frame in frames)
-        pixels = base64.b64decode(first, validate=True)
-        assert len(pixels) == int(w) * int(h) * 4
-        assert 0 in pixels[3::4] and any(pixels[3::4])
-        assert len({frame[3] for frame in frames}) > 1
-        reply.release.set()
-        wait_for(lambda: finished(home, reply.text), "orbital Turn finished")
-        terminal.until(b"\x1b_Ga=d,d=I,i=" + image + b",q=2;\x1b\\")
+            def received_frames(start=0):
+                frames = frame_pattern.findall(terminal.read()[start:])
+                return frames if len(frames) >= 3 else None
+
+            frames = wait_for(received_frames, "three orbital frames")
+            w, h, image, first = frames[0]
+            assert all(frame[:3] == (w, h, image) for frame in frames)
+            pixels = base64.b64decode(first, validate=True)
+            assert len(pixels) == int(w) * int(h) * 4
+            assert 0 in pixels[3::4] and any(pixels[3::4])
+            assert len({frame[3] for frame in frames}) > 1
+
+            start = len(terminal.read())
+            reply.reasoning_done.set()
+            reply.continue_stream.set()
+            assert reply.paused.wait(5)
+
+            def visible():
+                output = re.sub(rb"\x1b7\x1b\[\d+;\d+H\x1b_G[^\x1b]*\x1b\\\x1b8|\x1b_G[^\x1b]*\x1b\\", b"", terminal.read())
+                return any(reply.chunks[0] in row for row in screen(output, 120, 32))
+
+            wait_for(visible, "streamed text is visible while the orbit is active")
+            streamed = wait_for(lambda: received_frames(start), "animation continues during streaming")
+            during = terminal.read()[start:]
+            assert all(frame[2] == image for frame in streamed)
+            assert b"\x1b_Ga=d\x1b\\" not in during, "a text redraw must not erase the orbit"
+            assert b"\x1b_Ga=d,d=I" not in during, "the orbit must remain placed until the Turn ends"
+            reply.release.set()
+            text = reply.prefix + "".join(reply.chunks) + reply.tail + reply.end
+            wait_for(lambda: finished(home, text), "orbital Turn finished")
+            terminal.until(b"\x1b_Ga=d,d=I,i=" + image + b",q=2;\x1b\\")
 
 
 if __name__ == "__main__":
