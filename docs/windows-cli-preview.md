@@ -1,6 +1,6 @@
 # Windows x64 CLI experiment
 
-This is a build experiment, not a supported release. It does not require WSL or Git Bash to start. `tools.bash` requires Git for Windows installed at its default system-wide location; nib never uses PowerShell, WSL, or a `bash.exe` found through `PATH` as a substitute. Interactive sign-in, the TUI, hooks, external subagents, MCP stdio, and in-place updates are not part of the preview. Windows refuses `ask` with `workspace` isolation rather than falling back to unsandboxed execution. Files under `NIB_HOME` inherit Windows ACLs; they do not get POSIX modes.
+This is an experimental CLI, not full Windows support. Download `nib-x86_64-windows-preview.zip` from [GitHub Releases](https://github.com/yyydddkkk/nib-code/releases), verify it against `SHA256SUMS`, and extract `nib.exe`. It does not require WSL or Git Bash to start. `tools.bash` requires Git for Windows installed at its default system-wide location; nib never uses PowerShell, WSL, or a `bash.exe` found through `PATH` as a substitute. Interactive sign-in, the TUI, hooks, external subagents, MCP stdio, and in-place updates are not part of the preview. Windows refuses `ask` with `workspace` isolation rather than falling back to unsandboxed execution. Files under `NIB_HOME` inherit Windows ACLs; they do not get POSIX modes.
 
 Build from Linux or Windows with Zig 0.17:
 

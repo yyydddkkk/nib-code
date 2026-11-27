@@ -26,7 +26,7 @@ Unit tests run on Linux and macOS. Each platform builds its own Debug executable
 
 The Linux TUI stream job sends a single bracketed paste larger than the terminal event queue. It waits for a completed rendered frame, checks that paste does not submit the input, and verifies the exact payload on explicit submission. Keep this test's queue pressure: retrying or chopping up the paste can hide an input stall. The build applies a cache-local pointer-receiver patch to the pinned libvaxis queue; remove it when the dependency carries the fix.
 
-The Windows runner builds a CLI preview and runs an offline smoke test with a local provider mock. A passing job makes `nib-windows-x64-preview` available as a CI artifact; it is not a release asset. See [Windows CLI experiment](windows-cli-preview.md) for the tested surface.
+The Windows runner builds a CLI preview and runs an offline smoke test with a local provider mock. A passing job makes `nib-windows-x64-preview` available as a CI artifact. The release workflow builds and tests a separate stripped ZIP before publishing it. See [Windows CLI experiment](windows-cli-preview.md) for the tested surface.
 
 ## Scheduling estimates
 

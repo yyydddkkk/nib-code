@@ -34,8 +34,38 @@ jobs:
           name: asset-${{ matrix.target }}
           path: dist/*
 
+  build-windows-preview:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Verify release metadata
+        shell: bash
+        run: |
+          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+          test "$GITHUB_REF_NAME" = "v$version"
+          test -f "docs/releases/$version.md"
+      - run: zig build -Doptimize=ReleaseFast -Dstrip=true -Dtarget=x86_64-windows-gnu --prefix out
+      - name: Package the Windows CLI preview
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -LiteralPath out/bin/nib.exe -DestinationPath dist/nib-x86_64-windows-preview.zip
+          Expand-Archive -LiteralPath dist/nib-x86_64-windows-preview.zip -DestinationPath smoke
+          $expected = 'nib ' + $env:GITHUB_REF_NAME.Substring(1)
+          if ((& ./smoke/nib.exe --version) -cne $expected -or $LASTEXITCODE -ne 0) {
+            throw "Windows preview version mismatch: expected $expected"
+          }
+      - run: python tests/test_windows_cli.py smoke/nib.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-x86_64-windows-preview
+          path: dist/nib-x86_64-windows-preview.zip
+          if-no-files-found: error
+
   checksums:
-    needs: build
+    needs: [build, build-windows-preview]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -43,7 +73,7 @@ jobs:
           pattern: asset-*
           merge-multiple: true
           path: dist
-      - run: cd dist && sha256sum *.tar.gz > SHA256SUMS
+      - run: cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets
