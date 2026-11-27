@@ -204,7 +204,7 @@ pub const Session = struct {
         if (options.undo_enabled and s.parent_session_id == null) {
             const root = try std.fmt.allocPrint(a, "{s}/{s}.undo", .{ directory, s.id });
             std.Io.Dir.cwd().deleteTree(io, root) catch {};
-            std.Io.Dir.cwd().createDir(io, root, .fromMode(0o700)) catch {};
+            std.Io.Dir.cwd().createDir(io, root, @import("tools/atomic_file.zig").private_dir) catch {};
             s.undo_history.root = root;
         }
         return s;

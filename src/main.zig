@@ -1,4 +1,5 @@
 const std = @import("std");
+const windows = @import("builtin").os.tag == .windows;
 const sandbox = @import("sandbox.zig");
 const provider = @import("provider.zig");
 const config = @import("config.zig");
@@ -59,6 +60,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         return stdout.flush();
     }
     if (args.len > 1 and (std.mem.eql(u8, args[1], "login") or std.mem.eql(u8, args[1], "logout"))) {
+        if (windows) return error.WindowsLoginUnavailable;
         const cli = @import("auth/cli.zig");
         return if (args[1].len == 5) cli.login(init, args[2..], stdout) else cli.logout(init, args[2..], stdout);
     }
@@ -66,7 +68,10 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         return @import("replay.zig").run(init, args[2..], stdout);
     }
     if (args.len > 1 and std.mem.eql(u8, args[1], "plugin")) return @import("plugin.zig").cli(init, args[2..], stdout);
-    if (args.len > 1 and std.mem.eql(u8, args[1], "update")) return @import("update.zig").run(init, args[2..], stdout, detail);
+    if (args.len > 1 and std.mem.eql(u8, args[1], "update")) {
+        if (windows) return error.WindowsUpdateUnavailable;
+        return @import("update.zig").run(init, args[2..], stdout, detail);
+    }
     const js = args.len >= 3 and std.mem.eql(u8, args[1], "js");
 
     var options: Session.Options = .{
@@ -74,7 +79,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         .depth = if (init.environ_map.get("NIB_AGENT_DEPTH")) |v| try std.fmt.parseInt(u32, v, 10) else 0,
         .parent_session_id = init.environ_map.get("NIB_PARENT_SESSION_ID"),
         .home = try config.home(init.arena.allocator(), init.environ_map),
-        .user_home = init.environ_map.get("HOME") orelse "",
+        .user_home = config.userHome(init.environ_map) orelse "",
     };
     var effort: ?[]const u8 = null;
     var agent_input = false;
@@ -106,6 +111,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
     }
     if (options.continue_latest and options.resume_id != null) return error.ConflictingResumeOptions;
     if (ask and prompt == null) return error.MissingPrompt;
+    if (windows and !ask and !js) return error.WindowsTuiUnavailable;
 
     var client: std.http.Client = .{ .allocator = gpa, .io = init.io };
     defer client.deinit();
@@ -139,6 +145,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         if (!r.ok) return error.ScriptFailed;
         return;
     }
+    if (windows and cfg.sandbox.mode == .workspace) return error.WindowsWorkspaceUnavailable;
     if (effort) |value| try cfg.setEffort(value);
     if (ask and !@import("auth.zig").current(init.arena.allocator(), init.io, cfg).available()) {
         const explicit = init.environ_map.get("NIB_PROVIDER") != null;
@@ -188,12 +195,19 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
             var input = std.Io.File.stdin().reader(init.io, &.{});
             prompt = try input.interface.allocRemaining(init.arena.allocator(), .unlimited);
         }
+        if (windows) {
+            if (SetConsoleCtrlHandler(onConsoleControl, .TRUE) == .FALSE) return error.ConsoleControlHandlerFailed;
+        } else {
+            const action: std.posix.Sigaction = .{ .handler = .{ .handler = onSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
+            session.interrupt_signal = &ask_signal;
+            std.posix.sigaction(.TERM, &action, null);
+            std.posix.sigaction(.INT, &action, null);
+        }
+        defer if (windows) {
+            _ = SetConsoleCtrlHandler(onConsoleControl, .FALSE);
+        };
         if (json) try JsonEvent.write(.{ .start = .{ .session_id = session.id } }, stdout);
         var p: Print = .{ .w = stdout, .json = json };
-        const action: std.posix.Sigaction = .{ .handler = .{ .handler = onSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
-        session.interrupt_signal = &ask_signal;
-        std.posix.sigaction(.TERM, &action, null);
-        std.posix.sigaction(.INT, &action, null);
         var hook_status: []const u8 = "failed";
         defer @import("session/hooks.zig").TurnJob.start(&session, hook_status, null) catch {};
         errdefer if (ask_cancel.load(.acquire)) {
@@ -219,7 +233,7 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
         return;
     }
 
-    try tui.run(init, &session);
+    if (!windows) try tui.run(init, &session);
 }
 
 const help =
@@ -259,6 +273,16 @@ fn onSignal(signal: std.posix.SIG) callconv(.c) void {
     ask_cancel.store(true, .release);
 }
 
+extern "kernel32" fn SetConsoleCtrlHandler(handler: *const fn (u32) callconv(.winapi) std.os.windows.BOOL, add: std.os.windows.BOOL) callconv(.winapi) std.os.windows.BOOL;
+
+fn onConsoleControl(event: u32) callconv(.winapi) std.os.windows.BOOL {
+    switch (event) {
+        0, 1 => ask_cancel.store(true, .release), // CTRL_C_EVENT and CTRL_BREAK_EVENT
+        else => return .FALSE,
+    }
+    return .TRUE;
+}
+
 fn errorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.InvalidArguments => "Invalid arguments · run nib --help",
@@ -272,6 +296,10 @@ fn errorMessage(err: anyerror) []const u8 {
         error.InvalidReasoningEffort, error.MissingReasoningEffort => "Use --effort default|off|none|minimal|low|medium|high|xhigh|max (model support varies).",
         error.UnknownService => "Unknown service · run nib login to list services",
         error.EmptyKey => "API key cannot be empty",
+        error.WindowsLoginUnavailable => "Sign-in is unavailable in the Windows CLI preview; set your provider's API key environment variable.",
+        error.WindowsUpdateUnavailable => "In-place updates are unavailable in the Windows CLI preview.",
+        error.WindowsTuiUnavailable => "The TUI is unavailable in the Windows CLI preview; use nib ask or nib js.",
+        error.WindowsWorkspaceUnavailable => "Workspace isolation is unavailable in the Windows CLI preview.",
         error.SessionProviderMismatch => "Cannot resume this session with a different provider; use its original NIB_PROVIDER or start a new session.",
         error.SessionModelMismatch => "Cannot fork this session with a different model; use the parent session's model.",
         error.UnknownCodexModelContextWindow => "Unknown Codex model context window; set NIB_CONTEXT_WINDOW explicitly (see pi model catalog).",

@@ -35,7 +35,9 @@ pub const Transport = struct {
                 file.close(t.io);
                 child.stdin = null;
             }
-            if (child.id) |pid| std.posix.kill(-pid, .KILL) catch {};
+            if (@import("builtin").os.tag != .windows) {
+                if (child.id) |pid| std.posix.kill(-pid, .KILL) catch {};
+            }
             child.kill(t.io);
             t.child = null;
         }
@@ -48,6 +50,7 @@ pub const Transport = struct {
     }
 
     fn spawn(t: *Transport, a: A) !void {
+        if (@import("builtin").os.tag == .windows) return error.WindowsMcpStdioUnavailable;
         var env: std.process.Environ.Map = .init(a);
         if (t.env) |source| {
             for ([_][]const u8{ "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "SYSTEMROOT" }) |name| if (source.get(name)) |v| try env.put(name, v);

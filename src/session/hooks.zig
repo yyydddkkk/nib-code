@@ -13,6 +13,7 @@ pub fn quote(a: std.mem.Allocator, text: []const u8) ![]const u8 {
 
 pub fn run(t: *Tools, a: std.mem.Allocator, event: []const u8, commands: []const []const u8, paths: []const []const u8, status: []const u8, timeout: i64) !?Failure {
     if (commands.len == 0) return null;
+    if (@import("builtin").os.tag == .windows) return .{ .command = commands[0], .exit_code = 1, .output = "Hooks are unavailable in the Windows CLI preview" };
     const cwd = try std.process.currentPathAlloc(t.io, a);
     const root = try @import("instructions.zig").projectRoot(t.io, a, cwd);
     var quoted: std.ArrayList(u8) = .empty;

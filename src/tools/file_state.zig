@@ -92,7 +92,7 @@ pub fn lock(t: *Tools, gpa: std.mem.Allocator, path: []const u8) !std.Io.File {
     const name = std.fmt.bytesToHex(hash, .lower);
     const lock_path = try std.fs.path.join(gpa, &.{ directory, &name });
     defer gpa.free(lock_path);
-    const file = try cwd.createFile(t.io, lock_path, .{ .truncate = false, .permissions = .fromMode(0o600) });
+    const file = try cwd.createFile(t.io, lock_path, .{ .truncate = false, .permissions = @import("atomic_file.zig").private_file });
     errdefer file.close(t.io);
     while (true) {
         if (t.cancelFlag().load(.acquire)) return error.Canceled;

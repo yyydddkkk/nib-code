@@ -30,9 +30,13 @@ pub const saveSkill = edit_mod.saveSkill;
 pub const saveSimple = edit_mod.saveSimple;
 pub const saveUi = edit_mod.saveUi;
 
+pub fn userHome(env: *const Env) ?[]const u8 {
+    return if (@import("builtin").os.tag == .windows) env.get("USERPROFILE") orelse env.get("HOME") else env.get("HOME");
+}
+
 pub fn home(a: Allocator, env: *const Env) ![]const u8 {
     if (env.get("NIB_HOME")) |value| return a.dupe(u8, value);
-    return std.fs.path.join(a, &.{ env.get("HOME") orelse return error.MissingHome, ".nib" });
+    return std.fs.path.join(a, &.{ userHome(env) orelse return error.MissingHome, ".nib" });
 }
 
 pub fn recordTools(env: ?*const Env) bool {
@@ -72,7 +76,7 @@ test "NIB_HOME alone locates global data and absent configuration is empty" {
     try env.put("HOME", "/fictional");
     try env.put("XDG_CONFIG_HOME", "/unused");
     try env.put("XDG_DATA_HOME", "/unused");
-    try t.expectEqualStrings("/fictional/.nib", try home(a, &env));
+    try t.expectEqualStrings(try std.fs.path.join(a, &.{ "/fictional", ".nib" }), try home(a, &env));
     try env.put("NIB_HOME", "/another");
     try t.expectEqualStrings("/another", try home(a, &env));
     var tmp = t.tmpDir(.{});
@@ -82,6 +86,18 @@ test "NIB_HOME alone locates global data and absent configuration is empty" {
     const cfg = try load(a, t.io, &env, root, &detail);
     try t.expectEqualStrings("gpt-6.2-sol", cfg.model);
     try t.expectError(error.FileNotFound, tmp.dir.access(t.io, "absent", .{}));
+}
+
+test "Windows home defaults to the user profile" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const t = std.testing;
+    var env: Env = .init(t.allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\Tester");
+    try env.put("HOME", "C:\\other");
+    const path = try home(t.allocator, &env);
+    defer t.allocator.free(path);
+    try t.expectEqualStrings("C:\\Users\\Tester\\.nib", path);
 }
 
 test "tool recording is opt-in and preserves explicit legacy values" {

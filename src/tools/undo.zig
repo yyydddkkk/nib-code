@@ -100,7 +100,7 @@ pub const Write = struct {
 fn save(io: std.Io, gpa: std.mem.Allocator, path: []const u8, entry: Entry) !void {
     const data = try std.json.Stringify.valueAlloc(gpa, entry, .{});
     defer gpa.free(data);
-    _ = try atomic.replace(io, gpa, path, data, .{ .permissions = .fromMode(0o600) });
+    _ = try atomic.replace(io, gpa, path, data, .{ .permissions = atomic.private_file });
 }
 
 pub fn prepare(t: *Tools, gpa: std.mem.Allocator, path: []const u8, before: ?[]const u8, after: []const u8) ?Write {
@@ -160,7 +160,7 @@ fn prepareTracked(t: *Tools, gpa: std.mem.Allocator, path: []const u8, before: ?
         }
         if (paths >= path_limit) return error.UndoPathLimit;
         if (total + (if (before) |data| data.len else @as(usize, 0)) > turn_limit) return error.UndoTurnLimit;
-        if (before) |data| _ = try atomic.replace(t.io, gpa, snapshot, data, .{ .permissions = .fromMode(0o600) });
+        if (before) |data| _ = try atomic.replace(t.io, gpa, snapshot, data, .{ .permissions = atomic.private_file });
     } else if (before == null or !std.mem.eql(u8, &entry.hash, &hash(before.?))) {
         entry.tainted = true;
     }

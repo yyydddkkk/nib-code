@@ -106,7 +106,7 @@ pub const Recorder = struct {
             else => return err,
         };
         r.file = file;
-        try file.setPermissions(r.io, .fromMode(0o600));
+        try file.setPermissions(r.io, @import("../tools/atomic_file.zig").private_file);
         r.offset = (try file.stat(r.io)).size;
         var read_buffer: [8192]u8 = undefined;
         var reader = file.reader(r.io, &read_buffer);
@@ -221,9 +221,9 @@ pub const Recorder = struct {
         defer target.mutex.unlock(r.io);
         if (!target.enabled) return error.RecordingDisabled;
         if (target.file == null) {
-            const file = try std.Io.Dir.cwd().createFile(r.io, target.path, .{ .read = true, .truncate = false, .permissions = .fromMode(0o600), .lock = .exclusive, .lock_nonblocking = true });
+            const file = try std.Io.Dir.cwd().createFile(r.io, target.path, .{ .read = true, .truncate = false, .permissions = @import("../tools/atomic_file.zig").private_file, .lock = .exclusive, .lock_nonblocking = true });
             target.file = file;
-            try file.setPermissions(r.io, .fromMode(0o600));
+            try file.setPermissions(r.io, @import("../tools/atomic_file.zig").private_file);
             target.offset = (try file.stat(r.io)).size;
         }
         try target.file.?.writePositionalAll(r.io, r.buffer.items, target.offset);

@@ -48,7 +48,7 @@ pub const Log = struct {
             .exclusive = true,
             .lock = .exclusive,
             .lock_nonblocking = true,
-            .permissions = .fromMode(0o600),
+            .permissions = @import("../tools/atomic_file.zig").private_file,
         }), .offset = 0 };
     }
 

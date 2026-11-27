@@ -144,13 +144,13 @@ pub fn store(io: std.Io, a: std.mem.Allocator, dir: []const u8, name: []const u8
     const path = try std.fs.path.join(a, &.{ dir, file });
     errdefer a.free(path);
     const cwd = std.Io.Dir.cwd();
-    cwd.createDir(io, dir, .fromMode(0o700)) catch |err| switch (err) {
+    cwd.createDir(io, dir, @import("tools/atomic_file.zig").private_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         error.FileNotFound => try cwd.createDirPath(io, dir),
         else => return err,
     };
     const present = if (cwd.statFile(io, path, .{})) |stat| stat.size == data.len else |_| false;
-    if (!present) try cwd.writeFile(io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = .fromMode(0o600) } });
+    if (!present) try cwd.writeFile(io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = @import("tools/atomic_file.zig").private_file } });
     const owned_name = try a.dupe(u8, name);
     errdefer a.free(owned_name);
     return .{ .path = path, .name = owned_name, .media_type = try a.dupe(u8, info.format.mediaType()), .bytes = data.len, .width = info.width, .height = info.height };

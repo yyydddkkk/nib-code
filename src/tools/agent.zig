@@ -11,6 +11,7 @@ const Progress = @import("../session/events.zig").Progress;
 const Args = struct { prompt: []const u8, @"resume": ?[]const u8 = null, fork: bool = false, timeout_ms: i64 = 1_800_000, model: ?[]const u8 = null, effort: ?[]const u8 = null, background: bool = false };
 
 pub fn agent(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
+    if (@import("builtin").os.tag == .windows) return @import("../tools.zig").fail(gpa, "tools.agent is unavailable in the Windows CLI preview", .{});
     const a = std.json.parseFromSlice(Args, gpa, args, .{ .ignore_unknown_fields = true }) catch
         return fail(gpa, "expected {{ prompt: string, resume?: string, fork?: boolean, timeout_ms?: number, model?: string, effort?: string, background?: boolean }}", .{});
     defer a.deinit();

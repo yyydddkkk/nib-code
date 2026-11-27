@@ -2,7 +2,7 @@
 
 | Trigger | Checks |
 |---|---|
-| Normal PR, including draft PRs | Tooling checks, full Linux/macOS validation, and `CI gate`. |
+| Normal PR, including draft PRs | Tooling checks, full Linux/macOS validation, the Windows CLI preview smoke test, and `CI gate`. |
 | Release-metadata-only PR | Tooling and release-metadata checks, then `CI gate`; no application builds, unit tests, or e2e tests. |
 | Push to `main` | No automatic CI run after merge. Application changes go through PR CI, not direct pushes. |
 | Manual `CI` run on a selected branch or tag, including `main` | Full validation and `CI gate`; no base comparison or metadata shortcut. |
@@ -25,6 +25,8 @@ Unit tests run on Linux and macOS. Each platform builds its own Debug executable
 `scripts/ci_matrix.py` discovers the deduplicated test list from `AGENTS.md`. Linux runs every script in its own job. macOS keeps the existing portable subset in four sequential shards; Linux process-fixture and Linux-calibrated PTY tests remain Linux-only. No test assertions or timing limits are changed by sharding.
 
 The Linux TUI stream job sends a single bracketed paste larger than the terminal event queue. It waits for a completed rendered frame, checks that paste does not submit the input, and verifies the exact payload on explicit submission. Keep this test's queue pressure: retrying or chopping up the paste can hide an input stall. The build applies a cache-local pointer-receiver patch to the pinned libvaxis queue; remove it when the dependency carries the fix.
+
+The Windows runner builds a CLI preview and runs an offline smoke test with a local provider mock. A passing job makes `nib-windows-x64-preview` available as a CI artifact. The release workflow builds and tests a separate stripped ZIP before publishing it. See [Windows CLI experiment](windows-cli-preview.md) for the tested surface.
 
 ## Scheduling estimates
 

@@ -47,4 +47,6 @@ Extension is through skills, command-line tools, MCP servers, and hooks, all off
 
 ## Not planned
 
-Browser or desktop automation, document and slide generation, plugin marketplaces, theme systems, automatic/background updating, telemetry, Windows support, and unattended autonomous orchestration.
+Browser or desktop automation, document and slide generation, plugin marketplaces, theme systems, automatic/background updating, telemetry, and unattended autonomous orchestration.
+
+Windows support is limited to the [CLI preview](windows-cli-preview.md).
