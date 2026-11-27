@@ -79,20 +79,40 @@ pub const Monitor = struct {
     fn operate(ctx: ?*anyopaque, op: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
         const m: *Monitor = @ptrCast(@alignCast(ctx.?));
         std.debug.assert(op == .net_read);
+        const result = (if (@import("builtin").os.tag == .windows) m.readWindows(op) else m.readBatch(op)) catch |err| {
+            m.read_failure = err;
+            return error.Canceled;
+        };
+        if (result.net_read) |read| {
+            if (read.data_len > 0 and !m.body) m.last = .now(m.io, .awake);
+        } else |_| {}
+        return result;
+    }
+
+    fn readBatch(m: *Monitor, op: std.Io.Operation) !std.Io.Operation.Result {
         var storage: [1]std.Io.Operation.Storage = undefined;
         var batch: std.Io.Batch = .init(&storage);
         // A timed-out/canceled batch may still own the socket and destination buffers.
         defer batch.cancel(m.io);
         batch.addAt(0, op);
-        batch.awaitConcurrent(m.io, .{ .deadline = m.deadline() }) catch |err| {
-            m.read_failure = err;
-            return error.Canceled;
-        };
-        const result = batch.next().?.result;
-        if (result.net_read) |read| {
-            if (read.data_len > 0 and !m.body) m.last = .now(m.io, .awake);
-        } else |_| {}
-        return result;
+        try batch.awaitConcurrent(m.io, .{ .deadline = m.deadline() });
+        return batch.next().?.result;
+    }
+
+    const SocketRead = struct {
+        fn run(io: std.Io, op: std.Io.Operation, done: *std.Io.Event) std.Io.Cancelable!std.Io.Operation.Result {
+            defer done.set(io);
+            return io.operate(op);
+        }
+    };
+
+    fn readWindows(m: *Monitor, op: std.Io.Operation) !std.Io.Operation.Result {
+        // Zig 0.17 does not support concurrent net_read batches on Windows.
+        var done: std.Io.Event = .unset;
+        var read = try m.io.concurrent(SocketRead.run, .{ m.io, op, &done });
+        errdefer _ = read.cancel(m.io) catch {};
+        try done.waitTimeout(m.io, .{ .deadline = m.deadline() });
+        return read.await(m.io);
     }
 
     pub fn failure(m: *const Monitor, gpa: std.mem.Allocator, detail: *?[]u8, err: anyerror) anyerror {
