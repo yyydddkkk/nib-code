@@ -145,6 +145,46 @@ class FileTests(unittest.TestCase):
             self.finish(process)
         self.assertEqual(process.returncode, 0)
 
+    def test_write_warns_once_after_an_incomplete_read_without_altering_content(self):
+        path = self.cwd / "long.txt"
+        path.write_text("first\n" + "other\n" * 2000)
+        code = """
+const page = await tools.read({path: 'long.txt'});
+if (page.next_offset !== 2001 || page.text.split('\\n').length !== 2001)
+    throw new Error('unexpected page');
+const first = await tools.write({path: './long.txt', content: 'replacement\\n'});
+const second = await tools.write({path: 'long.txt', content: 'another replacement\\n'});
+if (!first.warning?.includes('not fully read') || first.bytes !== 12 || second.warning !== undefined)
+    throw new Error(JSON.stringify({first, second}));
+"""
+        self.run_js(code)
+        self.assertEqual(path.read_bytes(), b"another replacement\n")
+
+    def test_write_only_warns_for_incomplete_coverage_in_its_own_run(self):
+        path = self.cwd / "long.txt"
+        original = "first\n" + "other\n" * 2000
+        path.write_text(original)
+        self.run_js("""
+const tail = await tools.read({path: 'long.txt', offset: 2001});
+const head = await tools.read({path: 'long.txt'});
+await tools.read({path: 'long.txt', limit: 1});
+const write = await tools.write({path: 'long.txt', content: head.text + tail.text + 'end\\n'});
+if (write.warning !== undefined) throw new Error(write.warning);
+""")
+        self.assertEqual(path.read_text(), original + "end\n")
+        self.run_js("""
+await tools.read({path: 'long.txt', offset: 2001});
+const result = await tools.edit({path: 'long.txt', old_text: 'first', new_text: 'edited'});
+if (result.replaced !== 1 || result.warning !== undefined) throw new Error(JSON.stringify(result));
+""")
+        self.assertEqual(path.read_text(), original.replace("first", "edited") + "end\n")
+        self.run_js(json.dumps({"runs": [
+            "await tools.read({path: 'long.txt'});",
+            "const result = await tools.write({path: 'long.txt', content: 'deliberate'});"
+            "if (result.warning !== undefined) throw new Error(result.warning);",
+        ]}))
+        self.assertEqual(path.read_text(), "deliberate")
+
     def test_cross_process_edits_coordinate_aliases_and_symlinks(self):
         (self.cwd / "sub").mkdir()
         (self.cwd / "link").symlink_to("shared")

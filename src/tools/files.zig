@@ -32,6 +32,7 @@ pub fn read(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     const result = try std.json.Stringify.valueAlloc(gpa, page, .{});
     errdefer gpa.free(result);
     try t.file_state.remember(t.io, gpa, path, stat);
+    if (t.scope()) |scope| try scope.reads.read(t.io, gpa, path, .from(stat), a.value.offset, page.next_offset);
     return .{ .ok = result };
 }
 
@@ -134,6 +135,7 @@ pub fn edit(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     if (!std.mem.eql(u8, data, out)) try t.recovery.record(gpa, t.io, path, data, out);
     try t.file_state.remember(t.io, gpa, path, written);
     try t.noteChange(gpa, path, data, out);
+    if (t.scope()) |scope| scope.reads.forget(t.io, gpa, path);
     return .{ .ok = try std.fmt.allocPrint(gpa, "{{\"replaced\":{d}}}", .{count}) };
 }
 
@@ -166,6 +168,9 @@ pub fn write(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
         break :before null;
     };
     defer if (before) |data| gpa.free(data);
+    const changed = before == null or !std.mem.eql(u8, before.?, v.content);
+    const scope = t.scope();
+    const incomplete = changed and current != null and scope != null and scope.?.reads.incomplete(t.io, path, .from(current.?));
     if (!can_track) undo.markIncomplete(t, gpa, .snapshot_unavailable);
     var snapshot = if (can_track) undo.prepare(t, gpa, path, before, v.content) else null;
     defer if (snapshot) |*s| s.deinit(t, gpa);
@@ -174,10 +179,12 @@ pub fn write(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
     const written = atomic_file.replace(t.io, gpa, path, v.content, .{}) catch |err|
         return fail(gpa, "{s}: {s}", .{ v.path, @errorName(err) });
     if (snapshot) |*s| s.commit(t, gpa, v.content);
-    if (before == null or !std.mem.eql(u8, before.?, v.content)) try t.recovery.record(gpa, t.io, path, before, v.content);
+    if (changed) try t.recovery.record(gpa, t.io, path, before, v.content);
     try t.file_state.remember(t.io, gpa, path, written);
     if (can_track) try t.noteChange(gpa, path, before, v.content) else t.bash_commands.changed(t.io);
-    return .{ .ok = try std.fmt.allocPrint(gpa, "{{\"bytes\":{d}}}", .{v.content.len}) };
+    if (scope) |run_scope| run_scope.reads.forget(t.io, gpa, path);
+    const warning: ?[]const u8 = if (incomplete) "Overwrote a file not fully read in this Run; unread content may have been lost. Use tools.edit or read all pages from line 1." else null;
+    return .{ .ok = try std.json.Stringify.valueAlloc(gpa, .{ .bytes = v.content.len, .warning = warning }, .{ .emit_null_optional_fields = false }) };
 }
 
 fn closestLine(data: []const u8, old_text: []const u8) ?usize {
