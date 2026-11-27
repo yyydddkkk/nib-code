@@ -118,9 +118,20 @@ fn patchedVaxis(b: *std.Build, dep: *std.Build.Dependency) *std.Build.Module {
     const old = "(self: Self";
     if (std.mem.count(u8, queue, old) != 5) @panic("revisit the vaxis queue patch after updating vaxis");
     const patched = std.mem.replaceOwned(u8, b.allocator, queue, old, "(self: *const Self") catch @panic("OOM");
+    const vaxis_path = "src/Vaxis.zig";
+    const vaxis_source_path = dep.builder.root.joinString(b.allocator, vaxis_path) catch @panic("OOM");
+    const vaxis = std.Io.Dir.cwd().readFileAlloc(b.graph.io, vaxis_source_path, b.allocator, .limited(128 * 1024)) catch |err| std.debug.panic("cannot read vaxis renderer: {s}", .{@errorName(err)});
+    const options = "pub const Options = struct {";
+    const clear = "if (vx.caps.kitty_graphics)\n                try io.writeAll(ctlseqs.kitty_graphics_clear);";
+    if (std.mem.count(u8, vaxis, options) != 1 or std.mem.count(u8, vaxis, clear) != 1)
+        @panic("revisit the vaxis graphics patch after updating vaxis");
+    // nib owns its image placements; a text diff must not delete them before they can be replaced.
+    const with_option = std.mem.replaceOwned(u8, b.allocator, vaxis, options, options ++ "\n    keep_image_placements: bool = false,") catch @panic("OOM");
+    const with_images = std.mem.replaceOwned(u8, b.allocator, with_option, clear, "if (vx.caps.kitty_graphics and !vx.opts.keep_image_placements)\n                try io.writeAll(ctlseqs.kitty_graphics_clear);") catch @panic("OOM");
     const sources = b.addWriteFiles();
-    _ = sources.addCopyDirectory(dep.path("src"), "src", .{ .exclude_extensions = &.{"queue.zig"} });
+    _ = sources.addCopyDirectory(dep.path("src"), "src", .{ .exclude_extensions = &.{ "queue.zig", "Vaxis.zig" } });
     _ = sources.add(queue_path, patched);
+    _ = sources.add(vaxis_path, with_images);
     const module = dep.module("vaxis");
     module.root_source_file = sources.getDirectory().path(b, "src/main.zig");
     return module;
