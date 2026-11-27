@@ -109,7 +109,7 @@ pub const Run = struct {
 };
 
 fn stableName(name: []const u8) []const u8 {
-    inline for (.{ "mcp", "mcp_schema", "read", "view", "write", "edit", "grep", "glob", "bash", "stop", "fetch", "search", "agent", "llm", "sleep" }) |known| {
+    inline for (.{ "mcp", "mcp_schema", "read", "view", "write", "edit", "grep", "glob", "bash", "stop", "wait", "fetch", "search", "agent", "llm", "sleep" }) |known| {
         if (std.mem.eql(u8, name, known)) return known;
     }
     return "unknown";
