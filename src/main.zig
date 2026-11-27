@@ -69,7 +69,6 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
     }
     if (args.len > 1 and std.mem.eql(u8, args[1], "plugin")) return @import("plugin.zig").cli(init, args[2..], stdout);
     if (args.len > 1 and std.mem.eql(u8, args[1], "update")) {
-        if (windows) return error.WindowsUpdateUnavailable;
         return @import("update.zig").run(init, args[2..], stdout, detail);
     }
     const js = args.len >= 3 and std.mem.eql(u8, args[1], "js");
@@ -296,7 +295,6 @@ fn errorMessage(err: anyerror) []const u8 {
         error.UnknownService => "Unknown service · run nib login to list services",
         error.EmptyKey => "API key cannot be empty",
         error.WindowsLoginUnavailable => "The login command is unavailable on Windows; use /provider in the TUI or set your provider's API key environment variable.",
-        error.WindowsUpdateUnavailable => "In-place updates are unavailable in the Windows preview.",
         error.WindowsTerminalRequired => "Run nib in a Windows terminal to use the TUI, or use nib ask.",
         error.WindowsWorkspaceUnavailable => "Workspace isolation is unavailable in the Windows preview.",
         error.SessionProviderMismatch => "Cannot resume this session with a different provider; use its original NIB_PROVIDER or start a new session.",

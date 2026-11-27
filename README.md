@@ -54,7 +54,14 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 Installs to `~/.local/bin`. `nib update` upgrades in place. `NIB_VERSION` pins a release, `NIB_INSTALL_DIR` changes the directory.
 
-Windows x64: see the [Windows preview](docs/windows-cli-preview.md) for the interactive TUI, CLI, and platform limitations.
+Windows x64 (PowerShell):
+
+```powershell
+curl.exe -fL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.ps1 -o install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Installs to `%LOCALAPPDATA%\nib\bin`. Add that directory to your user `PATH`, or run `nib.exe` by its full path. See the [Windows preview](docs/windows-cli-preview.md) for platform limitations.
 
 From source (Zig 0.17): `zig build -Doptimize=ReleaseFast --prefix ~/.local`
 
