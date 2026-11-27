@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from threading import Thread
+from threading import Event, Thread
 
 
 class MockHandler(BaseHTTPRequestHandler):
@@ -18,7 +18,17 @@ class MockHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         messages = request['messages']
         user = max(i for i, message in enumerate(messages) if message['role'] == 'user')
-        if any(message['role'] == 'tool' for message in messages[user + 1:]):
+        prompt = messages[user]['content']
+        if prompt == 'hold session':
+            self.server.holding.set()
+            if not self.server.resume.wait(timeout=20):
+                return
+        if prompt == 'idle once' and not self.server.stalled.is_set():
+            self.server.stalled.set()
+            self.server.release.wait(timeout=15)
+            return
+        if prompt in ('idle once', 'hold session') or any(
+                message['role'] == 'tool' for message in messages[user + 1:]):
             delta, reason = {'content': 'done'}, 'stop'
         else:
             delta, reason = {'tool_calls': [{
@@ -52,6 +62,10 @@ def main():
             ThreadingHTTPServer(('127.0.0.1', 0), MockHandler) as server:
         cwd = Path(directory)
         env['NIB_BASE_URL'] = f'http://127.0.0.1:{server.server_port}'
+        server.holding = Event()
+        server.resume = Event()
+        server.stalled = Event()
+        server.release = Event()
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
 
@@ -93,7 +107,30 @@ def main():
                 _, run = ask('try { await tools.bash({command: "echo should not run"}); } '
                              'catch (err) { console.log(String(err)); }')
                 assert 'tools.bash is unavailable' in json.dumps(run), run
+            with subprocess.Popen([*argv, 'ask', '--json', 'hold session'], cwd=cwd, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) as held:
+                try:
+                    assert server.holding.wait(timeout=15), 'mock did not receive the request'
+                    held_id = json.loads(held.stdout.readline())['start']['session_id']
+                    busy = nib('ask', '--json', '--resume', held_id, 'contended', status=1)
+                    assert 'Session is busy in another process' in busy.stdout, busy
+                    server.resume.set()
+                    out, err = held.communicate(timeout=15)
+                    assert held.returncode == 0 and json.loads(out.splitlines()[-1])['end']['text'] == 'done', (out, err)
+                finally:
+                    server.resume.set()
+                    if held.poll() is None:
+                        held.kill()
+            config = cwd / env['NIB_HOME'] / 'config.toml'
+            config.write_text('[limits]\nstream_idle_timeout_s = 1\n', encoding='utf-8')
+            stalled = nib('ask', '--json', 'idle once')
+            events = [json.loads(line) for line in stalled.stdout.splitlines()]
+            retries = [e['retry'] for e in events if 'retry' in e]
+            assert server.stalled.is_set() and len(retries) == 1, events
+            assert 'Stream idle timeout' in retries[0]['reason'], events
+            assert events[-1]['end']['text'] == 'done', events
         finally:
+            server.release.set()
             server.shutdown()
             thread.join()
     print('CLI smoke passed')
