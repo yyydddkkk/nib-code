@@ -5,6 +5,7 @@ pub const Frames = struct {
     pub const animation_ms: i64 = 100;
     pub const Refresh = enum { content, animation, immediate };
 
+    activity_interval_ms: i64 = animation_ms,
     pending: bool = false,
     last: ?std.Io.Clock.Timestamp = null,
 
@@ -13,7 +14,7 @@ pub const Frames = struct {
         if (refresh == .immediate) return true;
         const last = f.last orelse return true;
         const elapsed = last.durationTo(now).raw.toMilliseconds();
-        return elapsed >= if (f.pending) interval_ms else animation_ms;
+        return elapsed >= if (f.pending) interval_ms else f.activity_interval_ms;
     }
 
     pub fn painted(f: *Frames, now: std.Io.Clock.Timestamp) void {

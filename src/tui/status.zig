@@ -1,4 +1,5 @@
 const std = @import("std");
+const orbit = @import("orbit.zig");
 const ui_format = @import("format.zig");
 const provider = @import("../provider.zig");
 const ModelActivity = @import("../session/events.zig").ModelActivity;
@@ -70,6 +71,7 @@ pub const Status = struct {
     context: u64 = 0,
     /// Set while a Turn runs.
     busy: ?Activity.Label = null,
+    orbital: bool = false,
     /// A transient message, such as a copy confirmation.
     notice: ?[]const u8 = null,
     detail: []const u8 = "",
@@ -86,6 +88,11 @@ pub const Status = struct {
         return !s.signed_out and s.cfg.codexServiceTier() != null;
     }
 
+    fn hasOrbit(s: Status) bool {
+        const b = s.busy orelse return false;
+        return s.orbital and b.phase != .retrying and b.quiet_ms < 30_000;
+    }
+
     pub fn activityStyle(s: Status) @import("vaxis").Style {
         if (s.busy) |b| {
             if (b.phase == .retrying or b.quiet_ms >= 30_000) return .{ .fg = .{ .index = 3 } };
@@ -100,6 +107,13 @@ pub const Text = struct {
     page_index: [64]u8 = undefined,
     activity: [512]u8 = undefined,
     narrow_activity: [512]u8 = undefined,
+    orbit_cell: ?orbit.Cell = null,
+
+    pub fn placeOrbit(text: *Text, win: @import("vaxis").Window, label: []const u8, s: Status) void {
+        if (s.hasOrbit() and label.len > orbit.prefix.len and std.mem.startsWith(u8, label, orbit.prefix) and win.width > orbit.columns and win.height > 0) {
+            text.orbit_cell = .{ .x = @intCast(win.x_off), .y = @intCast(win.y_off) };
+        }
+    }
 
     pub fn format(text: *Text, s: Status, scrolled: bool) []const u8 {
         var w: std.Io.Writer = .fixed(&text.activity);
@@ -114,7 +128,8 @@ pub const Text = struct {
                 .retrying => "Retrying",
                 .compacting => "Compacting context",
             };
-            w.print("{s} {s}", .{ spinner[(b.ms / 100) % spinner.len], phase }) catch {};
+            if (s.hasOrbit()) w.writeAll(orbit.prefix) catch {} else w.print("{s} ", .{spinner[(b.ms / 100) % spinner.len]}) catch {};
+            w.writeAll(phase) catch {};
             if (s.detail.len > 0) w.print("{s}{s}", .{ if (b.phase == .retrying) " · " else " ", s.detail }) catch {};
             var elapsed: [64]u8 = undefined;
             w.print(" · turn {s}", .{ui_format.duration(&elapsed, b.turn_ms)}) catch {};

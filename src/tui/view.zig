@@ -74,7 +74,8 @@ pub fn drawDraft(win: vaxis.Window, input: *Editor, menu: []const commands.Candi
     } else if (menu_y < win.height) {
         const label = if (s.signed_out and s.notice == null) "No provider · /provider to sign in" else text.formatWidth(s, false, win.width -| 2);
         const width = @min(win.gwidth(label), win.width);
-        printFitted(win.child(.{ .x_off = (win.width - width) / 2, .y_off = menu_y, .height = 1, .width = width }), label, s.activityStyle());
+        const row = win.child(.{ .x_off = (win.width - width) / 2, .y_off = menu_y, .height = 1, .width = width });
+        printActivity(row, label, s, text);
     }
 }
 
@@ -154,7 +155,7 @@ pub fn drawPage(win: vaxis.Window, all: []Entry, page: pages.Pages.Page, scroll:
         var activity = s;
         activity.new_output = local.new_output;
         const label = text.formatWidth(activity, local.top != null, status_w);
-        printFitted(win.child(.{ .x_off = body_x, .y_off = row, .width = status_w, .height = 1 }), label, activity.activityStyle());
+        printActivity(win.child(.{ .x_off = body_x, .y_off = row, .width = status_w, .height = 1 }), label, activity, text);
     }
     if (footer != 0) {
         const index = if (page.count == 0) "" else std.fmt.bufPrint(&text.page_index, "{d:0>2} / {d:0>2}", .{ page.index + 1, page.count }) catch "";
@@ -211,7 +212,8 @@ pub fn drawFrame(outer: vaxis.Window, entries: []Entry, input: *Editor, scroll: 
     }
 
     if (activity_h > 0) {
-        _ = win.child(.{ .x_off = 1, .y_off = body_h + activity_h - 1, .height = 1 }).printSegment(.{ .text = text.formatWidth(activity_status, scroll.top != null, win.width -| 2), .style = s.activityStyle() }, .{ .wrap = .none });
+        const row = win.child(.{ .x_off = 1, .y_off = body_h + activity_h - 1, .height = 1 });
+        printActivity(row, text.formatWidth(activity_status, scroll.top != null, row.width), activity_status, text);
     }
     drawMenu(win, body_h + activity_h, menu, menu_sel, menu_layout, s);
     const input_y = body_h + activity_h + menu_h;
@@ -357,6 +359,11 @@ fn menuLayout(menu: []const commands.Candidate, selected: usize, limit: u16) Men
         layout.end += 1;
     }
     return layout;
+}
+
+fn printActivity(win: vaxis.Window, label: []const u8, s: status.Status, text: *status.Text) void {
+    printFitted(win, label, s.activityStyle());
+    text.placeOrbit(win, label, s);
 }
 
 fn printFitted(win: vaxis.Window, text: []const u8, style: vaxis.Style) void {
