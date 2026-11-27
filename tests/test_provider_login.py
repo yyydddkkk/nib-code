@@ -325,7 +325,7 @@ def test_codex_browser_login(tmp):
         terminal.send("/status\r")
         until_visible(terminal, "ChatGPT login from the Codex CLI")
         terminal.send("/provider ")
-        until_visible(terminal, "signed in · ChatGPT · current")
+        until_visible(terminal, "signed in via Codex CLI · ChatGPT · current")
         assert b"cli-test-token" not in terminal.read()
         cli_file.unlink()
     finally:

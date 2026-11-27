@@ -150,7 +150,8 @@ pub fn services(a: std.mem.Allocator, io: std.Io, env: *const Env, home: []const
         const status = switch (state.source) {
             .codex => |l| blk: {
                 var buf: [64]u8 = undefined;
-                break :blk try std.fmt.allocPrint(a, "signed in · {s}", .{oauth.planLabel(&buf, l.plan)});
+                const status = if (l.source == .cli) "signed in via Codex CLI" else "signed in";
+                break :blk try std.fmt.allocPrint(a, "{s} · {s}", .{ status, oauth.planLabel(&buf, l.plan) });
             },
             .env => |name| name orelse "environment",
             .store => "key stored",
@@ -278,7 +279,7 @@ test "service status names sources and never keys" {
     try tmp.dir.createDirPath(testing.io, "codex");
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "codex/auth.json", .data = "{\"tokens\":{\"access_token\":\"a\",\"account_id\":\"b\"}}" });
     const with_codex = try services(a, testing.io, &env, root);
-    try testing.expectEqualStrings("signed in · ChatGPT", with_codex[0].status);
+    try testing.expectEqualStrings("signed in via Codex CLI · ChatGPT", with_codex[0].status);
     try testing.expect(with_codex[0].signed_in and !with_codex[0].stored);
 }
 
