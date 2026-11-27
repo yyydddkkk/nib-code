@@ -97,26 +97,29 @@ pub const Background = struct {
         fn finish(job: *Job) !void {
             const gpa = job.gpa;
             const t = job.t;
-            var bash_status: ?bash.Status = null;
+            var bash_outcome: bash.Outcome = .unknown;
             const result = switch (job.kind) {
                 .agent => agent.execute(t, gpa, job.args, &job.cancel, job.id, job.run, true, job.fork_input),
                 .run => unreachable,
-                .bash => bash.executeBackground(t, gpa, job.args, &job.cancel, .{ .id = job.id, .run = job.run, .background = true, .kind = .bash, .prompt = "" }, &job.execution, &bash_status),
+                .bash => bash.executeBackground(t, gpa, job.args, &job.cancel, .{ .id = job.id, .run = job.run, .background = true, .kind = .bash, .prompt = "" }, &job.execution, &bash_outcome),
             } catch |err| try @import("../tools.zig").fail(gpa, "{s}", .{@errorName(err)});
             defer switch (result) {
                 inline else => |bytes| gpa.free(bytes),
             };
-            try job.deliver(result, bash_status);
+            try job.deliver(result, bash_outcome);
         }
 
-        fn deliver(job: *Job, result: @import("../sandbox.zig").ToolResult, bash_status: ?bash.Status) !void {
+        fn deliver(job: *Job, result: @import("../sandbox.zig").ToolResult, bash_outcome: bash.Outcome) !void {
             const t = job.t;
             const gpa = job.gpa;
             const bg = &t.background;
-            const state = if (bash_status) |status|
-                (if (status.elapsed_ms != null) "timed_out" else if (status.exit_code == 0) "done" else "failed")
-            else
-                taskState(gpa, result);
+            const bash_status = if (bash_outcome == .reported) bash_outcome.reported else null;
+            const state = if (job.kind == .bash) switch (bash_outcome) {
+                .reported => |status| if (status.elapsed_ms != null) "timed_out" else if (status.exit_code == 0) "done" else "failed",
+                .canceled => "canceled",
+                .superseded => "superseded",
+                .unknown => "failed",
+            } else taskState(gpa, result);
             bg.mutex.lockUncancelable(t.io);
             job.state = state;
             bg.mutex.unlock(t.io);
@@ -129,7 +132,11 @@ pub const Background = struct {
             const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
             defer parsed.deinit();
             const ok = std.mem.eql(u8, state, "done") or std.mem.eql(u8, state, "superseded");
-            const prefix = try std.fmt.allocPrint(gpa, "[background {s} {s} finished]\n", .{ @tagName(job.kind), job.id });
+            const execution = if (job.execution.end_ms_epoch > 0) job.execution else null;
+            const prefix = if (job.kind == .bash)
+                try bashPrefix(gpa, job.id, bash_outcome, execution)
+            else
+                try std.fmt.allocPrint(gpa, "[background {s} {s} finished]\n", .{ @tagName(job.kind), job.id });
             defer gpa.free(prefix);
             const outputs_dir = try t.outputsDir(gpa);
             defer if (outputs_dir) |dir| gpa.free(dir);
@@ -153,7 +160,6 @@ pub const Background = struct {
                 .truncated = if (heading) |text| .{ .heading = text, .body = bash_body } else null,
             });
             defer message.deinit(gpa);
-            const execution = if (job.execution.end_ms_epoch > 0) job.execution else null;
             const inbox = bg.inbox.?;
             if (job.kind == .agent) {
                 t.agent_sessions.mutex.lockUncancelable(t.io);
@@ -220,7 +226,7 @@ pub const Background = struct {
         job.thread = std.Thread.spawn(.{}, Job.work, .{job}) catch |err| {
             if (kind == .bash) bg.bash_active -= 1;
             try t.progress.update(gpa, t.io, .{ .id = id, .run = job.run, .invocation = job.invocation, .kind = kind, .background = true, .detached = detached, .fork = if (kind == .agent) t.agent_sessions.isFork(t.io, id) else false, .prompt = prompt, .state = .failed });
-            try job.deliver(.{ .err = @constCast(@errorName(err)) }, null);
+            try job.deliver(.{ .err = @constCast(@errorName(err)) }, .unknown);
             if (kind == .agent) t.agent_sessions.release(t.io, id);
             job.done.store(true, .release);
             return result;
@@ -528,6 +534,24 @@ pub const Background = struct {
         bg.log = null;
     }
 };
+
+fn bashPrefix(gpa: std.mem.Allocator, id: []const u8, outcome: bash.Outcome, execution: ?@import("../sandbox/timing.zig").Execution) ![]u8 {
+    var buf: [16]u8 = undefined;
+    const status = switch (outcome) {
+        .reported => |value| if (value.elapsed_ms != null) "timed out" else if (value.exit_code) |code|
+            try std.fmt.bufPrint(&buf, "exit {d}", .{code})
+        else
+            "exit status unknown",
+        .canceled => "canceled",
+        .superseded => "superseded",
+        .unknown => "exit status unknown",
+    };
+    const elapsed = if (outcome == .reported and outcome.reported.elapsed_ms != null) outcome.reported.elapsed_ms else if (execution) |e| @as(u64, @intCast(@max(0, e.end_ms_epoch -| e.start_ms_epoch))) else null;
+    return if (elapsed) |ms|
+        std.fmt.allocPrint(gpa, "[background bash {s} finished · {s} · {d} ms]\n", .{ id, status, ms })
+    else
+        std.fmt.allocPrint(gpa, "[background bash {s} finished · {s}]\n", .{ id, status });
+}
 
 fn messageResult(gpa: std.mem.Allocator, kind: BackgroundEvent.Kind, id: []const u8, result: @import("../sandbox.zig").ToolResult) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
