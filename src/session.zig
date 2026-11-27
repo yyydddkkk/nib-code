@@ -623,7 +623,7 @@ pub const Session = struct {
             const size = s.context_tokens + pending_tokens;
             // The first fork request must send the inherited cache prefix before compaction can rewrite it.
             if (!(s.tools.forked and s.log.steps == 0) and size >= compaction.threshold(s.cfg.context_window) and size >= s.compact_backoff)
-                try s.autoCompact(pending_tokens, sink, cancel, detail);
+                try s.autoCompact(pending.items, pending_tokens, sink, cancel, detail);
             if (cancel.load(.acquire)) return error.Canceled;
             var folded: inbox.Batch = .{};
             defer folded.deinit(s.gpa);

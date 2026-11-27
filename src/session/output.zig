@@ -273,6 +273,13 @@ fn saveOutcome(gpa: std.mem.Allocator, o: sandbox.Outcome, target: Save) !?[]u8 
     return try saveBytes(gpa, target, out.items, partial);
 }
 
+pub fn saveRecordedOutput(gpa: std.mem.Allocator, target: Save, data: []const u8) ![]u8 {
+    if (data.len > max_saved_bytes) return error.StreamTooLong;
+    const path = try savePath(gpa, target, data);
+    defer gpa.free(path);
+    return std.fmt.allocPrint(gpa, "[recorded output: {s}]", .{path});
+}
+
 fn saveBytes(gpa: std.mem.Allocator, target: Save, data: []const u8, partial: bool) ![]u8 {
     const path = try savePath(gpa, target, data);
     defer gpa.free(path);
