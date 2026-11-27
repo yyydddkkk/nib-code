@@ -6,6 +6,7 @@ const tools = @import("tools.zig");
 const provider = @import("provider.zig");
 const session_log = @import("session/log.zig");
 const inbox = @import("session/inbox.zig");
+const StepDelivery = @import("session/delivery.zig").StepDelivery;
 const skills = @import("session/skills.zig");
 const instructions = @import("session/instructions.zig");
 const prompt = @import("session/prompt.zig");
@@ -499,92 +500,7 @@ pub const Session = struct {
         try s.commit(s.history.items.len, messages.items, s.context_tokens + compaction.estimateTokens(messages.items, s.cfg), null);
     }
 
-    fn announceDelivered(s: *Session, item: inbox.Item, sink: Sink) !void {
-        if (item.background) |b| {
-            s.tools.background.delivered(s.io, b.id, item.invocation);
-            var event = b;
-            event.result = if (std.mem.indexOfScalar(u8, item.text, '\n')) |nl| item.text[nl + 1 ..] else item.text;
-            try sink.emit(sink.ctx, .{ .background = event });
-        } else if (sink.onUserInserted) |notify| try notify(sink.ctx, item.id);
-    }
-
-    fn commitDelivery(s: *Session, record: session_log.Record, delivered: inbox.Batch, via: @FieldType(session_log.Delivery, "via"), scopes: []const usize) !inbox.Batch {
-        var waited: inbox.Batch = .{};
-        errdefer waited.deinit(s.gpa);
-        for (scopes) |scope| try s.inbox.takeWaited(s.gpa, s.io, scope, &waited);
-        for (delivered.items.items) |item| {
-            if (item.run_scope) |scope| try s.inbox.takeWaited(s.gpa, s.io, scope, &waited);
-        }
-        var deliveries: std.ArrayList(session_log.Delivery) = .empty;
-        defer deliveries.deinit(s.gpa);
-        try delivered.appendDeliveries(s.gpa, &deliveries, via);
-        try waited.appendDeliveries(s.gpa, &deliveries, .wait);
-        var commit_record = record;
-        commit_record.deliveries = deliveries.items;
-        try s.log.commit(s.io, s.gpa, &s.history, &s.context_tokens, commit_record);
-        return waited;
-    }
-
-    pub fn commitLocalRun(s: *Session, scope: usize) !void {
-        var waited = try s.commitDelivery(.{
-            .from = s.history.items.len,
-            .context_tokens = s.context_tokens,
-            .task_ids = s.tools.progress.highWater(s.io),
-            .model = s.cfg.model,
-        }, .{}, .wait, &.{scope});
-        waited.deinit(s.gpa);
-    }
-
-    /// Delivery `tool`: queued results and user messages ride on the last tool message instead of becoming user messages.
-    fn foldInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink) !inbox.Batch {
-        var batch = s.inbox.take(s.io);
-        errdefer batch.deinit(s.gpa);
-        if (batch.items.items.len == 0) return batch;
-        const target = &pending.items[pending.items.len - 1];
-        var text: std.ArrayList(u8) = .empty;
-        defer text.deinit(s.gpa);
-        try text.appendSlice(s.gpa, target.content orelse "");
-        for (batch.items.items) |item| {
-            try text.appendSlice(s.gpa, "\n\n");
-            if (item.background == null) try text.appendSlice(s.gpa, "[user message]\n");
-            try text.appendSlice(s.gpa, if (item.background == null) try s.expandSkills(item.text) else item.text);
-        }
-        target.content = try s.arena.allocator().dupe(u8, text.items);
-        for (batch.items.items) |item| try s.announceDelivered(item, sink);
-        return batch;
-    }
-
-    fn insertInbox(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink, background_only: bool) !inbox.Batch {
-        const before = pending.items.len;
-        var inserted = if (background_only)
-            try s.inbox.insertBackground(s.gpa, s.io, s.arena.allocator(), pending)
-        else
-            try s.inbox.insert(s.gpa, s.io, s.arena.allocator(), pending);
-        errdefer inserted.deinit(s.gpa);
-        for (pending.items[before..]) |*message| {
-            if (message.source == null) message.content = try s.expandSkills(message.content orelse "");
-        }
-        var has_background = false;
-        for (inserted.items.items) |item| {
-            has_background = has_background or item.background != null;
-            try s.announceDelivered(item, sink);
-        }
-        if (has_background) {
-            var waited = try s.commitDelivery(.{
-                .from = s.history.items.len,
-                .messages = pending.items,
-                .context_tokens = s.context_tokens + compaction.estimateTokens(pending.items, s.cfg),
-                .task_ids = s.tools.progress.highWater(s.io),
-                .model = s.cfg.model,
-            }, inserted, .insert, &.{});
-            defer waited.deinit(s.gpa);
-            pending.clearRetainingCapacity();
-            for (waited.items.items) |item| try s.announceDelivered(item, sink);
-        }
-        return inserted;
-    }
-
-    fn finishStepLimit(s: *Session, pending: *std.ArrayList(provider.Message), sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8, max_steps: usize) !void {
+    fn finishStepLimit(s: *Session, delivery: *StepDelivery, sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8, max_steps: usize) !void {
         const waited = try s.tools.background.pendingNames(s.gpa, s.io);
         defer s.gpa.free(waited);
         if (waited.len > 0) {
@@ -595,8 +511,7 @@ pub const Session = struct {
         while (s.tools.background.pending(s.io)) {
             if (cancel.load(.acquire)) return error.Canceled;
             try tools.Tools.poll(&s.tools);
-            var inserted = try s.insertInbox(pending, sink, true);
-            inserted.deinit(s.gpa);
+            try delivery.flushBackground();
             if (s.tools.background.pending(s.io))
                 try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(20), .clock = .awake }, s.io);
         }
@@ -610,23 +525,20 @@ pub const Session = struct {
 
     fn runSteps(s: *Session, pending: *std.ArrayList(provider.Message), partial: *Partial, sink: Sink, cancel: *const std.atomic.Value(bool), detail: *?[]u8) !void {
         var step_index: usize = 0;
-        var held = false;
+        var delivery: StepDelivery = .{ .session = s, .pending = pending, .sink = sink };
         while (true) : (step_index += 1) {
             if (cancel.load(.acquire)) return error.Canceled;
             if (s.cfg.limits.max_steps) |max_steps| {
-                if (step_index >= max_steps) return s.finishStepLimit(pending, sink, cancel, detail, max_steps);
+                if (step_index >= max_steps) return s.finishStepLimit(&delivery, sink, cancel, detail, max_steps);
             }
             try tools.Tools.poll(&s.tools);
-            var inserted = if (held) inbox.Batch{} else try s.insertInbox(pending, sink, false);
-            defer inserted.deinit(s.gpa);
+            try delivery.beforeRequest();
             const pending_tokens = compaction.estimateTokens(pending.items, s.cfg);
             const size = s.context_tokens + pending_tokens;
             // The first fork request must send the inherited cache prefix before compaction can rewrite it.
             if (!(s.tools.forked and s.log.steps == 0) and size >= compaction.threshold(s.cfg.context_window) and size >= s.compact_backoff)
                 try s.autoCompact(pending.items, pending_tokens, sink, cancel, detail);
             if (cancel.load(.acquire)) return error.Canceled;
-            var folded: inbox.Batch = .{};
-            defer folded.deinit(s.gpa);
             const background_output_bytes = s.log.pending_background_bytes;
             var request: std.ArrayList(provider.Message) = .empty;
             defer request.deinit(s.gpa);
@@ -705,7 +617,7 @@ pub const Session = struct {
                 run_timing.output_bytes += result.output.len;
                 run_ms += result.run_ms orelse 0;
                 try sink.emit(sink.ctx, .{ .usage = s.usage });
-                try pending.append(s.gpa, .{ .role = "tool", .executed_source = result.executed_source, .run_cwd = result.cwd, .content = result.output, .tool_call_id = call.id, .background_id = result.background_id, .run_ok = if (result.background_id == null) result.ok else null, .tool_summary = result.tool_summary, .images = if (result.images.len > 0) result.images else null });
+                try pending.append(s.gpa, .{ .role = "tool", .executed_source = result.executed_source, .run_cwd = result.cwd, .content = result.output, .tool_call_id = call.id, .background_id = result.background_id, .run_ok = if (result.background_id == null) result.ok else null, .run_changed_files = result.changed_files, .tool_summary = result.tool_summary, .images = if (result.images.len > 0) result.images else null });
                 try run_results.append(s.gpa, .{
                     .tool_call_id = call.id,
                     .background_id = result.background_id,
@@ -724,23 +636,12 @@ pub const Session = struct {
                 pending.items[assistant_index].waiting = true;
                 try sink.emit(sink.ctx, .{ .notice = "Waiting for background results." });
             }
-            held = s.tools.tuning.delivery == .tool and reply.tool_calls.len > 0 and !waiting;
-            if (held) {
-                try tools.Tools.poll(&s.tools);
-                const own = pending.items[pending.items.len - 1].content;
-                folded = try s.foldInbox(pending, sink);
-                if (folded.items.items.len > 0) run_results.items[run_results.items.len - 1].output = own;
-            }
             const tokens = reply.usage.prompt_tokens + reply.usage.completion_tokens + output_tokens;
-            const ms: u64 = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0));
-            var waited = try s.commitDelivery(.{
-                .from = s.history.items.len,
-                .messages = pending.items,
+            try delivery.finishStep(.{
                 .context_tokens = tokens,
                 .model = s.cfg.model,
                 .usage = reply.usage,
                 .turn_step = @intCast(step_index + 1),
-                .ms = ms,
                 .model_ms = model_ms,
                 .transport = @tagName(s.codex_state.last.transport),
                 .incremental = s.codex_state.last.incremental,
@@ -761,13 +662,9 @@ pub const Session = struct {
                 .run_ms = run_ms,
                 .calls = run_timing.entries[0..run_timing.count],
                 .calls_omitted = run_timing.omitted,
-                .task_ids = s.tools.progress.highWater(s.io),
                 .tool_bytes = run_timing.tool_bytes,
                 .output_bytes = run_timing.output_bytes + background_output_bytes,
-                .run_results = run_results.items,
-            }, folded, .fold, scopes.items);
-            defer waited.deinit(s.gpa);
-            for (waited.items.items) |item| try s.announceDelivered(item, sink);
+            }, run_results.items, scopes.items, waiting, started);
             s.summary.?.steps += 1;
             s.summary.?.usage = s.usage;
             s.summary.?.timing.model_ms += model_ms;
@@ -776,7 +673,6 @@ pub const Session = struct {
             s.summary.?.timing.output_bytes += run_timing.output_bytes + background_output_bytes;
             s.summary.?.timing.llm_calls += run_timing.llm_calls;
             s.summary.?.timing.agent_calls += run_timing.agent_calls;
-            pending.clearRetainingCapacity();
             try sink.emit(sink.ctx, .{ .usage = s.usage });
             if (reply.tool_calls.len == 0 or waiting) {
                 if (!s.tools.background.pending(s.io)) return;
@@ -1165,52 +1061,6 @@ test "tuning follows the model, NIB_TUNE and the log" {
     }
     try env.put("NIB_TUNE", "delivery=nope");
     try t.expectError(error.InvalidTuning, Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root, .environ = &env }));
-}
-
-test "tool delivery folds queued results and user messages into the last tool message" {
-    const t = std.testing;
-    var tmp = t.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena: std.heap.ArenaAllocator = .init(t.allocator);
-    defer arena.deinit();
-    const root = try std.fmt.allocPrint(arena.allocator(), ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
-    defer client.deinit();
-    var env: std.process.Environ.Map = .init(t.allocator);
-    defer env.deinit();
-    var session = try Session.init(t.allocator, t.io, &client, .{ .base_url = "invalid://local", .api_key = "mock", .model = "deepseek-flash" }, .{ .home = root, .user_home = root, .environ = &env });
-    defer session.deinit();
-    const Quiet = struct {
-        events: usize = 0,
-        inserted: usize = 0,
-        fn emit(ctx: *anyopaque, _: Event) !void {
-            const quiet: *@This() = @ptrCast(@alignCast(ctx));
-            quiet.events += 1;
-        }
-        fn user(ctx: *anyopaque, _: u64) !void {
-            const quiet: *@This() = @ptrCast(@alignCast(ctx));
-            quiet.inserted += 1;
-        }
-    };
-    var ctx: Quiet = .{};
-    const sink: Sink = .{ .ctx = &ctx, .emit = Quiet.emit, .onUserInserted = Quiet.user };
-    var pending: std.ArrayList(provider.Message) = .empty;
-    defer pending.deinit(t.allocator);
-    try pending.append(t.allocator, .{ .role = "assistant", .content = "" });
-    try pending.append(t.allocator, .{ .role = "tool", .tool_call_id = "run", .content = "output" });
-    var none = try session.foldInbox(&pending, sink);
-    none.deinit(t.allocator);
-    try t.expectEqualStrings("output", pending.items[1].content.?);
-    _ = try session.inbox.enqueueBackground(t.allocator, t.io, "b1", .bash, .finished, true, "[background bash b1 finished]\n{\"exit_code\":0}", false, 0, null);
-    _ = try session.inbox.enqueue(t.allocator, t.io, "wait, also fix x");
-    var folded = try session.foldInbox(&pending, sink);
-    defer folded.deinit(t.allocator);
-    try t.expectEqual(@as(usize, 2), pending.items.len);
-    try t.expectEqualStrings("output\n\n[background bash b1 finished]\n{\"exit_code\":0}\n\n[user message]\nwait, also fix x", pending.items[1].content.?);
-    try t.expectEqual(@as(usize, 2), folded.items.items.len);
-    try t.expectEqual(@as(usize, 1), ctx.inserted);
-    try t.expectEqual(@as(usize, 1), ctx.events);
-    try t.expect(session.inbox.empty(t.io));
 }
 
 test "switchConfig updates a zero-Step Session in place and replaces one with Steps" {

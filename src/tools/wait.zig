@@ -1,6 +1,8 @@
 const std = @import("std");
 const tools = @import("../tools.zig");
 const sandbox = @import("../sandbox.zig");
+const delivery = @import("../session/delivery.zig");
+const inbox = @import("../session/inbox.zig");
 
 const Bash = struct {
     exit_code: std.json.Value,
@@ -17,7 +19,7 @@ pub fn wait(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.
     const a = arena.allocator();
     const requested = std.json.parseFromSliceLeaky(std.json.Value, a, args, .{}) catch return tools.fail(gpa, "expected an optional array of task ids", .{});
     const bg = &t.background;
-    const inbox = bg.inbox orelse return tools.fail(gpa, "no background tasks in this Session", .{});
+    if (bg.inbox == null) return tools.fail(gpa, "no background tasks in this Session", .{});
     var remaining: std.ArrayList([]const u8) = .empty;
     switch (requested) {
         .array => |items| for (items.items) |item| {
@@ -33,10 +35,9 @@ pub fn wait(t: *tools.Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.
         var i: usize = 0;
         while (i < remaining.items.len) {
             const id = remaining.items[i];
-            if (try inbox.takeForWait(gpa, t.io, id, t.runId())) |taken| {
+            if (try delivery.claim(t, gpa, id)) |taken| {
                 defer taken.deinit(gpa);
-                bg.delivered(t.io, id, taken.invocation);
-                const output = if (std.mem.indexOfScalar(u8, taken.text, '\n')) |nl| taken.text[nl + 1 ..] else taken.text;
+                const output = inbox.resultText(taken.text);
                 const bash: ?Bash = if (taken.bash) |value| .{
                     .exit_code = if (value.status.exit_code) |code| .{ .integer = code } else .null,
                     .timed_out = value.status.elapsed_ms != null,

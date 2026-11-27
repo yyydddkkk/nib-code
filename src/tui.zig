@@ -517,12 +517,12 @@ pub const App = struct {
             },
             .background => |b| {
                 if (b.hook_notice) |notice| try app.transcript.backgroundHookNotice(gpa, b.id, notice);
-                if (b.kind == .run and b.tool_summary != null) try app.transcript.updateBackgroundRun(gpa, b.id, b.result orelse "", b.changes, b.tool_summary.?);
                 switch (b.state) {
                     .started => app.background_count += 1,
                     .finished => {
                         app.background_count -|= 1;
-                        try app.transcript.backgroundResult(gpa, b.kind, b.id, b.ok orelse false, b.result orelse "{}");
+                        const details: ?Transcript.RunDetails = if (b.tool_summary) |summary| .{ .changes = b.changes, .summary = summary } else null;
+                        try app.transcript.finishBackground(gpa, b.kind, b.id, b.ok orelse false, b.result orelse "{}", details);
                     },
                     .lost => {
                         app.background_count -|= 1;

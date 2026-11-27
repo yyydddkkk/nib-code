@@ -139,7 +139,7 @@ def test_edit_run_shows_only_diff(tmp):
     code = ('/* edit-script-marker */ console.log(await tools.edit('
             '{path: "sample.txt", old_text: "before-edit", new_text: "after-edit"}));')
     replies = [Reply("editing", code=code), Reply("edit-done")]
-    with fixture(tmp, replies) as (terminal, _, __):
+    with fixture(tmp, replies) as (terminal, home, _):
         (tmp / "sample.txt").write_text("before-edit\n")
         terminal.send("edit the file\r")
         terminal.wait_turn("edit-done")
@@ -159,6 +159,8 @@ def test_edit_run_shows_only_diff(tmp):
             assert "Result" not in shown and "Script" not in shown, shown
             assert "replaced" not in shown and "edit-script-marker" not in shown, shown
         assert (tmp / "sample.txt").read_text() == "after-edit\n"
+        run = next(message for message in history(home) if message["role"] == "tool")
+        assert run["run_changed_files"] == 1, run
 
 
 def test_caught_edit_failure_keeps_result_and_script(tmp):

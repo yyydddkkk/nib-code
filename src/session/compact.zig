@@ -73,42 +73,15 @@ fn compactWithPending(s: *Session, focus: []const u8, pending: []const provider.
     if (cancel.load(.acquire)) return error.Canceled;
     const summary = std.mem.trim(u8, reply.text, " \t\r\n");
     if (summary.len == 0 or reply.tool_calls.len != 0) return error.InvalidSummary;
-    var replacement: std.ArrayList(provider.Message) = .empty;
-    defer replacement.deinit(s.gpa);
-    try replacement.append(s.gpa, .{ .role = "user", .content = try std.mem.concat(a, u8, &.{ summary_prefix, summary }) });
-    if (plan.pinned) |i| if (i < plan.cut) try replacement.append(s.gpa, history[i]);
-    const tail_base = replacement.items.len;
-    try replacement.appendSlice(s.gpa, plan.tail);
-    try replacement.appendSlice(s.gpa, history[plan.last_end..]);
-    var after = estimateTokens(history[0..1], s.cfg) + estimateTokens(replacement.items, s.cfg);
-    if (after > plan.limit) {
+    const replacement = try plan.prepare(a, temporary, history, summary, s.cfg) orelse {
         try sink.emit(sink.ctx, .{ .notice = "compaction skipped: the summary would exceed the context budget" });
         return .ineffective;
-    }
-    if (save != null and plan.cut == plan.last_end) {
-        var buffer: [3]usize = undefined;
-        const evidence = recentEvidence(history, plan.cut, &buffer);
-        if (evidence.len > 0) {
-            const handoff = try handoffText(temporary, replacement.items[0].content.?, history, evidence, save.?);
-            const delta = handoff.len / 3 - replacement.items[0].content.?.len / 3;
-            if (delta <= plan.limit - after) {
-                for (evidence) |i| try archive(s, save.?, history[i].content.?, cancel);
-                replacement.items[0].content = try a.dupe(u8, handoff);
-                after += delta;
-            }
-        }
-    }
-    for (plan.archives) |i| {
-        try archive(s, save.?, history[plan.cut + i].content.?, cancel);
-        const message = &replacement.items[tail_base + i];
-        message.content = try a.dupe(u8, message.content.?);
-    }
-    if (cancel.load(.acquire)) return error.Canceled;
+    };
     const old_len = history.len;
-    try s.commit(1, replacement.items, after, null);
+    try replacement.publish(s, cancel);
     s.compact_backoff = 0;
     try sink.emit(sink.ctx, .{ .usage = s.usage });
-    const message = try std.fmt.allocPrint(a, "compacted context: {d} → {d} messages, ~{d} → ~{d} tokens", .{ old_len, s.history.items.len, plan.before, after });
+    const message = try std.fmt.allocPrint(a, "compacted context: {d} → {d} messages, ~{d} → ~{d} tokens", .{ old_len, s.history.items.len, plan.before, replacement.tokens });
     try sink.emit(sink.ctx, .{ .notice = message });
     return .compacted;
 }
@@ -163,17 +136,80 @@ fn summaryBudget(window: u64) u32 {
     return @intCast(@min(2048, @max(32, window / 8)));
 }
 
+const Replacement = struct {
+    messages: []const provider.Message,
+    tokens: u64,
+    evidence: []const []const u8,
+    save: ?output.Save,
+
+    fn publish(replacement: Replacement, s: *Session, cancel: *const std.atomic.Value(bool)) !void {
+        if (replacement.save) |target| {
+            var save = target;
+            save.write = true;
+            for (replacement.evidence) |text| {
+                if (cancel.load(.acquire)) return error.Canceled;
+                const reference = try output.saveRecordedOutput(s.gpa, save, text);
+                s.gpa.free(reference);
+            }
+        }
+        if (cancel.load(.acquire)) return error.Canceled;
+        try s.commit(1, replacement.messages, replacement.tokens, null);
+    }
+};
+
+const ArchivedResult = struct {
+    tail_index: usize,
+    original: []const u8,
+};
+
+const Retention = struct {
+    cut: usize,
+    last_end: usize,
+    before: u64,
+    limit: u64,
+    summary_tokens: u32,
+    pinned: ?usize,
+    tail: []const provider.Message,
+    archives: []const ArchivedResult,
+    save: ?output.Save,
+
+    // Only the message array and evidence list may borrow the scratch arena.
+    fn prepare(plan: Retention, a: std.mem.Allocator, scratch: std.mem.Allocator, history: []const provider.Message, summary: []const u8, cfg: provider.Config) !?Replacement {
+        var messages: std.ArrayList(provider.Message) = .empty;
+        var evidence: std.ArrayList([]const u8) = .empty;
+        try messages.append(scratch, .{ .role = "user", .content = try std.mem.concat(a, u8, &.{ summary_prefix, summary }) });
+        if (plan.pinned) |i| if (i < plan.cut) try messages.append(scratch, history[i]);
+        const tail_base = messages.items.len;
+        try messages.appendSlice(scratch, plan.tail);
+        try messages.appendSlice(scratch, history[plan.last_end..]);
+        var tokens = estimateTokens(history[0..1], cfg) + estimateTokens(messages.items, cfg);
+        if (tokens > plan.limit) return null;
+
+        if (plan.save != null and plan.cut == plan.last_end) {
+            var buffer: [3][]const u8 = undefined;
+            const recent = recentEvidence(history, plan.cut, &buffer);
+            if (recent.len != 0) {
+                const handoff = try handoffText(scratch, messages.items[0].content.?, recent, plan.save.?);
+                const delta = handoff.len / 3 - messages.items[0].content.?.len / 3;
+                if (delta <= plan.limit - tokens) {
+                    try evidence.appendSlice(scratch, recent);
+                    messages.items[0].content = try a.dupe(u8, handoff);
+                    tokens += delta;
+                }
+            }
+        }
+
+        for (plan.archives) |archive| {
+            try evidence.append(scratch, archive.original);
+            const message = &messages.items[tail_base + archive.tail_index];
+            message.content = try a.dupe(u8, message.content.?);
+        }
+        return .{ .messages = messages.items, .tokens = tokens, .evidence = evidence.items, .save = plan.save };
+    }
+};
+
 const Plan = union(enum) {
-    ready: struct {
-        cut: usize,
-        last_end: usize,
-        before: u64,
-        limit: u64,
-        summary_tokens: u32,
-        pinned: ?usize,
-        tail: []const provider.Message,
-        archives: []const usize,
-    },
+    ready: Retention,
     too_few_steps,
     no_room,
 };
@@ -224,7 +260,7 @@ fn planHistory(a: std.mem.Allocator, history: []const provider.Message, pending:
     const recent_target = if (fixed < goal) goal - fixed else 2048;
     var remaining: u64 = @min(16_384, recent_target, available - summary_tokens);
     const tail = try a.dupe(provider.Message, history[floor..last_end]);
-    var archives: std.ArrayList(usize) = .empty;
+    var archives: std.ArrayList(ArchivedResult) = .empty;
     var start = last_end;
     var i = start;
     while (i > floor) {
@@ -242,7 +278,7 @@ fn planHistory(a: std.mem.Allocator, history: []const provider.Message, pending:
                 const preview = try archivePreview(a, target, text);
                 if (preview.len >= text.len) continue;
                 message.content = preview;
-                try archives.append(a, index);
+                try archives.append(a, .{ .tail_index = index, .original = text });
             }
             cost = estimateTokens(group, cfg) -| credit;
         };
@@ -254,7 +290,7 @@ fn planHistory(a: std.mem.Allocator, history: []const provider.Message, pending:
         start = i;
     }
     const offset = start - floor;
-    for (archives.items) |*index| index.* -= offset;
+    for (archives.items) |*entry| entry.tail_index -= offset;
     return .{ .ready = .{
         .cut = start,
         .last_end = last_end,
@@ -264,6 +300,7 @@ fn planHistory(a: std.mem.Allocator, history: []const provider.Message, pending:
         .pinned = pinned,
         .tail = tail[offset..],
         .archives = archives.items,
+        .save = save,
     } };
 }
 
@@ -271,35 +308,28 @@ fn archivable(text: []const u8) bool {
     return text.len >= 2048 and text.len <= output.max_saved_bytes;
 }
 
-fn recentEvidence(history: []const provider.Message, cut: usize, buffer: []usize) []const usize {
-    var evidence: std.ArrayList(usize) = .initBuffer(buffer);
+fn recentEvidence(history: []const provider.Message, cut: usize, buffer: [][]const u8) []const []const u8 {
+    var evidence: std.ArrayList([]const u8) = .initBuffer(buffer);
     var i = cut;
     while (i > 1 and evidence.items.len < buffer.len) {
         i -= 1;
         if (!std.mem.eql(u8, history[i].role, "tool")) continue;
-        if (archivable(history[i].content orelse "")) evidence.appendAssumeCapacity(i);
+        const text = history[i].content orelse continue;
+        if (archivable(text)) evidence.appendAssumeCapacity(text);
     }
     return evidence.items;
 }
 
-fn handoffText(a: std.mem.Allocator, summary: []const u8, history: []const provider.Message, evidence: []const usize, save: output.Save) ![]const u8 {
+fn handoffText(a: std.mem.Allocator, summary: []const u8, evidence: []const []const u8, save: output.Save) ![]const u8 {
     var writer: std.Io.Writer.Allocating = .init(a);
     try writer.writer.writeAll(summary);
     try writer.writer.writeAll("\n\nRecent tool results (read as needed with tools.read):");
-    for (evidence) |i| {
-        const reference = try output.saveRecordedOutput(a, save, history[i].content.?);
+    for (evidence) |text| {
+        const reference = try output.saveRecordedOutput(a, save, text);
         defer a.free(reference);
         try writer.writer.print("\n{s}", .{reference});
     }
     return writer.written();
-}
-
-fn archive(s: *Session, save: output.Save, text: []const u8, cancel: *const std.atomic.Value(bool)) !void {
-    if (cancel.load(.acquire)) return error.Canceled;
-    var target = save;
-    target.write = true;
-    const reference = try output.saveRecordedOutput(s.gpa, target, text);
-    s.gpa.free(reference);
 }
 
 fn archivePreview(a: std.mem.Allocator, target: output.Save, text: []const u8) ![]u8 {
@@ -351,7 +381,12 @@ test "retention follows the request budget and keeps tool groups intact" {
     try t.expectEqual(@as(usize, 4), plan.cut);
     try t.expectEqual(@as(?usize, 2), plan.pinned);
     try t.expectEqual(@as(usize, 4), plan.tail.len);
-    try t.expectEqualSlices(usize, &.{2}, plan.archives);
+    try t.expectEqual(@as(usize, 1), plan.archives.len);
+    try t.expectEqual(@as(usize, 2), plan.archives[0].tail_index);
+    try t.expectEqualStrings(body, plan.archives[0].original);
+    const replacement = (try plan.prepare(a, a, &messages, "handoff", cfg)).?;
+    try t.expectEqual(@as(usize, 1), replacement.evidence.len);
+    try t.expectEqualStrings(body, replacement.evidence[0]);
     try t.expect(std.mem.indexOf(u8, plan.tail[2].content.?, "use tools.read") != null);
     try t.expectEqualStrings("short result", plan.tail[3].content.?);
     try t.expectEqualStrings(body, messages[6].content.?);
@@ -400,4 +435,75 @@ test "compaction replaces images with placeholders and budgets them" {
     try t.expectEqualStrings("[image shot.png 1280×720 omitted]", (try withoutImages(a, bare)).content.?);
     const cfg: provider.Config = .{ .base_url = "", .api_key = "", .model = "mock" };
     try t.expectEqual(estimateTokens(&.{.{ .role = "user", .content = "look" }}, cfg) + image.estimated_tokens, estimateTokens(&.{message}, cfg));
+}
+
+test "compaction only publishes handoff evidence that fits the final budget" {
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg: provider.Config = .{ .base_url = "", .api_key = "", .model = "mock" };
+    const body = &@as([3072]u8, @splat('x'));
+    const history: []const provider.Message = &.{
+        .{ .role = "system", .content = "system" },
+        .{ .role = "tool", .content = body },
+    };
+    const target: output.Save = .{ .io = t.io, .dir = "unused", .write = false };
+    var plan: Retention = .{
+        .cut = history.len,
+        .last_end = history.len,
+        .before = 1024,
+        .limit = 1023,
+        .summary_tokens = 32,
+        .pinned = null,
+        .tail = &.{},
+        .archives = &.{},
+        .save = target,
+    };
+    const with_reference = (try plan.prepare(a, a, history, "summary", cfg)).?;
+    try t.expectEqual(@as(usize, 1), with_reference.evidence.len);
+    try t.expectEqualStrings(body, with_reference.evidence[0]);
+    try t.expect(std.mem.indexOf(u8, with_reference.messages[0].content.?, "[recorded output:") != null);
+
+    plan.limit = with_reference.tokens - 1;
+    const no_reference = (try plan.prepare(a, a, history, "summary", cfg)).?;
+    try t.expectEqual(@as(usize, 0), no_reference.evidence.len);
+    try t.expectEqualStrings(summary_prefix ++ "summary", no_reference.messages[0].content.?);
+    plan.limit = no_reference.tokens - 1;
+    try t.expect(try plan.prepare(a, a, history, "summary", cfg) == null);
+}
+
+test "compaction leaves the Session log untouched when evidence cannot be saved" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    var s = try Session.init(t.allocator, t.io, &client, .{ .base_url = "invalid://local", .api_key = "mock", .model = "mock" }, .{ .home = root, .user_home = root });
+    defer s.deinit();
+    const log_path = try std.fmt.allocPrint(a, "{s}/sessions/{s}.jsonl", .{ root, s.id });
+    const cwd = std.Io.Dir.cwd();
+    const before = try cwd.readFileAlloc(t.io, log_path, a, .unlimited);
+    const tokens = s.context_tokens;
+    const history_len = s.history.items.len;
+    const blocked = try std.fs.path.join(a, &.{ log_path, "outputs" });
+    const replacement: Replacement = .{
+        .messages = &.{.{ .role = "user", .content = "summary" }},
+        .tokens = 42,
+        .evidence = &.{"exact recorded result"},
+        .save = .{ .io = t.io, .dir = blocked, .write = false },
+    };
+    const cancel: std.atomic.Value(bool) = .init(false);
+    if (replacement.publish(&s, &cancel)) |_| {
+        return error.TestUnexpectedResult;
+    } else |err| {
+        try t.expect(err == error.NotDir or err == error.FileNotFound);
+    }
+    try t.expectEqual(tokens, s.context_tokens);
+    try t.expectEqual(history_len, s.history.items.len);
+    try t.expectEqualStrings(before, try cwd.readFileAlloc(t.io, log_path, a, .unlimited));
 }

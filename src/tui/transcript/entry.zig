@@ -19,6 +19,8 @@ pub const max_segments = 16;
 
 pub const Kind = enum { user, assistant, run, background, info, err, bill, failure, changes };
 
+pub const RunState = enum { running, background, superseded, ok, failed, warning, lost, timed_out, canceled };
+
 pub const Entry = struct {
     turn_heading: bool = false,
     kind: Kind,
@@ -56,7 +58,7 @@ pub const Entry = struct {
     file_parts: std.ArrayList(vaxis.Segment) = .empty,
     title_wraps: bool = false,
     title_rows: u16 = 1,
-    run: enum { running, background, superseded, ok, failed, warning, lost, timed_out, canceled } = .running,
+    run: RunState = .running,
     elapsed_ms: u64 = 0,
     step_effort: ?provider.StepEffort = null,
     /// Collapsible entries share the transcript ctrl+o state.
