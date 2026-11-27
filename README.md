@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 Installs to `~/.local/bin`. `nib update` upgrades in place. `NIB_VERSION` pins a release, `NIB_INSTALL_DIR` changes the directory.
 
-Windows x64: download the [CLI preview](docs/windows-cli-preview.md) for `nib ask` and `nib js`. The interactive TUI is not included.
+Windows x64: see the [Windows preview](docs/windows-cli-preview.md) for the interactive TUI, CLI, and platform limitations.
 
 From source (Zig 0.17): `zig build -Doptimize=ReleaseFast --prefix ~/.local`
 

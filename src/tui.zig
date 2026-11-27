@@ -133,7 +133,10 @@ pub fn run(init: std.process.Init, session: *Session) !void {
     const gpa = init.gpa;
 
     var tty_buf: [4096]u8 = undefined;
-    var tty = try vaxis.Tty.init(io, &tty_buf);
+    var tty = vaxis.Tty.init(io, &tty_buf) catch |err| {
+        if (@import("builtin").os.tag == .windows and err == error.InvalidHandle) return error.WindowsTerminalRequired;
+        return err;
+    };
     defer tty.deinit();
     const w = tty.writer();
 

@@ -23,9 +23,13 @@ class Model(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         prompt = next(m['content'] for m in reversed(request['messages']) if m['role'] == 'user')
-        self.server.prompts.put(prompt)
-        self.server.turns += 1
-        choice = {'index': 0, 'delta': {'content': f'mock-answer-{self.server.turns}'}, 'finish_reason': 'stop'}
+        if request.get('tools'):
+            self.server.prompts.put(prompt)
+            self.server.turns += 1
+            answer = f'mock-answer-{self.server.turns}'
+        else:
+            answer = 'No reply'  # Draft prediction is not a submitted Turn.
+        choice = {'index': 0, 'delta': {'content': answer}, 'finish_reason': 'stop'}
         body = ('data: ' + json.dumps({'choices': [choice]}) + '\n\ndata: [DONE]\n\n').encode()
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
@@ -82,7 +86,8 @@ class Terminal:
 
 def exercise(t, prompts):
     def submitted(expected):
-        assert prompts.get(timeout=10) == expected, expected
+        actual = prompts.get(timeout=10)
+        assert actual == expected, (expected, actual)
 
     t.shown('mock-windows-model')
     t.send('typing-xyz\x7f\x1b[DQ')
