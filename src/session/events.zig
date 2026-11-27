@@ -116,8 +116,8 @@ pub const Event = union(enum) {
     step: struct { n: u32, effort: []const u8 },
     /// Slices are valid only during the callback.
     delta: struct { kind: provider.Kind, text: []const u8 },
-    run_start: []const u8,
-    run_end: struct { background_id: ?[]const u8 = null, ok: bool, output: []const u8, changes: []const Change = &.{}, tool_summary: ?Summary = null },
+    run_start: struct { code: []const u8, cwd: ?[]const u8 = null },
+    run_end: struct { cwd: ?[]const u8 = null, background_id: ?[]const u8 = null, ok: bool, output: []const u8, changes: []const Change = &.{}, tool_summary: ?Summary = null },
     retry: struct { attempt: u32, delay_ms: u64, reason: []const u8 },
     notice: []const u8,
     usage: provider.Usage,
@@ -138,10 +138,11 @@ pub const JsonEvent = union(enum) {
 
     pub fn jsonStringify(value: JsonEvent, writer: *std.json.Stringify) !void {
         switch (value) {
-            .event => |event| if (event == .background) {
-                const b = event.background;
-                try writer.write(.{ .background = .{ .id = b.id, .kind = b.kind, .state = b.state, .ok = b.ok, .completion = b.completion, .execution = b.execution } });
-            } else try writer.write(event),
+            .event => |event| switch (event) {
+                .run_start => |run| try writer.write(.{ .run_start = run.code }),
+                .background => |b| try writer.write(.{ .background = .{ .id = b.id, .kind = b.kind, .state = b.state, .ok = b.ok, .completion = b.completion, .execution = b.execution } }),
+                else => try writer.write(event),
+            },
             inline else => |payload, tag| {
                 try writer.beginObject();
                 try writer.objectField(@tagName(tag));

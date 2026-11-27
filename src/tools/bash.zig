@@ -30,35 +30,11 @@ const Args = struct {
     }
 };
 
-const WorkingDir = struct {
-    path: [:0]const u8,
-    dir: ?std.Io.Dir = null,
+const WorkingDir = @import("working_dir.zig").WorkingDir;
 
-    fn open(t: *Tools, gpa: std.mem.Allocator, path: ?[]const u8) !WorkingDir {
-        const requested = path orelse return .{ .path = try std.process.currentPathAlloc(t.io, gpa) };
-        if (policy.checkCredentials(requested, t.codexHome(), t.data_home) == .deny) return error.CredentialAccessDenied;
-        const dir = try std.Io.Dir.cwd().openDir(t.io, requested, .{});
-        errdefer dir.close(t.io);
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const real = buf[0..try dir.realPath(t.io, &buf)];
-        if (policy.checkCredentials(real, t.codexHome(), t.data_home) == .deny) return error.CredentialAccessDenied;
-        const auth_path = try std.fs.path.join(gpa, &.{ real, "auth.json" });
-        defer gpa.free(auth_path);
-        const canonical_auth = try tools.normalizedPath(t.io, gpa, auth_path);
-        defer gpa.free(canonical_auth);
-        try t.checkCredentialPath(gpa, canonical_auth);
-        return .{ .path = try gpa.dupeSentinel(u8, real, 0), .dir = dir };
-    }
-
-    fn close(cwd: WorkingDir, t: *Tools, gpa: std.mem.Allocator) void {
-        if (cwd.dir) |dir| dir.close(t.io);
-        gpa.free(cwd.path);
-    }
-
-    fn failure(gpa: std.mem.Allocator, path: ?[]const u8, err: anyerror) !sandbox.ToolResult {
-        return fail(gpa, "cannot use cwd {f}: {s}", .{ std.json.fmt(path orelse ".", .{}), @errorName(err) });
-    }
-};
+fn cwdFailure(gpa: std.mem.Allocator, path: ?[]const u8, err: anyerror) !sandbox.ToolResult {
+    return fail(gpa, "cannot use cwd {f}: {s}", .{ std.json.fmt(path orelse ".", .{}), @errorName(err) });
+}
 
 pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
     if (windows and t.sandboxEnabled()) return fail(gpa, "Workspace isolation is unavailable on Windows", .{});
@@ -83,10 +59,15 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     }
 
     _ = shell.executable(t.io) catch |err| return shellFailure(gpa, err);
-    const cwd = WorkingDir.open(t, gpa, a.value.cwd) catch |err| return WorkingDir.failure(gpa, a.value.cwd, err);
+    const base = t.runCwd();
+    const cwd = WorkingDir.open(t, gpa, a.value.cwd, base) catch |err| return cwdFailure(gpa, a.value.cwd orelse base, err);
     defer cwd.close(t, gpa);
     if (a.value.background) {
-        const result = t.background.start(t, gpa, .bash, args, a.value.command) catch |err| return switch (err) {
+        var resolved = a.value;
+        if (cwd.dir != null) resolved.cwd = cwd.path;
+        const captured = try std.json.Stringify.valueAlloc(gpa, resolved, .{ .emit_null_optional_fields = false });
+        defer gpa.free(captured);
+        const result = t.background.start(t, gpa, .bash, captured, a.value.command) catch |err| return switch (err) {
             error.BackgroundBashLimit => fail(gpa, "background bash limit is {d} running commands; retry after a background result arrives", .{@import("background.zig").Background.bash_limit}),
             else => err,
         };
@@ -107,7 +88,7 @@ pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, ca
     var value = progress;
     value.prompt = parsed.value.command;
     value.detached = parsed.value.detached;
-    const cwd = WorkingDir.open(t, gpa, parsed.value.cwd) catch |err| return WorkingDir.failure(gpa, parsed.value.cwd, err);
+    const cwd = WorkingDir.open(t, gpa, parsed.value.cwd, null) catch |err| return cwdFailure(gpa, parsed.value.cwd, err);
     defer cwd.close(t, gpa);
     return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution, status);
 }

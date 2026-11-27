@@ -178,7 +178,9 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
                         try self.w.writeAll(d.text);
                         try self.w.flush();
                     },
-                    .run_start => |code| std.debug.print("\n\x1b[33mrun ▸\x1b[0m {s}\n", .{code}),
+                    .run_start => |started| {
+                        if (started.cwd) |cwd| std.debug.print("\n\x1b[33mrun\x1b[0m · cwd {f}\n{s}\n", .{ std.json.fmt(cwd, .{}), started.code }) else std.debug.print("\n\x1b[33mrun ▸\x1b[0m {s}\n", .{started.code});
+                    },
                     .run_end => |r| {
                         std.debug.print("\x1b[2m{s}\x1b[0m\n", .{r.output});
                         for (r.changes) |c| std.debug.print("\x1b[2mchanged {s}{s} +{d} −{d}\x1b[0m\n", .{ c.path, if (c.created) " (new)" else "", c.added, c.removed });

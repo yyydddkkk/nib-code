@@ -89,9 +89,13 @@ Indices are 0-based creation order across all Run tools, not per-tool/background
 
 Default 5-minute Run timeout accumulates QuickJS segments (initial script, jobs, result parse/resolve, serialization, error conversion), excluding tool/sleep waits, never resetting per await. It interrupts JS loops; bash/fetch/agent own deadlines. Check cancellation at ≤20 ms while waiting; Esc/SIGINT/SIGTERM remain effective with paused budgets.
 
-## Bash working directory
+## Run working directory
 
-`tools.bash({ command, cwd })` uses the Session directory by default. Relative `cwd` paths are resolved from that directory. The directory must exist; invalid directories and unknown options reject before launch. `cwd` applies only to that command, including background commands. It does not change the Session directory or add a writable sandbox root. Bash start records log the resolved directory, which is also used to match [superseded commands](tool-delegation.md#identical-commands-supersede-stale-execution).
+A JSON `run` call can provide `cwd` alongside `code`. A raw JavaScript `run` call can start with `// @cwd: "../feature worktree"` (a JSON string after the colon). The directory must exist; a relative `cwd` is resolved from the Session directory. An invalid directory fails before JavaScript runs.
+
+`read`, `edit`, `write`, `view`, `grep`, `glob`, and `bash` resolve relative paths from this directory for that Run only. Relative paths returned by search tools can be passed directly to the other tools in the same Run. Without `cwd`, tools use the Session directory as before. Changing the Run directory does not change project instructions, hook directories, or sandbox writable roots.
+
+`tools.bash({ command, cwd })` can override the directory for one command. A relative override is resolved from the Run directory, or from the Session directory if the Run did not specify one. Background Bash retains the resolved directory. Bash start records log it, and it is also used to match [superseded commands](tool-delegation.md#identical-commands-supersede-stale-execution).
 
 ## Bash execution deadlines
 
@@ -174,7 +178,7 @@ A failed configured `after_edit` hook adds `{"hook":{"command":"...","exit_code"
 
 The model can call `rerun({base: "12:0", edits: [{old_text: "...", new_text: "..."}]})`.
 A completed script failure includes its Session-scoped source reference: the 1-based
-assistant Step ordinal and 0-based Run index, as in replay. Each edit must have
+assistant Step ordinal and 0-based Run index, as in replay. A `rerun` keeps the original Run's resolved `cwd`, even after Session resume. Each edit must have
 nonempty `old_text` matching exactly once. Each edit searches the copy left by the
 previous edits. Rejected edits report their 1-based index in the submitted order
 without echoing `old_text`, and execute nothing. Syntax errors can include a

@@ -79,7 +79,7 @@ pub const PollTarget = struct {
     }
 };
 
-pub const Executed = struct { scope_id: ?usize = null, executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
+pub const Executed = struct { cwd: ?[]const u8 = null, scope_id: ?usize = null, executed_source: ?[]const u8 = null, images: []const Image = &.{}, output: []const u8, ok: bool, empty: bool = false, run_ms: ?u64 = null, remaining_steps: ?usize = null, tool_summary: ?ToolSummary = null, background_id: ?[]const u8 = null };
 
 /// Output is arena-owned.
 pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming) !Executed {
@@ -88,12 +88,14 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     if (!rerun and !std.mem.eql(u8, call.function.name, "run"))
         return .{ .ok = false, .output = try a.dupe(u8, "error: expected run or rerun") };
     var base: ?[]const u8 = null;
+    var requested_cwd: ?[]const u8 = null;
     const code: []const u8 = if (rerun) resolve: {
         const args = std.json.parseFromSlice(Rerun, a, call.function.arguments, .{}) catch
             return .{ .ok = false, .output = "error: expected {base: string, edits: [{old_text: string, new_text: string}]}" };
         base = args.value.base;
         const source = try s.log.findSource(s.io, a, args.value.base) orelse
             return .{ .ok = false, .output = "error: base source unavailable in this Session" };
+        requested_cwd = source.cwd;
         if (!source.failed) return .{ .ok = false, .output = "error: base must be a completed failed script" };
         if (args.value.edits.len == 0) return .{ .ok = false, .output = "error: at least one edit is required" };
         switch (try patch(a, source.code, args.value.edits)) {
@@ -103,16 +105,26 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
             }) },
         }
     } else resolve: {
-        const Args = struct { code: []const u8 };
+        const Args = struct { code: []const u8, cwd: ?[]const u8 = null };
         const args = std.json.parseFromSlice(Args, a, call.function.arguments, .{ .ignore_unknown_fields = true }) catch
-            return .{ .ok = false, .output = "error: arguments must be a JSON object { \"code\": string }" };
+            return .{ .ok = false, .output = "error: expected Run arguments {code: string, cwd?: string}" };
+        requested_cwd = if (std.mem.eql(u8, call.type, "custom")) customCwd(a, args.value.code) catch
+            return .{ .ok = false, .output = "error: expected a JSON string after // @cwd:" } else args.value.cwd;
         break :resolve args.value.code;
     };
-    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .base = base, .arguments = call.function.arguments, .failed = false });
-    try sink.emit(sink.ctx, .{ .run_start = code });
+    const cwd = if (requested_cwd) |requested| resolved: {
+        const dir = @import("../tools/working_dir.zig").WorkingDir.open(&s.tools, s.gpa, requested, null) catch |err|
+            return .{ .ok = false, .output = try std.fmt.allocPrint(a, "error: cannot use Run cwd {f}: {s}", .{ std.json.fmt(requested, .{}), @errorName(err) }) };
+        defer dir.close(&s.tools, s.gpa);
+        if (rerun and !std.mem.eql(u8, requested, dir.path))
+            return .{ .ok = false, .output = "error: original Run cwd no longer resolves to the same directory" };
+        break :resolved try a.dupe(u8, dir.path);
+    } else null;
+    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .cwd = cwd, .base = base, .arguments = call.function.arguments, .failed = false });
+    try sink.emit(sink.ctx, .{ .run_start = .{ .code = code, .cwd = cwd } });
     const before_omitted = timing.omitted;
     const started: std.Io.Clock.Timestamp = .now(s.io, .awake);
-    const ran = try executeTimed(s, code, cancel, timing, sink);
+    const ran = try executeTimed(s, code, cwd, cancel, timing, sink);
     if (ran == null) {
         const remaining = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
         const prompt = @import("prompt.zig");
@@ -124,8 +136,8 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
             prompt.backgroundWait(can_wait),
         });
         const text = try output_format.stepLimitOutput(a, message, remaining);
-        try sink.emit(sink.ctx, .{ .run_end = .{ .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id, .ok = true, .output = text, .tool_summary = .{} } });
-        return .{ .executed_source = if (rerun) code else null, .output = text, .ok = true, .run_ms = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0)), .remaining_steps = remaining, .tool_summary = .{}, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id };
+        try sink.emit(sink.ctx, .{ .run_end = .{ .cwd = cwd, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id, .ok = true, .output = text, .tool_summary = .{} } });
+        return .{ .cwd = cwd, .executed_source = if (rerun) code else null, .output = text, .ok = true, .run_ms = @intCast(@max(started.untilNow(s.io).raw.toMilliseconds(), 0)), .remaining_steps = remaining, .tool_summary = .{}, .background_id = s.tools.background.runs.items[s.tools.background.runs.items.len - 1].id };
     }
     const o = ran.?.outcome;
     defer o.deinit(s.gpa);
@@ -133,7 +145,7 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     if (o.hook_notice.len > 0) try sink.emit(sink.ctx, .{ .notice = o.hook_notice });
     const remaining_steps = if (s.cfg.limits.max_steps) |limit| limit -| s.steps else null;
     const failed = !o.ok and !cancel.load(.acquire) and !std.mem.eql(u8, o.text, "Error: run timed out");
-    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .base = base, .arguments = call.function.arguments, .failed = failed });
+    try s.log.source(s.io, a, .{ .step = s.log.steps + 1, .run = timing.run_index, .code = code, .cwd = cwd, .base = base, .arguments = call.function.arguments, .failed = failed });
     const save: ?output_format.Save = if (try s.tools.outputsDir(a)) |dir| .{ .io = s.io, .dir = dir } else null;
     const formatted = try output_format.formatSaved(a, o, s.cfg.limits.run_output_bytes, save);
     const referenced = if (failed) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, s.log.steps + 1, timing.run_index }) else formatted;
@@ -141,15 +153,22 @@ pub fn execute(s: *Session, call: provider.ToolCall, sink: Sink, cancel: *const 
     const run_ms = timing.elapsed();
     const tool_summary = try ToolSummary.init(a, timing.entries[0..timing.count], timing.run_index, timing.omitted - before_omitted);
     try tool_summary.annotateViews(a, ran.?.images);
-    try sink.emit(sink.ctx, .{ .run_end = .{ .ok = o.ok, .output = output, .changes = ran.?.changes, .tool_summary = tool_summary } });
-    return .{ .executed_source = if (rerun) code else null, .output = output, .ok = o.ok, .scope_id = ran.?.scope_id, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
+    try sink.emit(sink.ctx, .{ .run_end = .{ .cwd = cwd, .ok = o.ok, .output = output, .changes = ran.?.changes, .tool_summary = tool_summary } });
+    return .{ .cwd = cwd, .executed_source = if (rerun) code else null, .output = output, .ok = o.ok, .scope_id = ran.?.scope_id, .empty = std.mem.eql(u8, o.text, "undefined") and std.mem.trim(u8, o.logs, " \t\r\n").len == 0, .run_ms = run_ms, .remaining_steps = remaining_steps, .tool_summary = tool_summary, .images = ran.?.images };
 }
 
-fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming, sink: Sink) !?Ran {
+fn customCwd(a: std.mem.Allocator, code: []const u8) !?[]const u8 {
+    const prefix = "// @cwd:";
+    const first = code[0..(std.mem.indexOfScalar(u8, code, '\n') orelse code.len)];
+    if (!std.mem.startsWith(u8, first, prefix)) return null;
+    return try std.json.parseFromSliceLeaky([]const u8, a, first[prefix.len..], .{ .allocate = .alloc_always });
+}
+
+fn executeTimed(s: *Session, code: []const u8, cwd: ?[]const u8, cancel: *const std.atomic.Value(bool), timing: *sandbox.RunTiming, sink: Sink) !?Ran {
     defer s.tools.progress.drain(s.io) catch {};
     if (!s.tools.background.anyPending(s.io)) s.tools.progress.clear(s.gpa);
     s.tools.run_id += 1;
-    const job = try @import("run_job.zig").Job.create(&s.tools, s.gpa, code, s.log.steps + 1, timing.run_index, if (s.recorder) |*r| r else null);
+    const job = try @import("run_job.zig").Job.create(&s.tools, s.gpa, code, cwd, s.log.steps + 1, timing.run_index, if (s.recorder) |*r| r else null);
     var adopted = false;
     defer if (!adopted) job.destroy();
     var attempted = false;
@@ -188,9 +207,9 @@ fn executeTimed(s: *Session, code: []const u8, cancel: *const std.atomic.Value(b
     timing.agent_calls += job.timing.agent_calls;
     timing.started = job.timing.started;
     s.usage.add(s.tools.takeUsage());
-    const cwd = try std.process.currentPathAlloc(s.io, s.gpa);
-    defer s.gpa.free(cwd);
-    const changes = try job.scope.changes.take(s.gpa, s.arena.allocator(), cwd);
+    const session_cwd = try std.process.currentPathAlloc(s.io, s.gpa);
+    defer s.gpa.free(session_cwd);
+    const changes = try job.scope.changes.take(s.gpa, s.arena.allocator(), session_cwd);
     return try takeJobResult(job, s.arena.allocator(), changes);
 }
 
@@ -268,6 +287,38 @@ test "execute emits per-Run actual tool summaries including empty and overflow" 
     try t.expectEqual(@as(usize, 3), observed.ends);
 }
 
+test "custom Run takes cwd only from its first line and scopes view" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try tmp.dir.createDir(t.io, "feature space", .default_dir);
+    const png = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00";
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "feature space/pixel.png", .data = png });
+    var client: std.http.Client = .{ .allocator = t.allocator, .io = t.io };
+    defer client.deinit();
+    const cfg: provider.Config = .{ .provider = .openai, .base_url = "invalid://local", .api_key = "mock", .model = "mock" };
+    var session = try Session.init(t.allocator, t.io, &client, cfg, .{ .home = root, .user_home = root });
+    defer session.deinit();
+    var cancel: std.atomic.Value(bool) = .init(false);
+    var timing: sandbox.RunTiming = .init(t.io, .now(t.io, .awake));
+    const directory = try std.fmt.allocPrint(a, "{s}/feature space", .{root});
+    const code = try std.fmt.allocPrint(a, "// @cwd: {f}\r\nif (!(await tools.view({{path: 'pixel.png'}})).ok) throw Error('view failed');", .{std.json.fmt(directory, .{})});
+    const args = try std.json.Stringify.valueAlloc(a, .{ .code = code }, .{});
+    const SinkImpl = struct {
+        fn emit(_: *anyopaque, _: Event) !void {}
+    };
+    const result = try execute(&session, .{ .id = "custom", .type = "custom", .function = .{ .name = "run", .arguments = args } }, .{ .ctx = &cancel, .emit = SinkImpl.emit }, &cancel, &timing);
+    try t.expect(result.ok);
+    try t.expectEqual(@as(usize, 1), result.images.len);
+    try t.expectEqualStrings(try tmp.dir.realPathFileAlloc(t.io, "feature space", a), result.cwd.?);
+    try t.expectEqual(@as(?[]const u8, null), try customCwd(a, "1;\n// @cwd: bad"));
+    try t.expectError(error.SyntaxError, customCwd(a, "// @cwd: bad"));
+}
+
 const Edit = struct { old_text: []const u8, new_text: []const u8 };
 const Rerun = struct { base: []const u8, edits: []const Edit };
 
@@ -304,7 +355,7 @@ test "patch rejects overlapping matches and applies edits to a copy" {
 test "image handoff allocation failure leaves Outcome owned by Job" {
     const t = std.testing;
     var tools: @import("../tools.zig").Tools = .{ .io = t.io, .home = "/unused" };
-    const job = try @import("run_job.zig").Job.create(&tools, t.allocator, "'complete'", 1, 0, null);
+    const job = try @import("run_job.zig").Job.create(&tools, t.allocator, "'complete'", null, 1, 0, null);
     defer job.destroy();
     job.join();
     const original = job.outcome.?.text;

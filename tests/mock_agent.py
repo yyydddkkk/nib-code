@@ -120,7 +120,7 @@ def child_code(case, step):
 
 
 def reply(handler, provider, code, text):
-    run_name = "rerun" if isinstance(code, dict) else "run"
+    run_name = "rerun" if isinstance(code, dict) and "base" in code else "run"
     run_args = code if isinstance(code, dict) else {"code": code}
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")

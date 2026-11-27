@@ -47,7 +47,7 @@ pub const Event = union(enum) {
     /// Slices are owned by the receiver.
     step: struct { n: u32, effort: []u8 },
     delta: struct { kind: provider.Kind, text: []u8, step: u32 },
-    run_start: struct { code: []u8, step: u32 },
+    run_start: struct { code: []u8, cwd: ?[]const u8 = null, step: u32 },
     run_end: struct { background_id: ?[]const u8 = null, ok: bool, output: []u8, changes: ChangeText, tool_summary: ?ToolSummary = null },
     retry: []u8,
     notice: []u8,
@@ -95,7 +95,10 @@ pub const Event = union(enum) {
         switch (event) {
             .step => |s| gpa.free(s.effort),
             .delta => |d| gpa.free(d.text),
-            .run_start => |r| gpa.free(r.code),
+            .run_start => |r| {
+                gpa.free(r.code);
+                if (r.cwd) |cwd| gpa.free(cwd);
+            },
             .run_end => |r| {
                 if (r.background_id) |id| gpa.free(id);
                 gpa.free(r.output);
@@ -483,7 +486,7 @@ pub const App = struct {
                 app.turn_runs += 1;
                 app.activity.tool = "";
                 app.activity.set(app.io, .running);
-                try app.transcript.startRunWithEffort(gpa, r.code, app.step_effort);
+                try app.transcript.startRunIn(gpa, r.code, r.cwd, app.step_effort);
             },
             .run_end => |r| {
                 const elapsed = app.activity.label(app.io).ms;
@@ -1570,7 +1573,7 @@ test "quit drains owned events and closed queues reject Turn payloads without le
         const events = [_]SessionEvent{
             .{ .step = .{ .n = 1, .effort = "high" } },
             .{ .delta = .{ .kind = .text, .text = "answer" } },
-            .{ .run_start = "tools.write({})" },
+            .{ .run_start = .{ .code = "tools.write({})" } },
             .{ .run_end = .{ .background_id = "r1", .ok = true, .output = "registered", .changes = changes, .tool_summary = .{ .counts = &.{.{ .name = "write", .count = 1 }} } } },
             .{ .retry = .{ .attempt = 1, .delay_ms = 0, .reason = "retry" } },
             .{ .notice = "notice" },

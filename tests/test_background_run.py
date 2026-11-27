@@ -126,6 +126,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "await tools.wait(['b1'])")
             elif index == 3:
                 code = "await tools.bash({command:'cmp expected artifact && printf verified'})"
+        elif case == "scoped-overlap":
+            if index == 0:
+                code = {"cwd": "scoped", "code": (
+                    "await tools.sleep(250); "
+                    "await tools.write({path:'late.txt',content:'scoped'}); "
+                    "const r = await tools.bash({command:'cat late.txt'}); "
+                    "if (r.exit_code || r.output !== 'scoped') throw Error(JSON.stringify(r)); "
+                    "await tools.bash({background:true,command:'while [ ! -e ../ready ]; do sleep .02; done; cat late.txt > bash.txt'});")}
+            elif index == 1:
+                code = "await tools.write({path:'ready',content:'unscoped'})"
         elif case == "resume":
             code = "await tools.sleep(150); 'resumed-result'" if index == 0 else None
         elif index == 0:
@@ -365,6 +375,23 @@ class BackgroundRunTests(unittest.TestCase):
         report = json.loads(subprocess.check_output(["python3", str(ROOT / "scripts/stats.py"), str(self.home / "sessions"), "--json"]))
         self.assertEqual(report["background_runs"]["background_calls"], 1)
         self.assertGreaterEqual(report["background_runs"]["background_steps"]["median"], 1)
+
+    def test_background_run_and_bash_keep_their_run_directory(self):
+        self.server.case = "scoped-overlap"
+        scoped = self.cwd / "scoped"
+        scoped.mkdir()
+        events, rows, _ = self.finish(self.launch())
+        ends = [e["run_end"] for e in events if "run_end" in e]
+        self.assertEqual(len(ends), 2, ends)
+        self.assertIn("background_id", ends[0])
+        self.assertEqual(ends[0]["cwd"], str(scoped.resolve()))
+        self.assertNotIn("cwd", ends[1])
+        self.assertEqual((self.cwd / "ready").read_text(), "unscoped")
+        self.assertEqual((scoped / "late.txt").read_text(), "scoped")
+        self.assertEqual((scoped / "bash.txt").read_text(), "scoped")
+        self.assertFalse((self.cwd / "late.txt").exists())
+        self.assertFalse((self.cwd / "bash.txt").exists())
+        self.assertTrue(self.results(rows)[0]["background_ok"])
 
     def test_overlap_keeps_await_console_changes_and_replay(self):
         self.assert_overlap()

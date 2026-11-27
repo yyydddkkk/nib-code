@@ -57,7 +57,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if codes:
             delta["tool_calls"] = [
                 {"index": n, "id": f"run-{len(self.server.requests)}-{n}", "type": "function",
-                 "function": {"name": "rerun" if isinstance(code, dict) else "run", "arguments": json.dumps(code if isinstance(code, dict) else {"code": code})}}
+                 "function": {"name": "rerun" if isinstance(code, dict) and "base" in code else "run", "arguments": json.dumps(code if isinstance(code, dict) else {"code": code})}}
                 for n, code in enumerate(codes)]
         events = [{"choices": [{"delta": delta}]},
                   {"choices": [{"delta": {}, "finish_reason": "tool_calls" if codes else "stop"}],
@@ -244,6 +244,29 @@ class ReplayTests(unittest.TestCase):
         foreign_records = jsonl(self.home / "sessions" / f"{foreign}.jsonl")
         self.assertFalse(any("source" in r for r in foreign_records))
         self.assertTrue(any(s.get("base") == "3:0" and 'console.log("fixed")' in s["code"] for s in sources))
+
+    def test_scoped_rerun_after_resume_uses_recorded_directory(self):
+        scoped = self.cwd / "scoped"
+        scoped.mkdir()
+        alias = self.cwd / "alias"
+        alias.symlink_to(scoped, target_is_directory=True)
+        code = 'await tools.write({path:"effect",content:"before"}); throw new Error("repair me")'
+        session = self.ask([{"code": code, "cwd": "alias"}])
+        alias.unlink()
+        alias.symlink_to(self.cwd, target_is_directory=True)
+        self.ask([{"base": "1:0", "edits": [{"old_text": code,
+                                             "new_text": 'await tools.write({path:"effect",content:"after"})'}]}],
+                 resume=session)
+        self.assertEqual((scoped / "effect").read_text(), "after")
+        self.assertFalse((self.cwd / "effect").exists())
+        scoped.rename(self.cwd / "moved")
+        report = self.replay(session, "--all")
+        self.assertEqual(report["matched"], 2, report)
+        self.assertEqual(report["divergences"], 0, report)
+        self.assertFalse(scoped.exists())
+        self.assertFalse((self.cwd / "effect").exists())
+        records = jsonl(self.home / "sessions" / f"{session}.jsonl")
+        self.assertEqual({r["source"]["cwd"] for r in records if "source" in r}, {str(scoped.resolve())})
 
     def test_patch_rerun_with_hook_records(self):
         (self.home / "config.toml").write_text('[hooks]\nafter_edit = ["true"]\nturn_end = ["true"]\n')

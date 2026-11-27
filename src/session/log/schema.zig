@@ -103,7 +103,7 @@ pub const Record = struct {
     repair: bool = false,
 };
 
-pub const Source = struct { step: usize, run: usize, code: []const u8, base: ?[]const u8 = null, arguments: []const u8, failed: bool };
+pub const Source = struct { step: usize, run: usize, code: []const u8, cwd: ?[]const u8 = null, base: ?[]const u8 = null, arguments: []const u8, failed: bool };
 
 pub const ResumeAdaptation = struct {
     header_model: ?[]const u8 = null,

@@ -941,7 +941,7 @@ test "normal Turn cleanup and stopping finished Runs preserve their completed st
     const t = std.testing;
     var tools: Tools = .{ .io = t.io, .home = "/unused" };
     defer tools.background.stop(t.allocator);
-    const job = try @import("../session/run_job.zig").Job.create(&tools, t.allocator, "1", 1, 0, null);
+    const job = try @import("../session/run_job.zig").Job.create(&tools, t.allocator, "1", null, 1, 0, null);
     try tools.background.runs.append(t.allocator, job);
     job.join();
     tools.background.finishTurn(t.allocator, t.io, false);

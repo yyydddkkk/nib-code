@@ -256,6 +256,7 @@ pub const StepEffort = struct {
 
 pub const Message = struct {
     executed_source: ?[]const u8 = null,
+    run_cwd: ?[]const u8 = null,
     role: []const u8,
     content: ?[]const u8 = null,
     tool_calls: ?[]const ToolCall = null,
