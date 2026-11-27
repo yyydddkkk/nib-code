@@ -209,6 +209,47 @@ class ReplayTests(unittest.TestCase):
         self.assertIs(legacy["match"], True)
         self.assertEqual(legacy["output"], legacy_text)
 
+    def test_foreground_completion_summaries_replay(self):
+        unchanged = self.cwd / "unchanged.txt"
+        unchanged.write_text("original")
+        noisy = "console.log('noise'.repeat(8000)); "
+        codes = [
+            'await tools.write({path:"confirmed.txt", content:"created"}); ' + noisy
+            + 'await tools.edit({path:"unchanged.txt", old_text:"missing", new_text:"unexpected"});',
+            'await tools.write({path:"never.txt", content:"planned"}); const broken = ;',
+            'const results = await Promise.all([0, 7].map(n => tools.bash({command:"exit " + n}))); '
+            'if (results.map(r => r.exit_code).join() !== "0,7") throw Error("exit codes changed"); ' + noisy,
+            'const r = await tools.bash({command:"sleep 5", timeout_ms:100}); '
+            'if (!r.timed_out || r.exit_code !== null) throw Error("timeout changed");',
+            'await tools.bash({command:"exit 0"});',
+        ]
+        session = self.ask(codes)
+        step = next(r for r in jsonl(self.home / "sessions" / f"{session}.jsonl") if r.get("run_results"))
+        results = step["run_results"]
+        provider_results = [m["content"] for m in self.mock.requests[-1]["messages"] if m["role"] == "tool"]
+        failed, syntax, mixed, timeout, zero = provider_results
+        self.assertEqual([r["ok"] for r in results], [False, False, True, True, True])
+        self.assertTrue(failed.startswith('Confirmed file changes (write/edit):\n- created "confirmed.txt"\n'))
+        self.assertNotIn("unchanged.txt", results[0]["completion_summary"])
+        self.assertIn("bytes omitted", failed)
+        self.assertIn("[full output:", failed)
+        self.assertIn("prior effects may repeat", failed)
+        self.assertIn("SyntaxError", syntax)
+        self.assertNotIn("Confirmed file changes", syntax)
+        self.assertTrue(mixed.startswith("Bash: 2 commands completed; 1 exited nonzero.\n"))
+        self.assertIn("bytes omitted", mixed)
+        self.assertIn("Bash: 1 command completed; 1 timed out.", timeout)
+        self.assertNotIn("Bash:", zero)
+        self.assertEqual((self.cwd / "confirmed.txt").read_text(), "created")
+        self.assertEqual(unchanged.read_text(), "original")
+        self.assertFalse((self.cwd / "never.txt").exists())
+        replay = self.replay(session, "--all")
+        self.assertEqual((replay["matched"], replay["divergences"]), (5, 0), replay)
+        script = self.tmp / "replacement.js"
+        script.write_text(codes[0])
+        modified = self.replay(session, "--run", "1:0", "--script", str(script))
+        self.assertNotIn("Confirmed file changes", modified["output"])
+
     def test_patch_rerun_resume_validation_and_replay(self):
         code = 'console.log(await tools.bash({command: "echo effect >> effects"})); throw new Error("bad");'
         session = self.ask([code])

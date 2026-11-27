@@ -67,6 +67,7 @@ fn parseOptions(args: []const []const u8) !Options {
 
 const Run = struct {
     source_reference: bool = false,
+    completion_summary: ?[]const u8 = null,
     key: Key,
     code: []const u8,
     expected: ?[]const u8,
@@ -114,6 +115,7 @@ fn applyCompletion(runs: []Run, id: ?[]const u8, completion: RunCompletion) void
             if (!std.mem.eql(u8, expected_id, actual_id)) return;
         };
         item.expected = completion.output;
+        item.completion_summary = completion.completion_summary;
         item.remaining_steps = null;
         item.source_reference = completion.source_reference orelse item.source_reference;
         return;
@@ -230,11 +232,13 @@ pub fn loadMain(a: Allocator, data: []const u8) ![]Run {
                     }
                 }
                 var remaining_steps: ?usize = null;
+                var completion_summary: ?[]const u8 = null;
                 var background_id: ?[]const u8 = null;
                 if (record.object.get("run_results")) |results| {
                     if (results != .null) for (try array(results)) |result| {
                         if (std.mem.eql(u8, id, try string(try field(result, "tool_call_id")))) {
                             background_id = try optionalString(result, "background_id");
+                            completion_summary = try optionalString(result, "completion_summary");
                             if (background_id != null) {
                                 expected = null;
                             } else if (try optionalString(result, "output")) |own| {
@@ -256,7 +260,7 @@ pub fn loadMain(a: Allocator, data: []const u8) ![]Run {
                 for (sources.items) |source| if (source.step == step and source.run == index) {
                     source_reference = source.failed;
                 };
-                try runs.append(a, .{ .source_reference = source_reference, .key = .{ .step = step, .run = index }, .code = code.?, .expected = expected, .child = child, .remaining_steps = remaining_steps, .background_id = background_id });
+                try runs.append(a, .{ .source_reference = source_reference, .completion_summary = completion_summary, .key = .{ .step = step, .run = index }, .code = code.?, .expected = expected, .child = child, .remaining_steps = remaining_steps, .background_id = background_id });
             }
         }
         if (deliveries) |value| if (value != .null) {
@@ -379,7 +383,7 @@ const Report = struct {
 fn replayOutput(a: Allocator, io: std.Io, original: Run, outcome: @import("sandbox.zig").Outcome, limit: usize, outputs_dir: ?[]const u8) ![]const u8 {
     const expect_saved = if (original.expected) |exp| std.mem.indexOf(u8, exp, "[full output") != null else false;
     const save: ?output.Save = if (expect_saved) if (outputs_dir) |dir| .{ .io = io, .dir = dir, .write = false } else null else null;
-    const formatted = try output.formatSaved(a, outcome, limit, save);
+    const formatted = try output.formatCompletion(a, outcome, limit, save, original.completion_summary);
     const referenced = if (original.source_reference) try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, original.key.step, original.key.run }) else formatted;
     return output.stepLimitOutput(a, referenced, original.remaining_steps);
 }
@@ -389,7 +393,9 @@ fn replayOne(a: Allocator, io: std.Io, original: Run, recording: Recording, scri
     const redaction = @import("sandbox/redaction.zig");
     const evaluated = try core.executeSession(a, io, script orelse original.code, recording.entries.items, recording.start_ms_epoch, end, script != null, original.child, if (recording.output_policy == .legacy or script != null) .current else recording.output_policy);
     defer evaluated.deinit(a);
-    const text = try replayOutput(a, io, original, evaluated.outcome, recording.run_output_bytes, outputs_dir);
+    var rendered = original;
+    if (script != null) rendered.completion_summary = null;
+    const text = try replayOutput(a, io, rendered, evaluated.outcome, recording.run_output_bytes, outputs_dir);
     const incomplete = recording.incomplete or evaluated.incomplete or original.expected == null;
     const determined = script == null and !incomplete and end != .timeout and end != .cancelled;
     const equal = if (!determined or evaluated.divergence != null) false else switch (recording.output_policy) {

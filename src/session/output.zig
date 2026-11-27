@@ -11,6 +11,32 @@ pub const Save = struct {
     write: bool = true,
 };
 
+test "completion summary bounds tracked paths and masks credentials before rendering" {
+    const t = std.testing;
+    var changes: [6]@import("../tools/diff.zig").Change = @splat(.{
+        .path = "unshown.txt",
+        .created = false,
+        .added = 0,
+        .removed = 0,
+        .diff = "",
+    });
+    changes[0].path = "nested/" ++ sandbox.redaction.test_github ++ "\nend";
+    changes[0].created = true;
+    const unicode: [100][3]u8 = @splat("界".*);
+    const long_path = std.mem.asBytes(&unicode);
+    changes[1].path = long_path;
+    const outcome: sandbox.Outcome = .{ .ok = false, .text = @constCast("error"), .logs = @constCast("") };
+    const summary = (try completionSummary(t.allocator, outcome, &changes)).?;
+    defer t.allocator.free(summary);
+    try t.expectEqual(@as(usize, 5), std.mem.count(u8, summary, "\n- "));
+    try t.expect(std.mem.indexOf(u8, summary, "created \"nested/[REDACTED]\\nend\"") != null);
+    try t.expect(std.mem.indexOf(u8, summary, sandbox.redaction.test_github) == null);
+    try t.expect(std.mem.indexOf(u8, summary, long_path[0..159]) != null);
+    try t.expect(std.mem.indexOf(u8, summary, long_path[0..162]) == null);
+    try t.expect(std.mem.indexOf(u8, summary, "界\"…") != null);
+    try t.expect(std.mem.endsWith(u8, summary, "\n- 2 more"));
+}
+
 test "configured display budget leaves JS data intact" {
     const t = std.testing;
     const text = try t.allocator.alloc(u8, 24 * 1024);
@@ -103,6 +129,41 @@ pub fn formatSaved(gpa: std.mem.Allocator, o: sandbox.Outcome, limit: usize, sav
         return std.fmt.allocPrint(gpa, "{s}\n{s}", .{ body, s });
     }
     return renderSaved(gpa, o, limit, save);
+}
+
+pub fn completionSummary(a: std.mem.Allocator, o: sandbox.Outcome, changes: []const @import("../tools/diff.zig").Change) !?[]u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    const w = &out.writer;
+    const bash = o.bash;
+    if (bash.nonzero != 0 or bash.timed_out != 0) {
+        try w.print("Bash: {d} {s} completed", .{ bash.completed, if (bash.completed == 1) "command" else "commands" });
+        if (bash.nonzero != 0) try w.print("; {d} exited nonzero", .{bash.nonzero});
+        if (bash.timed_out != 0) try w.print("; {d} timed out", .{bash.timed_out});
+        try w.writeByte('.');
+    }
+    if (!o.ok and changes.len != 0) {
+        if (out.written().len > 0) try w.writeByte('\n');
+        try w.writeAll("Confirmed file changes (write/edit):");
+        const shown = changes[0..@min(changes.len, 4)];
+        for (shown) |change| {
+            const masked = try sandbox.redaction.mask(a, change.path, .plain);
+            defer if (masked) |bytes| a.free(bytes);
+            const path = masked orelse change.path;
+            const label = trimEnd(path[0..@min(path.len, 160)]);
+            try w.print("\n- {s} {f}{s}", .{ if (change.created) "created" else "changed", std.json.fmt(label, .{}), if (label.len < path.len) "…" else "" });
+        }
+        if (shown.len < changes.len) try w.print("\n- {d} more", .{changes.len - shown.len});
+    }
+    return if (out.written().len != 0) try out.toOwnedSlice() else null;
+}
+
+pub fn formatCompletion(a: std.mem.Allocator, o: sandbox.Outcome, limit: usize, save: ?Save, summary: ?[]const u8) ![]u8 {
+    const prefix = summary orelse return formatSaved(a, o, limit, save);
+    if (prefix.len > limit / 3) return formatSaved(a, o, limit, save);
+    const body = try formatSaved(a, o, limit - prefix.len - 1, save);
+    defer a.free(body);
+    return std.fmt.allocPrint(a, "{s}\n{s}", .{ prefix, body });
 }
 
 pub fn stepLimitOutput(a: std.mem.Allocator, output: []const u8, remaining_steps: ?usize) ![]const u8 {

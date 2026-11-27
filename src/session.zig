@@ -715,6 +715,7 @@ pub const Session = struct {
                     .calls_omitted = run_timing.omitted - before_omitted,
                     .output_bytes = result.output.len,
                     .remaining_steps = result.remaining_steps,
+                    .completion_summary = result.completion_summary,
                 });
                 output_tokens += result.output.len / 3 + 1 + result.images.len * @import("image.zig").estimated_tokens;
             }
