@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 Installs to `~/.local/bin`. `nib update` upgrades in place. `NIB_VERSION` pins a release, `NIB_INSTALL_DIR` changes the directory.
 
-Windows x64 (PowerShell):
+Windows x64 preview: [download the ZIP](https://github.com/yyydddkkk/nib-code/releases/latest/download/nib-x86_64-windows-preview.zip), extract it, and run `.\nib.exe` from the extracted directory in Windows Terminal. Or install with PowerShell:
 
 ```powershell
 curl.exe -fL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.ps1 -o install.ps1

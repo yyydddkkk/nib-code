@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 安装到 `~/.local/bin`，`nib update` 原地升级。`NIB_VERSION` 指定版本，`NIB_INSTALL_DIR` 更换目录。
 
-Windows x64（PowerShell）：
+Windows x64 预览版：[下载 ZIP](https://github.com/yyydddkkk/nib-code/releases/latest/download/nib-x86_64-windows-preview.zip)，解压后，用 Windows Terminal 在解压目录中运行 `.\nib.exe`。也可以用 PowerShell 安装：
 
 ```powershell
 curl.exe -fL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.ps1 -o install.ps1
