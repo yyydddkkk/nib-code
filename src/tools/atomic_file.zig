@@ -86,6 +86,8 @@ pub fn replace(io: Io, allocator: Allocator, path: []const u8, data: []const u8,
             name = try std.fmt.bufPrint(&name_buffer, ".nib-{s}", .{std.fmt.bytesToHex(random, .lower)});
             break :file dir.createFile(io, name, .{
                 .exclusive = true,
+                // Windows file.stat queries metadata that requires a read-capable handle.
+                .read = windows,
                 .permissions = if (existing != null) private_file else options.permissions,
             }) catch |err| switch (err) {
                 error.PathAlreadyExists => continue,
