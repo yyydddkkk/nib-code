@@ -54,7 +54,14 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 安装到 `~/.local/bin`，`nib update` 原地升级。`NIB_VERSION` 指定版本，`NIB_INSTALL_DIR` 更换目录。
 
-Windows x64：见 [Windows 预览版](docs/windows-cli-preview.md)，包含交互式 TUI 和 CLI，并列出了平台限制。
+Windows x64（PowerShell）：
+
+```powershell
+curl.exe -fL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.ps1 -o install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+安装到 `%LOCALAPPDATA%\nib\bin`。把该目录加入用户 `PATH`，或用完整路径运行 `nib.exe`。平台限制见 [Windows 预览版](docs/windows-cli-preview.md)。
 
 从源码构建（Zig 0.17）：`zig build -Doptimize=ReleaseFast --prefix ~/.local`
 

@@ -21,6 +21,7 @@ fn asset(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ![]const u8 {
             .aarch64 => "nib-aarch64-linux.tar.gz",
             else => error.UnsupportedPlatform,
         },
+        .windows => if (arch == .x86_64) "nib-x86_64-windows-preview.zip" else error.UnsupportedPlatform,
         .macos => switch (arch) {
             .aarch64 => "nib-aarch64-macos.tar.gz",
             .x86_64 => error.IntelMacUnsupported,
@@ -64,7 +65,16 @@ fn extract(a: std.mem.Allocator, bytes: []const u8) ![]const u8 {
 
 fn download(a: std.mem.Allocator, io: std.Io, client: *std.http.Client, base: []const u8, name: []const u8) ![]const u8 {
     const url = try std.fmt.allocPrint(a, "{s}/{s}", .{ std.mem.trimEnd(u8, base, "/"), name });
-    if (std.mem.startsWith(u8, url, "file://")) return std.Io.Dir.cwd().readFileAlloc(io, url[7..], a, .unlimited);
+    if (std.mem.startsWith(u8, url, "file://")) {
+        const path = if (builtin.os.tag == .windows) blk: {
+            const uri = try std.Uri.parse(url);
+            if (uri.host) |host| if ((try host.toRawMaybeAlloc(a)).len != 0) return error.InvalidFileUrl;
+            const raw = try uri.path.toRawMaybeAlloc(a);
+            if (raw.len < 4 or raw[0] != '/' or !std.fs.path.isAbsolute(raw[1..])) return error.InvalidFileUrl;
+            break :blk raw[1..];
+        } else url[7..];
+        return std.Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
+    }
     var out: std.Io.Writer.Allocating = .init(a);
     const response = try client.fetch(.{ .location = .{ .url = url }, .response_writer = &out.writer });
     if (response.status != .ok) return error.DownloadFailed;
@@ -101,12 +111,23 @@ pub fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Wri
         std.crypto.hash.sha2.Sha256.hash(bytes, &actual, .{});
         if (!std.mem.eql(u8, &expected, &actual)) return error.ChecksumMismatch;
     }
-    const binary = try extract(a, bytes);
     const path = try atomic.canonicalPath(init.io, a, try std.process.executablePathAlloc(init.io, a));
-    _ = atomic.replace(init.io, a, path, binary, .{ .permissions = .fromMode(0o755), .force_permissions = true, .sync = true }) catch |err| {
-        detail.* = try std.fmt.allocPrint(init.gpa, "could not replace {s}: {s}", .{ path, @errorName(err) });
-        return err;
-    };
+    if (builtin.os.tag == .windows) {
+        var kept: ?[]const u8 = null;
+        @import("update/windows.zig").replace(a, init.io, path, bytes, &kept) catch |err| {
+            detail.* = if (kept) |backup|
+                try std.fmt.allocPrint(init.gpa, "could not restore {s}; the previous executable is at {s}", .{ path, backup })
+            else
+                try std.fmt.allocPrint(init.gpa, "could not replace {s}: {s}", .{ path, @errorName(err) });
+            return err;
+        };
+    } else {
+        const binary = try extract(a, bytes);
+        _ = atomic.replace(init.io, a, path, binary, .{ .permissions = .fromMode(0o755), .force_permissions = true, .sync = true }) catch |err| {
+            detail.* = try std.fmt.allocPrint(init.gpa, "could not replace {s}: {s}", .{ path, @errorName(err) });
+            return err;
+        };
+    }
     if (std.mem.eql(u8, wanted, current)) try stdout.print("nib {s} is installed\n", .{wanted}) else try stdout.print("nib {s} → {s}\n", .{ current, wanted });
     try stdout.flush();
 }
@@ -119,6 +140,8 @@ test "release versions, platforms and checksums" {
     try t.expectEqualStrings("nib-x86_64-linux.tar.gz", try asset(.linux, .x86_64));
     try t.expectEqualStrings("nib-aarch64-linux.tar.gz", try asset(.linux, .aarch64));
     try t.expectEqualStrings("nib-aarch64-macos.tar.gz", try asset(.macos, .aarch64));
+    try t.expectEqualStrings("nib-x86_64-windows-preview.zip", try asset(.windows, .x86_64));
+    try t.expectError(error.UnsupportedPlatform, asset(.windows, .aarch64));
     try t.expectError(error.IntelMacUnsupported, asset(.macos, .x86_64));
     try t.expectError(error.MissingChecksum, checksum("", "nib"));
     try t.expectError(error.InvalidChecksum, checksum("bad  nib\n", "nib"));
