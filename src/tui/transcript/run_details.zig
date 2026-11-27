@@ -145,7 +145,7 @@ const Painter = struct {
         const segments = [_]vaxis.Segment{
             .{ .text = if (expanded) "▾ " else "▸ ", .style = .{ .dim = true } },
             .{ .text = path[0..leaf], .style = .{ .dim = true } },
-            .{ .text = path[leaf..] },
+            .{ .text = path[leaf..], .style = @import("label.zig").object },
             .{ .text = if (f.created) " (new)" else "", .style = .{ .dim = true } },
             .{ .text = if (!aligned and added.len + removed.len > 0) " " else "" },
             .{ .text = if (aligned) "" else added, .style = .{ .fg = .{ .index = 2 } } },

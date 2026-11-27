@@ -1,4 +1,33 @@
 const std = @import("std");
+const vaxis = @import("vaxis");
+const File = @import("../../session/tool_summary.zig").File;
+
+pub const object: vaxis.Style = .{ .fg = .{ .index = 6 } };
+const dim: vaxis.Style = .{ .dim = true };
+
+pub fn appendTools(a: std.mem.Allocator, parts: *std.ArrayList(vaxis.Segment), text: []const u8) !void {
+    if (text.len == 0) return;
+    var fields = std.mem.splitSequence(u8, text, " · ");
+    while (fields.next()) |field| {
+        if (field.len > 0 and field[0] != '+') {
+            const end = std.mem.indexOfScalar(u8, field, ' ') orelse field.len;
+            try parts.append(a, .{ .text = field[0..end], .style = object });
+            if (end < field.len) try parts.append(a, .{ .text = field[end..], .style = dim });
+        } else if (field.len > 0) try parts.append(a, .{ .text = field, .style = dim });
+        if (fields.peek() != null) try parts.append(a, .{ .text = " · ", .style = dim });
+    }
+}
+
+pub fn appendFile(a: std.mem.Allocator, parts: *std.ArrayList(vaxis.Segment), file: File) !void {
+    try parts.append(a, .{ .text = file.tool, .style = object });
+    try parts.append(a, .{ .text = " " });
+    const detail = if (std.mem.eql(u8, file.tool, "view")) std.mem.lastIndexOf(u8, file.path, " · ") orelse file.path.len else file.path.len;
+    const path = file.path[0..detail];
+    const leaf = if (file.duration_ms != null) 0 else if (std.mem.lastIndexOfAny(u8, path, "/\\")) |at| at + 1 else 0;
+    if (leaf > 0) try parts.append(a, .{ .text = path[0..leaf], .style = dim });
+    try parts.append(a, .{ .text = path[leaf..], .style = object });
+    if (detail < file.path.len) try parts.append(a, .{ .text = file.path[detail..], .style = dim });
+}
 const ToolSummary = @import("../../session/tool_summary.zig").Summary;
 
 pub fn actualToolSummary(summary: ToolSummary, changed_files: usize, buf: []u8) []const u8 {

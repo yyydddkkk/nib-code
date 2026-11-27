@@ -37,6 +37,7 @@ pub const Tree = struct {
 
 const Row = struct {
     text: []u8,
+    tool_start: usize,
     prompt_start: usize,
     prompt_end: usize,
     status_end: usize,
@@ -47,7 +48,9 @@ const Row = struct {
     fn init(gpa: std.mem.Allocator, p: Progress, last: bool) !Row {
         var text: std.ArrayList(u8) = .empty;
         errdefer text.deinit(gpa);
-        try text.print(gpa, "  {s} {s}{s} {s}", .{ if (last) "└─" else "├─", p.id, if (p.fork) " fork" else "", if (p.kind == .agent) "" else if (p.kind == .bash) "bash " else "" });
+        try text.print(gpa, "  {s} {s}{s} ", .{ if (last) "└─" else "├─", p.id, if (p.fork) " fork" else "" });
+        const tool_start = text.items.len;
+        if (p.kind == .bash) try text.appendSlice(gpa, "bash ");
         const prompt_start = text.items.len;
         var end: usize = 0;
         var chars: usize = 0;
@@ -90,6 +93,7 @@ const Row = struct {
         }
         return .{
             .text = try text.toOwnedSlice(gpa),
+            .tool_start = tool_start,
             .prompt_start = prompt_start,
             .prompt_end = prompt_end,
             .status_end = status_end,
@@ -107,10 +111,13 @@ const Row = struct {
         const prompt = fit(win, row.text[row.prompt_start..row.prompt_end], win.width -| fixed, row.prompt_omitted);
         const files = fit(win, row.text[row.tools_end..], win.width -| (fixed +| width(win, prompt.text) +| width(win, prompt.suffix)), false);
         const dim: vaxis.Style = .{ .dim = true };
+        const object = @import("transcript/label.zig").object;
+        const command_style = if (row.tool_start < row.prompt_start) object else dim;
         _ = win.print(&.{
-            .{ .text = prefix, .style = dim },
-            .{ .text = prompt.text, .style = dim },
-            .{ .text = prompt.suffix, .style = dim },
+            .{ .text = prefix[0..row.tool_start], .style = dim },
+            .{ .text = prefix[row.tool_start..], .style = object },
+            .{ .text = prompt.text, .style = command_style },
+            .{ .text = prompt.suffix, .style = command_style },
             .{ .text = status, .style = row.status_style },
             .{ .text = used.text, .style = dim },
             .{ .text = used.suffix, .style = dim },
@@ -154,7 +161,7 @@ fn expectLine(screen: *vaxis.Screen, y: u16, expected: []const u8) !void {
         const bytes = g.bytes(expected);
         const cell = screen.readCell(x, y).?;
         try testing.expectEqualStrings(bytes, cell.char.grapheme);
-        try testing.expect(cell.style.dim);
+        try testing.expect(cell.style.dim or std.meta.eql(cell.style.fg, @import("transcript/label.zig").object.fg));
         x += vaxis.gwidth.gwidth(bytes, screen.width_method);
     }
     while (x < screen.width) : (x += 1) try testing.expectEqualStrings(" ", screen.readCell(x, y).?.char.grapheme);

@@ -50,10 +50,12 @@ pub const Entry = struct {
     /// One-line summary of a collapsible entry. vaxis keeps printed slices
     /// until render, so this must outlive draw(); see `refreshLabel`.
     label: std.ArrayList(u8) = .empty,
-    files: std.ArrayList(u8) = .empty,
-    /// Simple-mode title facts, spliced into `label` at `title_files_at`.
-    title_files: std.ArrayList(u8) = .empty,
-    title_files_at: usize = 0,
+    file_suffixes: std.ArrayList(u8) = .empty,
+    run_title: std.ArrayList(vaxis.Segment) = .empty,
+    simple_title: std.ArrayList(vaxis.Segment) = .empty,
+    file_parts: std.ArrayList(vaxis.Segment) = .empty,
+    title_wraps: bool = false,
+    title_rows: u16 = 1,
     run: enum { running, background, superseded, ok, failed, warning, lost, timed_out, canceled } = .running,
     elapsed_ms: u64 = 0,
     step_effort: ?provider.StepEffort = null,
@@ -92,8 +94,10 @@ pub const Entry = struct {
         e.turn_time.deinit(gpa);
         e.hook_notice.deinit(gpa);
         e.label.deinit(gpa);
-        e.files.deinit(gpa);
-        e.title_files.deinit(gpa);
+        e.file_suffixes.deinit(gpa);
+        e.run_title.deinit(gpa);
+        e.simple_title.deinit(gpa);
+        e.file_parts.deinit(gpa);
         e.changes.deinit(gpa);
         for (e.agents.items) |*p| p.deinit(gpa);
         e.agents.deinit(gpa);
@@ -104,9 +108,10 @@ pub const Entry = struct {
 
     pub fn refreshLabel(e: *Entry, gpa: std.mem.Allocator) !void {
         e.label.clearRetainingCapacity();
-        e.files.clearRetainingCapacity();
-        e.title_files.clearRetainingCapacity();
-        e.title_files_at = 0;
+        e.file_suffixes.clearRetainingCapacity();
+        e.run_title.clearRetainingCapacity();
+        e.simple_title.clearRetainingCapacity();
+        e.file_parts.clearRetainingCapacity();
         switch (e.kind) {
             .run => {
                 try e.label.appendSlice(gpa, "Run");
@@ -126,28 +131,74 @@ pub const Entry = struct {
                 } });
                 var buf: [512]u8 = undefined;
                 const used = if (e.tool_summary) |summary| actualToolSummary(summary, e.changes.file_count, &buf) else "";
-                if (e.tool_summary) |summary| for (summary.files, 0..) |file, i| {
-                    if (i > 0) try e.files.appendSlice(gpa, if (file.duration_ms != null or summary.files[i - 1].duration_ms != null) "\n" else " · ");
-                    try e.files.print(gpa, "{s} {s}", .{ file.tool, file.path });
-                    try e.title_files.print(gpa, " · {s} {s}", .{ file.tool, file.path });
-                    if (file.duration_ms) |ms| {
-                        try e.files.print(gpa, " · {d}.{d}s", .{ ms / 1000, ms % 1000 / 100 });
-                        if (file.failed) try e.files.appendSlice(gpa, " · failed");
-                    }
+                if (e.tool_summary) |summary| for (summary.files) |file| {
+                    if (file.duration_ms) |ms| try e.file_suffixes.print(gpa, " · {d}.{d}s{s}\n", .{
+                        ms / 1000, ms % 1000 / 100,
+                        if (file.failed) " · failed" else "",
+                    });
                 };
-                e.title_files_at = e.label.items.len;
+                const status_end = e.label.items.len;
                 if (used.len > 0) try e.label.print(gpa, " · {s}", .{used});
+                const tools_end = e.label.items.len;
                 for (e.agents.items) |p| {
                     if (!p.background or p.kind == .run or p.state == .failed or p.state == .timed_out or p.state == .canceled) continue;
                     try e.label.print(gpa, " · {s} {s}", .{ p.id, if (p.state == .queued) "queued" else if (p.state == .working) "running" else "waiting" });
                 }
                 if (e.run == .running) try e.label.appendSlice(gpa, " · running");
+                try e.refreshRunParts(gpa, status_end, tools_end);
             },
             .user => {
                 try e.label.print(gpa, " … +{d} lines", .{long_text.lines(e.text.items) - 1});
             },
             else => {},
         }
+    }
+
+    fn refreshRunParts(e: *Entry, gpa: std.mem.Allocator, status_end: usize, tools_end: usize) !void {
+        const heading = e.label.items;
+        const statuses = heading["Run".len..status_end];
+        const tools = heading[status_end..tools_end];
+        const tail = heading[tools_end..];
+        const files = if (e.tool_summary) |summary| summary.files else &.{};
+        const named_tools = tools.len > 0 and tools[" · ".len] != '+';
+        e.title_wraps = !named_tools and files.len > 0;
+
+        try e.run_title.append(gpa, .{ .text = "" });
+        try e.simple_title.append(gpa, .{ .text = "" });
+        if (!named_tools and files.len == 0) {
+            try e.run_title.append(gpa, .{ .text = "Run" });
+            try e.simple_title.append(gpa, .{ .text = "Run" });
+        }
+        try e.run_title.append(gpa, .{ .text = if (named_tools) statusesWithoutSeparator(statuses) else statuses });
+        try e.simple_title.append(gpa, .{ .text = if (named_tools or files.len > 0) statusesWithoutSeparator(statuses) else statuses });
+
+        var suffixes = std.mem.splitScalar(u8, e.file_suffixes.items, '\n');
+        for (files, 0..) |file, i| {
+            const separator = if (i == 0) "" else if (file.duration_ms != null or files[i - 1].duration_ms != null) "\n" else " · ";
+            const suffix = if (file.duration_ms != null) suffixes.next().? else "";
+            if (i > 0 or statuses.len > 0) try e.simple_title.append(gpa, .{ .text = " · ", .style = .{ .dim = true } });
+            try label.appendFile(gpa, &e.simple_title, file);
+            if (e.title_wraps and i == 0) {
+                // Keep status and counts on the heading when a path replaces the fallback.
+                e.run_title.shrinkRetainingCapacity(1);
+                try label.appendFile(gpa, &e.run_title, file);
+                try e.run_title.append(gpa, .{ .text = statuses });
+                try e.run_title.append(gpa, .{ .text = suffix, .style = .{ .dim = true } });
+            } else {
+                if (e.file_parts.items.len > 0) try e.file_parts.append(gpa, .{ .text = separator, .style = .{ .dim = true } });
+                try label.appendFile(gpa, &e.file_parts, file);
+                try e.file_parts.append(gpa, .{ .text = suffix, .style = .{ .dim = true } });
+            }
+        }
+
+        try label.appendTools(gpa, &e.run_title, if (named_tools and statuses.len == 0) statusesWithoutSeparator(tools) else tools);
+        try label.appendTools(gpa, &e.simple_title, if (named_tools and statuses.len == 0 and files.len == 0) statusesWithoutSeparator(tools) else tools);
+        try e.run_title.append(gpa, .{ .text = tail });
+        try e.simple_title.append(gpa, .{ .text = tail });
+    }
+
+    fn statusesWithoutSeparator(text: []const u8) []const u8 {
+        return if (text.len == 0) text else text[" · ".len..];
     }
 
     pub fn hasWarning(e: *const Entry) bool {
@@ -236,13 +287,12 @@ pub const Entry = struct {
     fn printRunPrefix(e: *Entry, win: vaxis.Window, commit: bool) u16 {
         var segs: [max_segments]vaxis.Segment = undefined;
         const shown = e.segments(&segs);
-        if (e.simple and !e.open and e.title_files.items.len > 0) {
-            const title_text = e.label.items;
-            const at = @min(e.title_files_at, title_text.len);
-            const title = [_]vaxis.Segment{ shown[0], shown[1], .{ .text = title_text[0..at] }, .{ .text = e.title_files.items }, .{ .text = title_text[at..] } };
-            _ = win.print(&title, .{ .wrap = .none, .commit = commit });
-        } else _ = win.print(shown, .{ .wrap = .none, .commit = commit });
-        var rows: u16 = 1;
+        const simple_title = e.simple and !e.open;
+        const title = if (simple_title) e.simple_title.items else e.run_title.items;
+        if (title.len > 0) title[0] = shown[0];
+        const heading = win.print(if (title.len > 0) title else shown, .{ .wrap = if (!simple_title and e.title_wraps) .word else .none, .commit = commit });
+        var rows = if (!simple_title and e.title_wraps) @max(1, heading.row +| @intFromBool(heading.col > 0)) else 1;
+        if (!commit) e.title_rows = rows;
         if (e.cwd_label) |cwd| {
             const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = cwd, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
             rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
@@ -253,8 +303,8 @@ pub const Entry = struct {
             const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.changes.summary, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
             rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
         }
-        if (e.files.items.len > 0) {
-            const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.files.items, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
+        if (e.file_parts.items.len > 0) {
+            const r = win.child(.{ .x_off = 2, .y_off = rows }).print(e.file_parts.items, .{ .wrap = .word, .commit = commit });
             rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
         }
         if (e.hook_notice.items.len > 0) {
@@ -271,7 +321,7 @@ pub const Entry = struct {
         if (e.kind == .run) {
             // Viewport layout has already measured the entry at this width.
             const rows = e.cachedHeight(win) orelse return null;
-            const parent_rows = if (e.open) 1 else rows;
+            const parent_rows = if (e.open) e.title_rows else rows;
             if (row < parent_rows) return .{ .first = 0, .rows = parent_rows };
             if (!e.open or row >= rows) return null;
             const hit = e.details.hit(e.changes.files, row) orelse return null;
@@ -308,7 +358,7 @@ pub const Entry = struct {
             const removed_start = if (removed_at) |at| at + 1 else line.len;
             _ = win.child(.{ .y_off = rows }).print(&.{
                 .{ .text = line[0..leaf], .style = dim },
-                .{ .text = line[leaf..path_end] },
+                .{ .text = line[leaf..path_end], .style = label.object },
                 .{ .text = line[path_end..counts_at], .style = dim },
                 .{ .text = line[counts_at..removed_start], .style = .{ .fg = .{ .index = 2 } } },
                 .{ .text = line[removed_start..], .style = .{ .fg = .{ .index = 1 } } },

@@ -1691,7 +1691,8 @@ test "Run facts name changed files and retain warning without changing script su
     const e = &t.entries.items[0];
     try testing.expectEqual(.ok, e.run);
     try testing.expectEqualStrings("Run · a1 timed out · edit 2 files · bash", e.label.items);
-    try testing.expectEqualStrings("read a.zig", e.files.items);
+    try testing.expectEqualStrings("read", e.file_parts.items[0].text);
+    try testing.expectEqualStrings("a.zig", e.file_parts.items[2].text);
     var segs: [max_segments]vaxis.Segment = undefined;
     try testing.expectEqualStrings("! ", e.segments(&segs)[0].text);
     try testing.expectEqual(@as(u8, 3), segs[0].style.fg.index);
@@ -1870,13 +1871,13 @@ test "Simple collapsed Run shows path facts on its title row" {
     const gpa = testing.allocator;
     const Case = struct { files: []const @import("../session/tool_summary.zig").File, counts: []const @import("../session/tool_summary.zig").Count, changed: usize, simple: []const u8, normal: []const u8 };
     const cases = [_]Case{
-        .{ .files = &.{.{ .tool = "glob", .path = "**/*.md" }}, .counts = &.{.{ .name = "glob", .count = 1 }}, .changed = 0, .simple = "  Run · glob **/*.md", .normal = "  Run" },
+        .{ .files = &.{.{ .tool = "glob", .path = "**/*.md" }}, .counts = &.{.{ .name = "glob", .count = 1 }}, .changed = 0, .simple = "  glob **/*.md", .normal = "  glob **/*.md" },
         .{
             .files = &.{ .{ .tool = "read", .path = "src/a.zig" }, .{ .tool = "read", .path = "src/b.zig" } },
             .counts = &.{ .{ .name = "read", .count = 2 }, .{ .name = "edit", .count = 1 } },
             .changed = 1,
-            .simple = "  Run · read src/a.zig · read src/b.zig · edit 1 file",
-            .normal = "  Run · edit 1 file",
+            .simple = "  read src/a.zig · read src/b.zig · edit 1 file",
+            .normal = "  edit 1 file",
         },
     };
     for (cases) |c| for ([_]bool{ true, false }) |simple| {
@@ -1896,6 +1897,13 @@ test "Simple collapsed Run shows path facts on its title row" {
         defer gpa.free(row);
         const expected = if (simple) c.simple else c.normal;
         try testing.expectEqualStrings(expected, std.mem.trimEnd(u8, row, " "));
+        const cyan = @import("transcript/label.zig").object.fg;
+        try testing.expectEqual(cyan, screen.readCell(2, 0).?.style.fg);
+        const filename: u16 = if (c.changed == 0) 10 else 11;
+        if (c.changed == 0 or simple) {
+            try testing.expectEqual(.default, screen.readCell(filename - 1, 0).?.style.fg);
+            try testing.expectEqual(cyan, screen.readCell(filename, 0).?.style.fg);
+        }
     };
 }
 

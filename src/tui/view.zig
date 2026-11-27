@@ -321,7 +321,9 @@ fn drawMenu(win: vaxis.Window, y: u16, menu: []const commands.Candidate, menu_se
             if (current_w > 0) printFitted(row.child(.{ .x_off = label_w + service_w + 4 }), c.detail, .{ .dim = true });
         } else {
             const label_width = if (c.is_path) (if (c.detail.len == 0) row.width else @min(row.width, 24)) else if (c.command == .provider and c.value != null) @min(row.width, 14) else @min(row.width, 12);
-            printFitted(row.child(.{ .width = label_width }), c.label, .{});
+            const is_object = (c.value == null and std.mem.startsWith(u8, c.label, "/")) or c.is_path;
+            const name_style: vaxis.Style = if (is_object and (!chosen or s.hover_bg != .default)) @import("transcript/label.zig").object else .{};
+            printFitted(row.child(.{ .width = label_width }), c.label, name_style);
             if (row.width > label_width + 2) printFitted(row.child(.{ .x_off = label_width + 2 }), c.detail, .{ .dim = true });
         }
         if (chosen) for (0..row.width) |col| {
@@ -846,7 +848,7 @@ test "hover covers full summary width and leaves expanded details unchanged" {
     defer t.deinit(a);
     try t.startRun(a, "console.log('details')");
     const entry = &t.entries.items[0];
-    try entry.files.appendSlice(a, "read example.zig");
+    try entry.file_parts.append(a, .{ .text = "read example.zig" });
     entry.open = true;
     var input: Editor = .{};
     defer input.deinit(a);

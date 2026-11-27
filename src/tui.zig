@@ -1985,7 +1985,7 @@ test "hover changes only between toggleable entries and summary clicks exclude d
     app.hovered = null;
     defer app.transcript.deinit(a);
     try app.transcript.startRun(a, "console.log('details')");
-    try app.transcript.entries.items[0].files.appendSlice(a, "read x");
+    try app.transcript.entries.items[0].file_parts.append(a, .{ .text = "read x" });
     const motion: Event = .{ .mouse = .{ .col = 3, .row = 0, .type = .motion, .button = .none, .mods = .{} } };
     _ = try app.handle(motion);
     try std.testing.expectEqual(@as(?usize, 0), app.hovered);
