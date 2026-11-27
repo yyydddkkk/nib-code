@@ -677,7 +677,7 @@ class BackgroundRunTests(unittest.TestCase):
                 self.assertIn("bytes omitted", output)
                 self.assertIn("tail", output)
                 self.assertIn(f"[full output: {bash['output_path']}]", output)
-                self.assertLessEqual(len(("[background bash b1 finished]\n" + output).encode()), 16 * 1024)
+                self.assertLess(len(output.encode()), 16 * 1024)
                 saved = Path(bash["output_path"]).read_text()
                 self.assertEqual(saved, heading + "\n\n" + raw.replace(SYNTHETIC_TOKEN, "[REDACTED]"))
                 assert_no_token(self, output, saved)

@@ -117,7 +117,9 @@ stop accepts other background rN, never self. Runs are non-detached; answers/Ste
 
 Tool-free text with pending ordinary tasks always commits waiting Steps/local waits regardless of wording/length. A Step whose Runs all succeed with no output/actual host calls (empty Runs/blank printing) also waits without model requests. Output or actual tools count normal work; git/read/stop are not automatically waiting. Resume after inbox/interjections; detached retains cross-Turn behavior.
 
-When a background Bash command exits or times out, its result includes
+Background Bash completion notices put the task ID and process status ahead of the output, even when the output is truncated. They show the exit code, timeout, cancellation, supersession, or unknown exit status, with elapsed time when available. The status comes from the task, not from anything printed by the command.
+
+When a background Bash command exits or times out, its `tools.wait()` result includes
 `bash: { exit_code, timed_out, elapsed_ms?, output_path? }`. `exit_code` is
 `null` if no exit code was available; `elapsed_ms` appears only for timeouts.
 Read these fields directly rather than parsing `output`, which is the masked

@@ -70,7 +70,9 @@ pub const Transcript = struct {
         }
     }
 
-    pub fn backgroundResult(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool, result: []const u8) !void {
+    pub fn backgroundResult(t: *Transcript, gpa: std.mem.Allocator, kind: BackgroundKind, id: []const u8, ok: bool, message: []const u8) !void {
+        const bash = if (kind == .bash) BashHeading.parse(message, id) else null;
+        const result = if (bash) |heading| heading.body else message;
         t.revision +%= 1;
         try t.settleBackgroundProgress(gpa, kind, id, ok);
         if (kind == .run) if (t.backgroundRunEntry(id)) |entry| {
@@ -106,8 +108,45 @@ pub const Transcript = struct {
             e.label.clearRetainingCapacity();
             try e.label.print(gpa, "{s} {s} · timed out", .{ id, @tagName(kind) });
         }
+        if (bash) |heading| {
+            if (std.mem.eql(u8, heading.status, "timed out")) e.run = .warning;
+            if (std.mem.eql(u8, heading.status, "canceled")) e.run = .canceled;
+            if (e.run != .superseded) {
+                e.label.clearRetainingCapacity();
+                try e.label.print(gpa, "{s} bash · {s}", .{ id, heading.status });
+            }
+            if (heading.elapsed_ms) |ms| {
+                var time: [32]u8 = undefined;
+                try e.label.print(gpa, " · {s}", .{@import("format.zig").duration(&time, ms)});
+            }
+        }
         try t.entries.append(gpa, e);
     }
+
+    const BashHeading = struct {
+        status: []const u8,
+        elapsed_ms: ?u64,
+        body: []const u8,
+
+        fn parse(message: []const u8, id: []const u8) ?BashHeading {
+            const nl = std.mem.indexOfScalar(u8, message, '\n') orelse return null;
+            const line = message[0..nl];
+            const prefix = "[background bash ";
+            if (!std.mem.startsWith(u8, line, prefix) or !std.mem.endsWith(u8, line, "]")) return null;
+            const end = line.len - 1;
+            const after_id = prefix.len + id.len;
+            if (after_id > end or !std.mem.eql(u8, line[prefix.len..after_id], id)) return null;
+            const marker = " finished · ";
+            if (!std.mem.startsWith(u8, line[after_id..end], marker)) return null;
+            var fields = std.mem.splitSequence(u8, line[after_id + marker.len .. end], " · ");
+            const status = fields.first();
+            const elapsed = if (fields.next()) |time| blk: {
+                if (!std.mem.endsWith(u8, time, " ms")) break :blk null;
+                break :blk std.fmt.parseInt(u64, time[0 .. time.len - 3], 10) catch null;
+            } else null;
+            return .{ .status = status, .elapsed_ms = elapsed, .body = message[nl + 1 ..] };
+        }
+    };
 
     fn replaceBash(t: *Transcript, gpa: std.mem.Allocator, id: []const u8, replacement: []const u8) !void {
         for (t.entries.items) |*entry| {
@@ -561,7 +600,9 @@ pub const Transcript = struct {
                     defer summary.deinit(gpa);
                     try t.updateBackgroundRun(gpa, m.background_id orelse "?", completion.output, changes, summary);
                 }
-                try t.backgroundResult(gpa, kind, m.background_id orelse "?", m.background_ok orelse parsed_ok, shown orelse result);
+                const id = m.background_id orelse "?";
+                const display = if (kind == .bash and BashHeading.parse(content, id) != null) content else result;
+                try t.backgroundResult(gpa, kind, id, m.background_ok orelse parsed_ok, shown orelse display);
             } else if (m.source == .undo) {
                 try t.add(gpa, .info, content);
             } else if (std.mem.eql(u8, m.role, "user")) {
@@ -1423,6 +1464,34 @@ test "session IDs route progress across repeated Turn Run numbers and late termi
     try t.endRun(gpa, false, "stop", 4000, .{});
     try t.progress(gpa, .{ .id = "b1", .run = 1, .kind = .bash, .prompt = "sleep 30", .elapsed_ms = 4100, .state = .canceled });
     try testing.expectEqualStrings("  └─ b1 sleep 30 · 4s · canceled", t.entries.items[1].agent_tree.rows.items[1].text);
+}
+
+test "background Bash heading survives truncation and Session restoration" {
+    const gpa = testing.allocator;
+    const Case = struct {
+        id: []const u8,
+        ok: bool,
+        message: []const u8,
+        label: []const u8,
+        body: []const u8,
+    };
+    for ([_]Case{
+        .{ .id = "b1", .ok = true, .message = "[background bash b1 finished · exit 0 · 15 ms]\nfailed command\n[bytes omitted]", .label = "b1 bash · exit 0 · <1s", .body = "failed command\n[bytes omitted]" },
+        .{ .id = "b2", .ok = false, .message = "[background bash b2 finished · timed out · 2000 ms]\npartial output", .label = "b2 bash · timed out · 2s", .body = "partial output" },
+        .{ .id = "b3", .ok = false, .message = "[background bash b3 finished · canceled]\n{\"error\":\"canceled\"}", .label = "b3 bash · canceled", .body = "{\"error\":\"canceled\"}" },
+    }) |c| {
+        var live: Transcript = .{};
+        defer live.deinit(gpa);
+        try live.backgroundResult(gpa, .bash, c.id, c.ok, c.message);
+        var restored: Transcript = .{};
+        defer restored.deinit(gpa);
+        try restored.addHistory(gpa, &.{.{ .role = "user", .source = .background, .background_kind = .bash, .background_id = c.id, .background_ok = c.ok, .content = c.message }});
+        for ([_]*Transcript{ &live, &restored }) |transcript| {
+            const entry = transcript.entries.items[0];
+            try testing.expectEqualStrings(c.label, entry.label.items);
+            try testing.expectEqualStrings(c.body, entry.text.items);
+        }
+    }
 }
 
 test "background bash timeout is labeled without discarding the result" {

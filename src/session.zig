@@ -503,7 +503,7 @@ pub const Session = struct {
         if (item.background) |b| {
             s.tools.background.delivered(s.io, b.id, item.invocation);
             var event = b;
-            event.result = if (std.mem.indexOfScalar(u8, item.text, '\n')) |nl| item.text[nl + 1 ..] else item.text;
+            event.result = if (b.kind == .bash) item.text else if (std.mem.indexOfScalar(u8, item.text, '\n')) |nl| item.text[nl + 1 ..] else item.text;
             try sink.emit(sink.ctx, .{ .background = event });
         } else if (sink.onUserInserted) |notify| try notify(sink.ctx, item.id);
     }

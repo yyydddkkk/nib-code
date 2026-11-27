@@ -73,14 +73,15 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         };
         return .{ .ok = result };
     }
-    var status: ?Status = null;
-    const result = try execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null, &status);
-    if (status) |completed| sandbox.bash_completion = if (completed.elapsed_ms != null)
-        .timed_out
-    else if (completed.exit_code) |code|
-        (if (code == 0) .zero else .nonzero)
-    else
-        .terminated;
+    var outcome: Outcome = .unknown;
+    const result = try execute(t, gpa, a.value.command, cwd, a.value.timeoutMs(), t.cancelFlag(), null, null, &outcome);
+    if (outcome == .reported) {
+        const status = outcome.reported;
+        sandbox.bash_completion = if (status.elapsed_ms != null) .timed_out else if (status.exit_code) |code|
+            (if (code == 0) .zero else .nonzero)
+        else
+            .terminated;
+    }
     return result;
 }
 
@@ -89,7 +90,9 @@ pub const Status = struct {
     elapsed_ms: ?u64 = null,
 };
 
-pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), progress: @import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, status: ?*?Status) !sandbox.ToolResult {
+pub const Outcome = union(enum) { reported: Status, canceled, superseded, unknown };
+
+pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, cancel: *const std.atomic.Value(bool), progress: @import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, outcome: ?*Outcome) !sandbox.ToolResult {
     const parsed = try std.json.parseFromSlice(Args, gpa, args, .{});
     defer parsed.deinit();
     if (parsed.value.validationError()) |message| return fail(gpa, "{s}", .{message});
@@ -98,7 +101,7 @@ pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, ca
     value.detached = parsed.value.detached;
     const cwd = WorkingDir.open(t, gpa, parsed.value.cwd, null) catch |err| return cwdFailure(gpa, parsed.value.cwd, err);
     defer cwd.close(t, gpa);
-    return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution, status);
+    return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution, outcome);
 }
 
 fn shellFailure(gpa: std.mem.Allocator, err: anyerror) !sandbox.ToolResult {
@@ -108,7 +111,7 @@ fn shellFailure(gpa: std.mem.Allocator, err: anyerror) !sandbox.ToolResult {
     };
 }
 
-fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, status: ?*?Status) !sandbox.ToolResult {
+fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, outcome: ?*Outcome) !sandbox.ToolResult {
     const executable = shell.executable(t.io) catch |err| return shellFailure(gpa, err);
     const id = if (progress) |value| value.id else try t.progress.reserveBash(gpa, t.io);
     sandbox.tool_identity = .{ .id = id, .background = progress != null };
@@ -147,6 +150,7 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
     if (superseded_by) |new_id| {
         tracker.replaced(new_id);
         state = .done;
+        if (outcome) |out| out.* = .superseded;
         return .{ .ok = try std.json.Stringify.valueAlloc(gpa, .{ .superseded_by = new_id }, .{}) };
     }
     const result = executed catch |err| return switch (err) {
@@ -165,10 +169,13 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
                     .exit_code = @as(?u8, null),
                     .output = stdout,
                 }, .{});
-                if (status) |out| out.* = .{ .exit_code = null, .elapsed_ms = elapsed };
+                if (outcome) |out| out.* = .{ .reported = .{ .exit_code = null, .elapsed_ms = elapsed } };
                 break :blk .{ .ok = json };
             },
-            error.Canceled => fail(gpa, "canceled", .{}),
+            error.Canceled => blk: {
+                if (outcome) |out| out.* = .canceled;
+                break :blk fail(gpa, "canceled", .{});
+            },
         };
     }
     const code: ?u8 = switch (result.term) {
@@ -178,7 +185,7 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
     tracker.exit_code = code;
     state = if (code != null and code.? == 0) .done else .failed;
     const json = try std.json.Stringify.valueAlloc(gpa, .{ .exit_code = code, .output = stdout }, .{});
-    if (status) |out| out.* = .{ .exit_code = code };
+    if (outcome) |out| out.* = .{ .reported = .{ .exit_code = code } };
     return .{ .ok = json };
 }
 

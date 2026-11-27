@@ -268,6 +268,12 @@ class Mock(ThreadingHTTPServer):
             command = (shlex.join([sys.executable, "-c", program]) +
                        " & while [ ! -f worker.started ]; do sleep .01; done; echo started; exit 7")
             return "await " + bash(command, timeout_ms=2000)
+        if self.case == "status_batch":
+            return "; ".join("await " + bash(command, timeout_ms=timeout) for command, timeout in [
+                ("echo 'failed command'; cat long.txt; echo success-tail", 5000),
+                ("echo nonzero-output; exit 7", 5000),
+                ("echo timeout-partial; sleep 30", 500),
+            ])
         if self.case == "long":
             return "await " + bash(shlex.join([sys.executable, "-c",
                                               'import pathlib; print("head: " + pathlib.Path("fixture.txt").read_text() + " " + "中文🙂" * 10000 + ":tail")']))
@@ -424,7 +430,7 @@ class BackgroundBashTests:
         (self.cwd / (name + ".release")).touch()
 
     def completion(self, messages, id="b1"):
-        return next(m for m in messages if content(m).startswith(f"[background bash {id} finished]\n"))
+        return next(m for m in messages if content(m).startswith(f"[background bash {id} finished · "))
 
     def log(self, events):
         return records(self.home / "sessions" / (events[0]["start"]["session_id"] + ".jsonl"))
@@ -462,7 +468,7 @@ class BackgroundBashTests:
         return json.loads(content(message).removeprefix("result: "))
 
     def completions(self, messages, id="b1"):
-        return [m for m in messages if content(m).startswith(f"[background bash {id} finished]\n")]
+        return [m for m in messages if content(m).startswith(f"[background bash {id} finished · ")]
 
     def test_detached_survives_turn_and_stop_joins_only_target_process_group(self):
         mock = self.mock("detached_stop")
@@ -993,6 +999,24 @@ class BackgroundBashTests:
         self.assertIn(":tail", saved_text)
         self.assertGreater(len(saved_text.encode("utf-8")), 16 * 1024)
 
+    def test_each_completion_leads_with_its_process_status(self):
+        (self.cwd / "long.txt").write_text("log line\n" * 4000)
+        mock = self.mock("status_batch")
+        self.finish(self.start())
+        messages = mock.observed()[-1]["messages"]
+        for id, status, marker in [("b1", "exit 0", "failed command"),
+                                   ("b2", "exit 7", "nonzero-output"),
+                                   ("b3", "timed out", "timeout-partial")]:
+            text = content(self.completion(messages, id))
+            heading, body = text.split("\n", 1)
+            self.assertRegex(heading, rf"^\[background bash {id} finished · {status} · \d+ ms\]$")
+            self.assertIn(marker, body)
+            self.assertLessEqual(len(text.encode()), 16 * 1024)
+            if id == "b1":
+                self.assertIn("bytes omitted", body)
+                self.assertIn("success-tail", body)
+                self.assertIn("[full output:", body)
+
     def test_nonzero_exit_is_result(self):
         mock = self.mock("nonzero")
         self.finish(self.start())
@@ -1218,7 +1242,7 @@ class BackgroundBashTests:
         messages = mock.observed()[-1]["messages"]
         self.completion(messages, "b3")
         self.assertTrue(any(content(m).startswith("[background agent a5 finished]\n") for m in messages))
-        self.assertFalse(any(content(m).startswith(f"[background {kind} {id} finished]\n")
+        self.assertFalse(any(content(m).startswith(f"[background {kind} {id} finished")
                              for m in messages for id in lost for kind in ("agent", "bash")))
 
     def test_killed_parent_resumes_max_ids_including_foreground_calls(self):
@@ -1320,7 +1344,7 @@ class BackgroundBashTests:
         self.assertIn(("b1", "lost"), [(e["id"], e["state"]) for e in lifecycle])
         self.assertIn(("b2", "started"), [(e["id"], e["state"]) for e in lifecycle])
         self.assertIn(("b2", "finished"), [(e["id"], e["state"]) for e in lifecycle])
-        self.assertFalse(any(content(m).startswith("[background bash b1 finished]")
+        self.assertFalse(any(content(m).startswith("[background bash b1 finished · ")
                              for r in mock.observed() for m in r["messages"]))
         log = self.log(events)
         summary = events[-1]["end"]
@@ -1374,11 +1398,11 @@ class ChatTests(BackgroundBashTests, unittest.TestCase):
         wait_for(lambda: not alive(int((self.cwd / "worker.started").read_text())))
         mock.model_gate.set()
         request = wait_for(lambda: next((r for r in mock.observed()
-                                         if any(content(m).startswith("[background bash b1 finished]")
+                                         if any(content(m).startswith("[background bash b1 finished · ")
                                                 for m in r["messages"])), None))
         users = [content(m) for m in request["messages"] if m.get("role") == "user"]
         self.assertEqual(users[0:2], ["initial", "while waiting"])
-        self.assertTrue(users[2].startswith("[background bash b1 finished]\n"), users)
+        self.assertTrue(users[2].startswith("[background bash b1 finished · "), users)
         wait_for(lambda: history(self.home)[-1].get("content") == "complete")
         self.assert_accounting(mock)
 
