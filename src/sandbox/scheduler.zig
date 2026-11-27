@@ -26,6 +26,7 @@ pub const State = struct {
     ready_tail: ?*Call = null,
     creation_index: usize = 0,
     tool_bytes: u64 = 0,
+    bash: sandbox.BashTally = .{},
     /// The Run's top-level promise; once it rejects, unexpired timers are dropped while host calls still drain.
     promise: ?c.JSValue = null,
 
@@ -51,6 +52,7 @@ pub const State = struct {
         thread: ?std.Thread = null,
         timer: ?Timer = null,
         result: ?ToolResult = null,
+        bash_completion: ?sandbox.BashCompletion = null,
         timing_index: ?usize = null,
         next: ?*Call = null,
 
@@ -72,6 +74,7 @@ pub const State = struct {
             const timing = if (call.timing_index != null) h.timing else null;
             const start_ms = if (timing) |t| t.elapsed() else 0;
             sandbox.tool_identity = .{};
+            sandbox.bash_completion = null;
             st.mark(call, "tool_begin");
             const result = h.call(h.ctx, st.gpa, call.name, call.args);
             st.mark(call, "tool_end");
@@ -93,6 +96,7 @@ pub const State = struct {
                 }
             }
             call.result = result;
+            call.bash_completion = sandbox.bash_completion;
             if (st.ready_tail) |tail| tail.next = call else st.ready = call;
             st.ready_tail = call;
             st.completed.signal(st.io);
@@ -147,6 +151,7 @@ pub const State = struct {
     pub fn deliver(st: *State, ctx: *c.JSContext, call: *Call) !void {
         st.mark(call, "deliver");
         const result = call.result.?;
+        if (call.bash_completion) |completion| st.bash.add(completion);
         if (st.host.?.record) |recorder| {
             st.mark(call, "record_begin");
             recorder.settle(call.creation_index, call.name, call.args, result);

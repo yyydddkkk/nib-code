@@ -113,12 +113,14 @@ pub const Job = struct {
         const cwd = try std.process.currentPathAlloc(job.t.io, job.gpa);
         defer job.gpa.free(cwd);
         const save: ?output.Save = if (try job.t.outputsDir(a)) |dir| .{ .io = job.t.io, .dir = dir } else null;
-        const formatted = try output.formatSaved(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save);
+        const changes = try job.scope.changes.take(job.gpa, a, cwd);
+        const summary = try output.completionSummary(a, o, changes);
+        const formatted = try output.formatCompletion(a, o, if (job.t.cfg) |cfg| cfg.limits.run_output_bytes else output.max_bytes, save, summary);
         const failed = job.state == .failed;
         const text = if (failed)
             try std.fmt.allocPrint(a, "{s}\nSource: {d}:{d} (rerun executes from the beginning; prior effects may repeat)", .{ formatted, job.step, job.timing.run_index })
         else
             formatted;
-        return .{ .hook_notice = if (o.hook_notice.len > 0) try a.dupe(u8, o.hook_notice) else null, .execution = job.execution, .step = job.step, .run_index = job.timing.run_index, .source_reference = failed, .ok = o.ok, .output = text, .run_ms = job.elapsed_ms, .tool_bytes = job.timing.tool_bytes, .calls = job.timing.entries[0..job.timing.count], .calls_omitted = job.timing.omitted, .changes = try job.scope.changes.take(job.gpa, a, cwd) };
+        return .{ .hook_notice = if (o.hook_notice.len > 0) try a.dupe(u8, o.hook_notice) else null, .execution = job.execution, .step = job.step, .run_index = job.timing.run_index, .source_reference = failed, .ok = o.ok, .output = text, .completion_summary = summary, .run_ms = job.elapsed_ms, .tool_bytes = job.timing.tool_bytes, .calls = job.timing.entries[0..job.timing.count], .calls_omitted = job.timing.omitted, .changes = changes };
     }
 };

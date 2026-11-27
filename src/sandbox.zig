@@ -52,6 +52,24 @@ pub const ToolResult = union(enum) {
 // Tool workers publish session-owned IDs without changing the JavaScript return value.
 pub threadlocal var tool_identity: struct { id: ?[]const u8 = null, background: bool = false } = .{};
 
+pub const BashCompletion = enum { zero, nonzero, timed_out, terminated };
+pub threadlocal var bash_completion: ?BashCompletion = null;
+
+pub const BashTally = struct {
+    completed: usize = 0,
+    nonzero: usize = 0,
+    timed_out: usize = 0,
+
+    pub fn add(tally: *BashTally, completion: BashCompletion) void {
+        tally.completed += 1;
+        switch (completion) {
+            .nonzero => tally.nonzero += 1,
+            .timed_out => tally.timed_out += 1,
+            .zero, .terminated => {},
+        }
+    }
+};
+
 pub const Host = struct {
     ctx: *anyopaque,
     names: []const []const u8,
@@ -87,6 +105,7 @@ pub const Outcome = struct {
     full_logs: []const u8 = "",
     full_logs_truncated: bool = false,
     tool_bytes: u64 = 0,
+    bash: BashTally = .{},
     stopped: []const u8 = "",
 
     pub fn deinit(o: Outcome, gpa: std.mem.Allocator) void {
@@ -227,6 +246,7 @@ pub fn eval(
     return .{
         .ok = ok,
         .tool_bytes = st.tool_bytes,
+        .bash = st.bash,
         .stopped = stopped,
         .text = text,
         .logs = captured.logs,

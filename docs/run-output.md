@@ -75,6 +75,15 @@ The matcher recognizes `ghp_`, `gho_`, `ghu_`, and `ghs_` with exactly 36 ASCII 
 
 This is accidental-disclosure protection, not a security boundary. It does not rewrite source files, Run scripts, raw tool values and arguments, chat, diffs, images, Bash command summaries, user-written files, or earlier logs and artifacts. It cannot recover tokens clipped by a tool, split across console calls, or intentionally encoded. Opt-in [raw replay recordings](replay.md) may contain credentials; do not share them unreviewed.
 
+## Run completion summaries
+
+Foreground and automatic background Runs reserve display space for observed exceptions to an otherwise quiet completion:
+
+- For settled `tools.bash` calls, nonzero exits and timeouts are counted separately. A successful JavaScript Run still reports `ok: true`; shell results are unchanged. Pending or superseded calls and separately delivered background Bash jobs do not count.
+- For a failed Run, a short, masked list shows confirmed file changes tracked from `tools.write` and `tools.edit`. A syntax error does not execute any tools. This list does not account for side effects from Bash, MCP, or other tools; rerunning executes from the beginning and may repeat prior effects.
+
+The summary is outside the clipped console/result body but shares its display budget. Full-output references and raw tool results are unchanged.
+
 ## Run execution budgets and cancellation
 
 After top-level fulfillment/rejection, drain in-flight/queued tools, remaining JS jobs, and continuation-created calls until no work remains. Any call failure leaves others running, not just agent failures. Preserve original top-level rejection despite later success/failure. `Promise.all` early rejection does not stop side effects; failed Runs may keep writing. Foreground agents still finish/count usage, with Esc available. Cross-Run background lifecycle: [tool-delegation.md](tool-delegation.md).

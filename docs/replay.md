@@ -56,6 +56,8 @@ Recording defaults **off**. Set `NIB_RECORD=on` when executing the original Sess
 
 When recording is disabled, normal execution does not create, read, restore, truncate, or delete sidecars, and skips recording hashes, encoding, and sync. Main logs, resume, background state, and timing/byte-count/product-analysis metrics continue unchanged. `nib replay` itself still reads existing recordings with `NIB_RECORD` unset or off.
 
+Replay of the original script retains the completion summary recorded in the main log. Replay with a replacement `--script` does not report the original Run's observed effects or Bash outcomes as effects of the replacement.
+
 **Unrecorded tool returns cannot be fully replayed after the fact.** Set `NIB_RECORD=on` before the Runs you need to replay; turning it on during resume records only subsequent Runs. The main log's model-visible output is not a substitute for actual tool returns.
 
 A main log per Session, plus an independent sidecar only when recording is enabled:

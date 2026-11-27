@@ -93,6 +93,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if index == 0:
                 code = {"base": "1:0", "edits": [
                     {"old_text": "await tools.sleep(200); throw new Error('late-failure🙂')", "new_text": "'repaired'"}]}
+        elif case in ("summary-changes", "summary-bash"):
+            if index == 0:
+                noisy = "console.log('noise'.repeat(8000)); "
+                if case == "summary-changes":
+                    code = ('await tools.write({path:"confirmed.txt", content:"applied"}); '
+                            'await tools.sleep(200); ' + noisy
+                            + 'await tools.edit({path:"fixture.txt", old_text:"absent", new_text:"unexpected"})')
+                else:
+                    code = ('const result = await Promise.all(["exit 0", "sleep .2; exit 7"]'
+                            '.map(command => tools.bash({command}))); '
+                            'if (result.map(r => r.exit_code).join() !== "0,7") throw Error("bad result"); ' + noisy)
+            elif index == 1:
+                code = "await tools.wait(['r1'])"
         elif case in ("fold-failure", "wait-failure"):
             if index == 0:
                 code = "await tools.sleep(200); throw new Error('late-failure🙂')"
@@ -270,6 +283,7 @@ class BackgroundRunTests(unittest.TestCase):
                 self.assertNotIn('"error"', old["content"])
                 if mode == "run":
                     self.assertIn("await-resolved", old["content"])
+                    self.assertNotIn("Bash:", old["content"])
                     self.assertTrue(old["background_run"]["calls"][1]["ok"])
                 for pid in (self.cwd / "workers.pid").read_text().splitlines():
                     wait_for(lambda: not alive(int(pid)))
@@ -728,6 +742,35 @@ class BackgroundRunTests(unittest.TestCase):
                     self.assertIn("start: [REDACTED]", artifact)
                     assert_no_token(self, json.dumps(events), json.dumps(rows), json.dumps(self.server.requests), artifact)
 
+    def test_automatic_run_summaries_survive_truncation_and_wait(self):
+        self.env["NIB_TUNE"] = "delivery=tool"
+        (self.cwd / "fixture.txt").write_text("original")
+        for case, ok, summary in (
+            ("summary-changes", False, 'Confirmed file changes (write/edit):\n- created "confirmed.txt"'),
+            ("summary-bash", True, "Bash: 2 commands completed; 1 exited nonzero."),
+        ):
+            with self.subTest(case=case):
+                self.server.case = case
+                self.server.requests.clear()
+                _, rows, session = self.finish(self.launch())
+                event, = self.finished_records(rows)
+                self.assertEqual(event["id"], "r1")
+                completion = event["completion"]
+                self.assertIs(completion["ok"], ok)
+                self.assertEqual(completion["completion_summary"], summary)
+                self.assertTrue(completion["output"].startswith(summary + "\n"))
+                self.assertIn("bytes omitted", completion["output"])
+                self.assertIn("[full output:", completion["output"])
+                received = self.server.requests[-1]["messages"][-1]["content"]
+                self.assertIn(f'"kind":"run","ok":{json.dumps(ok)}', received)
+                self.assertIn(json.dumps(summary)[1:-1], received)
+                replay = subprocess.run([str(BIN), "replay", session, "--all", "--json"], cwd=self.cwd,
+                                        env=self.env, capture_output=True, text=True, timeout=5)
+                report = json.loads(replay.stdout)
+                self.assertEqual((report["matched"], report["divergences"]), (2, 0), report)
+        self.assertEqual((self.cwd / "confirmed.txt").read_text(), "applied")
+        self.assertEqual((self.cwd / "fixture.txt").read_text(), "original")
+
     def test_multiple_runs_keep_changes_separate(self):
         self.server.case = "multiple"
         _, rows, _ = self.finish(self.launch())
@@ -761,7 +804,9 @@ class BackgroundRunTests(unittest.TestCase):
         self.assertIn("continuing in background as r1", next(e["run_end"]["output"] for e in events if "run_end" in e))
         result = self.results(rows)[0]
         self.assertTrue(result["background_ok"])  # The Run inspected the timed-out command and completed.
-        payload = json.loads(result["content"].split("\n", 1)[1].removeprefix("result: "))
+        summary, payload = result["background_run"]["output"].split("\n", 1)
+        self.assertEqual(summary, "Bash: 1 command completed; 1 timed out.")
+        payload = json.loads(payload.removeprefix("result: "))
         self.assertIs(payload["timed_out"], True)
         self.assertGreaterEqual(payload["elapsed_ms"], 500)
         self.assertEqual(payload["output"], "before\n")

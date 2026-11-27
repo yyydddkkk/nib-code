@@ -13,6 +13,7 @@ pub const RunResult = struct {
     /// Own output when the provider tool message also carries Inbox text.
     output: ?[]const u8 = null,
     remaining_steps: ?usize = null,
+    completion_summary: ?[]const u8 = null,
     calls_omitted: ?u64 = null,
 };
 
