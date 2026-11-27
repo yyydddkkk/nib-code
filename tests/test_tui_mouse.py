@@ -105,7 +105,7 @@ def test_click_and_ctrl_o_open_single_runs(tmp):
             return "\n".join(screen(terminal.read(), 120, 32))
 
         def title(index):
-            rows = [i for i, line in enumerate(view().split("\n")) if "Run" in line and "Script" not in line]
+            rows = [i for i, line in enumerate(view().split("\n")) if line.strip() == "bash"]
             return rows[index]
 
         assert "Script" not in view()
@@ -147,7 +147,7 @@ def test_edit_run_shows_only_diff(tmp):
         def view():
             return "\n".join(screen(terminal.read(), 120, 32))
 
-        row = next(i for i, line in enumerate(view().split("\n")) if "Run · edit" in line)
+        row = next(i for i, line in enumerate(view().split("\n")) if line.strip() == "edit 1 file")
         terminal.send(mouse(0, 10, row) + mouse(0, 10, row, release=True))
         wait_for(lambda: "Changes" in view() and "after-edit" in view(), "edit diff opened")
         for simple in (False, True):
@@ -171,7 +171,7 @@ def test_caught_edit_failure_keeps_result_and_script(tmp):
         terminal.wait_turn("caught-edit-done")
         def view():
             return "\n".join(screen(terminal.read(), 120, 32))
-        row = next(i for i, line in enumerate(view().split("\n")) if "Run · edit" in line)
+        row = next(i for i, line in enumerate(view().split("\n")) if line.strip() == "edit 1 file")
         terminal.send(mouse(0, 10, row) + mouse(0, 10, row, release=True))
         wait_for(lambda: "Changes" in view(), "caught edit opened")
         shown = view()
@@ -203,7 +203,7 @@ def test_simple_mode(tmp):
         assert lines[39] == "╰" + "─" * 158 + "╯", view()
         assert lines[:3] == [" ▎", " ▎ check", " ▎"], view()
         assert "tokens" not in view() and "mock" not in view(), view()
-        row = next(i for i, line in enumerate(view().split("\n")) if "Run" in line)
+        row = next(i for i, line in enumerate(view().split("\n")) if line.strip() == "bash")
         terminal.send(mouse(0, 15, row) + mouse(0, 15, row, release=True))
         wait_for(lambda: "Details" in view(), "Run opens by click")
         assert "Result" not in view() and "Script" not in view(), view()

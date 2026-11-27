@@ -6,11 +6,13 @@ pub const prefix = "   ";
 pub const interval_ms = 32;
 const side = 22;
 const Encoder = std.base64.standard.Encoder;
+const blue_on_dark: [3]u8 = .{ 108, 169, 255 };
+const blue_on_light: [3]u8 = .{ 29, 78, 183 };
 
 pub const Cell = struct { x: u16, y: u16 };
 
 pub const Display = struct {
-    const Sample = struct { cell: Cell, frame: u64, color: u8, aspect: f32 };
+    const Sample = struct { cell: Cell, frame: u64, color: [3]u8, aspect: f32 };
 
     id: ?u32 = null,
     last: ?Sample = null,
@@ -26,7 +28,7 @@ pub const Display = struct {
         const screen = &vx.screen;
         const aspect = if (screen.width_pix < screen.width or screen.height_pix < screen.height) 1 else @as(f32, @floatFromInt(@as(u64, columns) * screen.width_pix * screen.height)) /
             @as(f32, @floatFromInt(@as(u64, screen.height_pix) * screen.width));
-        const color: u8 = if (bg) |rgb| if (isLight(rgb)) 45 else 222 else 222;
+        const color = if (bg != null and isLight(bg.?)) blue_on_light else blue_on_dark;
         const now: Sample = .{ .cell = at, .frame = ms / interval_ms, .color = color, .aspect = aspect };
         if (!refresh) if (d.last) |last| if (std.meta.eql(last, now)) return;
         if (d.id == null) {
@@ -74,7 +76,7 @@ fn dotsAt(ms: u64) [4]Dot {
     return dots;
 }
 
-fn raster(ms: u64, aspect: f32, color: u8) [side * side * 4]u8 {
+fn raster(ms: u64, aspect: f32, color: [3]u8) [side * side * 4]u8 {
     var bytes: [side * side * 4]u8 = undefined;
     const dots = dotsAt(ms);
     const sx = @max(aspect, 1);
@@ -90,7 +92,7 @@ fn raster(ms: u64, aspect: f32, color: u8) [side * side * 4]u8 {
             const a = coverage * dot.alpha;
             alpha += a * (1 - alpha);
         }
-        bytes[(row * side + col) * 4 ..][0..4].* = .{ color, color, color, @intFromFloat(@round(alpha * 255)) };
+        bytes[(row * side + col) * 4 ..][0..4].* = .{ color[0], color[1], color[2], @intFromFloat(@round(alpha * 255)) };
     };
     return bytes;
 }
@@ -109,8 +111,11 @@ test "orbit particles remain visible and vary with depth" {
     try t.expect(dotsAt(1700)[1].alpha > far.alpha);
     try t.expectApproxEqAbs(@as(f32, 5.775), near.radius, 0.001);
     try t.expectApproxEqAbs(@as(f32, 1), near.alpha, 0.001);
-    const a = raster(0, 1, 220);
-    const b = raster(500, 1, 220);
+    const a = raster(0, 1, blue_on_dark);
+    const b = raster(500, 1, blue_on_dark);
+    const light = raster(0, 1, blue_on_light);
+    try t.expectEqual(blue_on_dark, a[0..3].*);
+    try t.expectEqual(blue_on_light, light[0..3].*);
     try t.expectEqual(@as(u8, 0), a[3]);
     try t.expect(a[((side / 2) * side + side / 2) * 4 + 3] > 0);
     try t.expect(!std.mem.eql(u8, &a, &b));

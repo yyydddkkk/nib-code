@@ -321,7 +321,9 @@ fn drawMenu(win: vaxis.Window, y: u16, menu: []const commands.Candidate, menu_se
             if (current_w > 0) printFitted(row.child(.{ .x_off = label_w + service_w + 4 }), c.detail, .{ .dim = true });
         } else {
             const label_width = if (c.is_path) (if (c.detail.len == 0) row.width else @min(row.width, 24)) else if (c.command == .provider and c.value != null) @min(row.width, 14) else @min(row.width, 12);
-            printFitted(row.child(.{ .width = label_width }), c.label, .{});
+            const is_object = (c.value == null and std.mem.startsWith(u8, c.label, "/")) or c.is_path;
+            const name_style: vaxis.Style = if (is_object and (!chosen or s.hover_bg != .default)) @import("transcript/label.zig").object else .{};
+            printFitted(row.child(.{ .width = label_width }), c.label, name_style);
             if (row.width > label_width + 2) printFitted(row.child(.{ .x_off = label_width + 2 }), c.detail, .{ .dim = true });
         }
         if (chosen) for (0..row.width) |col| {
@@ -362,7 +364,17 @@ fn menuLayout(menu: []const commands.Candidate, selected: usize, limit: u16) Men
 }
 
 fn printActivity(win: vaxis.Window, label: []const u8, s: status.Status, text: *status.Text) void {
-    printFitted(win, label, s.activityStyle());
+    const fitted = @import("format.zig").fit(label, win.width);
+    const style = s.activityStyle();
+    const icon_len = if (s.activityGlyph()) |glyph|
+        if (std.mem.startsWith(u8, fitted.text, glyph)) glyph.len else 0
+    else
+        0;
+    _ = win.print(&.{
+        .{ .text = fitted.text[0..icon_len], .style = .{ .fg = .{ .index = 4 } } },
+        .{ .text = fitted.text[icon_len..], .style = style },
+        .{ .text = fitted.suffix, .style = style },
+    }, .{ .wrap = .none });
     text.placeOrbit(win, label, s);
 }
 
@@ -383,6 +395,26 @@ fn horizontal(win: vaxis.Window, y: u16, left: []const u8, right: []const u8) vo
 
 const testing = std.testing;
 const mock_cfg: provider.Config = .{ .base_url = "", .api_key = "", .model = "mock" };
+
+test "only the activity glyph is blue while normal and warning text keep their styles" {
+    var screen = try vaxis.Screen.init(testing.allocator, .{ .cols = 60, .rows = 2, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(testing.allocator);
+    const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = 60, .height = 1, .screen = &screen };
+    var text: status.Text = .{};
+    const blue: vaxis.Color = .{ .index = 4 };
+    for ([_]status.Activity.Label{
+        .{ .phase = .thinking, .ms = 0 },
+        .{ .phase = .retrying, .ms = 100 },
+        .{ .phase = .thinking, .ms = 200, .quiet_ms = 30_000 },
+    }) |busy| {
+        const s: status.Status = .{ .cfg = mock_cfg, .busy = busy };
+        printActivity(win, text.format(s, false), s, &text);
+        try testing.expectEqual(blue, screen.readCell(0, 0).?.style.fg);
+        const label = screen.readCell(2, 0).?.style;
+        try testing.expectEqual(s.activityStyle().fg, label.fg);
+        try testing.expectEqual(s.activityStyle().dim, label.dim);
+    }
+}
 
 test "Pages frames preserve the draft, moving heading and turn boundary at common widths" {
     const gpa = testing.allocator;
@@ -846,7 +878,7 @@ test "hover covers full summary width and leaves expanded details unchanged" {
     defer t.deinit(a);
     try t.startRun(a, "console.log('details')");
     const entry = &t.entries.items[0];
-    try entry.files.appendSlice(a, "read example.zig");
+    try entry.file_parts.append(a, .{ .text = "read example.zig" });
     entry.open = true;
     var input: Editor = .{};
     defer input.deinit(a);

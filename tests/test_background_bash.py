@@ -601,7 +601,7 @@ class BackgroundBashTests:
         terminal.send("initial\r")
         wait_for(lambda: len(mock.observed()) == 2)
         pids = self.marked_pids()
-        terminal.until(b"b1 bash")
+        wait_for(lambda: any("b1 bash" in row for row in screen(terminal.read(), 120, 32)))
         mock.model_gate.set()
         self.wait_final(terminal, "initial complete")
         self.assertTrue(all(alive(pid) for pid in pids))
@@ -726,13 +726,8 @@ class BackgroundBashTests:
         terminal = self.detached_terminal()
         wait_for(lambda: len(mock.observed()) == 2)
         pids = self.marked_pids()
-        terminal.until(b"b2 bash")
-
-        def detached_tree_visible():
-            screen = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.read())
-            return re.search(rb"b2 bash[^\n]*detached", screen)
-
-        wait_for(detached_tree_visible)
+        wait_for(lambda: any(re.search(r"b2 bash.*detached", row)
+                             for row in screen(terminal.read(), 120, 32)))
         mock.model_gate.set()
         self.wait_final(terminal, "initial complete")
         self.assertEqual(self.last_run_value(), {"id": "b2"})
@@ -741,7 +736,7 @@ class BackgroundBashTests:
         pids += self.marked_pids("other")
         self.assertEqual(self.last_run_value(), {"id": "b3"})
         self.assertTrue(all(alive(pid) for pid in pids))
-        terminal.until(b"b3 bash")
+        wait_for(lambda: any("b3 bash" in row for row in screen(terminal.read(), 120, 32)))
         terminal.send("stop counters\r")
         self.wait_final(terminal, "stop counters complete")
         self.assertEqual(self.last_run_value(), [stop_result("b2", True),
