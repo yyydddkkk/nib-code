@@ -1,7 +1,9 @@
 """Incremental TUI output through a PTY, including a paused stream and live input."""
+import base64
 import contextlib
 import json
 import random
+import re
 import sys
 from pathlib import Path
 import tempfile
@@ -223,8 +225,34 @@ def test_turn_pages(tmp):
         assert 'ui = "normal"' in (home / "config.toml").read_text()
 
 
+def test_orbital_activity(tmp):
+    reply = Reply("done orbiting", gated=True)
+    frame_pattern = re.compile(rb"\x1b_Ga=T,f=32,s=(\d+),v=(\d+),c=2,r=1,C=1,i=(\d+),q=2;([A-Za-z0-9+/=]+)\x1b\\")
+    with fixture(tmp, [reply]) as (terminal, home, _):
+        terminal.send("\x1b_Gi=1;OK\x1b\\")
+        terminal.send("orbit test\r")
+        assert reply.received.wait(5)
+        terminal.until(b"Waiting for model")
+        def received_frames():
+            frames = frame_pattern.findall(terminal.read())
+            return frames if len(frames) >= 3 else None
+
+        frames = wait_for(received_frames, "three orbital frames")
+        w, h, image, first = frames[0]
+        assert all(frame[:3] == (w, h, image) for frame in frames)
+        pixels = base64.b64decode(first, validate=True)
+        assert len(pixels) == int(w) * int(h) * 4
+        assert 0 in pixels[3::4] and any(pixels[3::4])
+        assert len({frame[3] for frame in frames}) > 1
+        reply.release.set()
+        wait_for(lambda: finished(home, reply.text), "orbital Turn finished")
+        terminal.until(b"\x1b_Ga=d,d=I,i=" + image + b",q=2;\x1b\\")
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="nib-tui-stream-") as directory:
+        test_orbital_activity(Path(directory) / "orbit")
+        print("test_orbital_activity: ok")
         test_turn_pages(Path(directory) / "pages")
         print("test_turn_pages: ok")
         test_large_paste_does_not_redraw_per_key(Path(directory) / "paste")

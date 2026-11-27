@@ -23,6 +23,7 @@ const config = @import("config.zig");
 const prediction = @import("tui/prediction.zig");
 const Turn = @import("tui/turn.zig").Turn;
 const Ticker = @import("tui/turn.zig").Ticker;
+const orbit = @import("tui/orbit.zig");
 const Frames = @import("tui/frames.zig").Frames;
 const bill = @import("tui/bill.zig");
 const open = @import("tui/open.zig");
@@ -210,6 +211,7 @@ pub fn run(init: std.process.Init, session: *Session) !void {
         if (frames.due(frame_start, if (refresh != .immediate and (app.flight != null or app.transcript.hasBacklog())) .content else refresh)) {
             app.transcript.advanceVisible(frame_start);
             try app.render();
+            frames.activity_interval_ms = if (app.orbital_display.last != null) orbit.interval_ms else Frames.animation_ms;
             frames.painted(frame_start);
         }
         ticker.busy.store(app.flight != null or frames.pending or app.transcript.hasBacklog() or app.turn != null or app.session.tools.background.anyPending(io), .release);
@@ -274,6 +276,7 @@ pub const App = struct {
     scroll: Viewport = .{},
     menu: Menu,
     status_text: status.Text = .{},
+    orbital_display: orbit.Display = .{},
     reflect_help: [512]u8 = undefined,
     activity_detail: [256]u8 = undefined,
     retry_detail: [256]u8 = undefined,
@@ -301,6 +304,7 @@ pub const App = struct {
     const stopReflecting = reflect.stopReflecting;
 
     fn deinit(app: *App) void {
+        app.orbital_display.clear(app.w) catch {};
         // Close before joining producers: a full queue must not block shutdown.
         app.loop.queue.close(error.Closed);
         if (app.turn) |t| {
@@ -1117,6 +1121,7 @@ pub const App = struct {
             .background_count = if (!app.cfg.turn_pages or page.latest()) app.background_count else 0,
             .context = app.context,
             .busy = if (app.turn != null and (!app.cfg.turn_pages or page.latest())) app.activity.label(app.io) else null,
+            .orbital = app.vx.caps.kitty_graphics and !app.vx.caps.no_color,
             .notice = app.notice,
             .detail = app.activityDetail(),
             .hint = if (app.flow.active()) app.flow.hint(&app.flow_hint) else if (app.menu.isPinned()) "Choose a service" else "",
@@ -1125,6 +1130,7 @@ pub const App = struct {
         };
         const win = app.vx.window();
         const selected = @min(app.menu.sel, menu.len -| 1);
+        app.status_text.orbit_cell = null;
         if (!app.cfg.turn_pages) {
             const empty = app.transcript.entries.items.len == 0;
             if (!empty) app.title_loaded = false;
@@ -1151,7 +1157,9 @@ pub const App = struct {
         }
         app.selection.updateHistory(app.body, app.transcript.entries.items);
         app.selection.highlightHistory(&app.vx.screen, app.body, app.transcript.entries.items);
+        const refresh = app.vx.refresh;
         try app.vx.render(app.w);
+        try app.orbital_display.draw(app.vx, app.w, app.status_text.orbit_cell, if (s.busy) |b| b.turn_ms else 0, app.terminal_bg, refresh);
         try app.w.flush();
     }
     fn setHoverBackgrounds(app: *App, scheme: ?vaxis.Color.Scheme) void {
