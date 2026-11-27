@@ -1,4 +1,6 @@
 const std = @import("std");
+const windows = @import("builtin").os.tag == .windows;
+const WindowsJob = @import("windows_job.zig").Job;
 const secrets = @import("secrets.zig");
 const Execution = @import("../sandbox/timing.zig").Execution;
 
@@ -28,13 +30,28 @@ pub const Options = struct {
     on_line: ?struct { ctx: *anyopaque, emit: *const fn (*anyopaque, []const u8) void } = null,
 };
 
-const Group = struct {
+const Group = if (windows) struct {
+    job: WindowsJob,
+
+    fn kill(group: *@This()) void {
+        group.job.close();
+    }
+
+    fn finish(group: *@This()) void {
+        group.kill();
+    }
+} else struct {
     pid: std.posix.pid_t,
     io: std.Io,
     grace_ms: u32,
     stopped: bool = false,
 
-    fn kill(group: *Group) void {
+    fn finish(group: *@This()) void {
+        group.grace_ms = 0;
+        group.kill();
+    }
+
+    fn kill(group: *@This()) void {
         if (group.stopped) return;
         group.stopped = true;
         if (group.grace_ms > 0) {
@@ -59,12 +76,21 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, options: Options) !Result {
     };
     opts.environ_map = &env;
     if (options.input != null) opts.stdin = .pipe;
-    opts.pgid = 0;
+    var group: Group = undefined;
+    if (windows) {
+        group = .{ .job = try WindowsJob.init() };
+        opts.start_suspended = true;
+        opts.create_no_window = true;
+    } else opts.pgid = 0;
+    errdefer if (windows) group.kill();
     if (options.execution) |execution| execution.start_ms_epoch = Execution.now(io);
     var child = try std.process.spawn(io, opts);
-    const pid = child.id.?;
     defer child.kill(io);
-    var group: Group = .{ .pid = pid, .io = io, .grace_ms = options.termination_grace_ms };
+    if (windows) {
+        try group.job.start(&child);
+    } else {
+        group = .{ .pid = child.id.?, .io = io, .grace_ms = options.termination_grace_ms };
+    }
     defer group.kill();
     const Input = struct {
         fn write(file: std.Io.File, i: std.Io, bytes: []const u8) anyerror!void {
@@ -120,8 +146,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, options: Options) !Result {
     while (true) {
         if (options.on_tick) |observer| observer.emit(observer.ctx);
         if (done.isSet()) {
-            group.grace_ms = 0;
-            group.kill();
+            group.finish();
             if (exited_at == null) exited_at = .now(io, .awake);
         } else if (stop == null) check(io, options.cancel, deadline) catch |err| {
             stop = err;
@@ -160,7 +185,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, options: Options) !Result {
         };
     }
     const term = try waiter.await(io);
-    group.grace_ms = 0;
+    group.finish();
     if (feeder) |*f| {
         f.cancel(io) catch |err| {
             if (stop == null) return err;
@@ -176,7 +201,7 @@ fn check(io: std.Io, cancel: *const std.atomic.Value(bool), deadline: ?std.Io.Cl
 }
 
 pub fn inheritedEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {
-    const environ: std.process.Environ = .{ .block = .{ .slice = std.mem.span(std.c.environ) } };
+    const environ: std.process.Environ = .{ .block = if (windows) .global else .{ .slice = std.mem.span(std.c.environ) } };
     return environ.createMap(gpa);
 }
 

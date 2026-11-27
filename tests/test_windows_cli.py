@@ -103,10 +103,9 @@ def main():
             assert resumed == session
             assert (cwd / path).read_bytes() == b'second\n'
             assert (cwd / env['NIB_HOME'] / 'sessions' / (session + '.jsonl')).is_file()
-            if windows:
-                _, run = ask('try { await tools.bash({command: "echo should not run"}); } '
-                             'catch (err) { console.log(String(err)); }')
-                assert 'tools.bash is unavailable' in json.dumps(run), run
+            if os.name == 'nt':
+                from windows_bash_jobs import check
+                check(argv, cwd, env)
             with subprocess.Popen([*argv, 'ask', '--json', 'hold session'], cwd=cwd, env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE) as held:
                 try:

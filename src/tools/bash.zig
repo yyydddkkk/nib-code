@@ -5,6 +5,8 @@ const Tools = tools.Tools;
 const fail = tools.fail;
 const process = @import("process.zig");
 const policy = @import("policy.zig");
+const shell = @import("bash/shell.zig");
+const windows = @import("builtin").os.tag == .windows;
 
 pub const foreground_progress_threshold_ms = 3000;
 
@@ -59,7 +61,7 @@ const WorkingDir = struct {
 };
 
 pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
-    if (@import("builtin").os.tag == .windows) return fail(gpa, "tools.bash is unavailable in the Windows CLI preview", .{});
+    if (windows and t.sandboxEnabled()) return fail(gpa, "Workspace isolation is unavailable on Windows", .{});
     const expected = "expected {{ command: string, cwd?: string, timeout_ms?: number, background?: boolean, detached?: boolean }}";
     const a = std.json.parseFromSlice(Args, gpa, args, .{}) catch |err| return switch (err) {
         error.UnknownField => fail(gpa, "unknown bash parameter; " ++ expected, .{}),
@@ -80,6 +82,7 @@ pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
             fail(gpa, "refused by nib: {s}. If it is really needed, ask the user to run it.", .{why}),
     }
 
+    _ = shell.executable(t.io) catch |err| return shellFailure(gpa, err);
     const cwd = WorkingDir.open(t, gpa, a.value.cwd) catch |err| return WorkingDir.failure(gpa, a.value.cwd, err);
     defer cwd.close(t, gpa);
     if (a.value.background) {
@@ -109,7 +112,15 @@ pub fn executeBackground(t: *Tools, gpa: std.mem.Allocator, args: []const u8, ca
     return execute(t, gpa, value.prompt, cwd, parsed.value.timeoutMs(), cancel, value, execution, status);
 }
 
+fn shellFailure(gpa: std.mem.Allocator, err: anyerror) !sandbox.ToolResult {
+    return switch (err) {
+        error.GitBashNotFound => fail(gpa, "Git Bash not found; install Git for Windows in its default system-wide location", .{}),
+        else => err,
+    };
+}
+
 fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingDir, timeout_ms: i64, cancel: *const std.atomic.Value(bool), progress: ?@import("../session/events.zig").Progress, execution: ?*@import("../sandbox/timing.zig").Execution, status: ?*?Status) !sandbox.ToolResult {
+    const executable = shell.executable(t.io) catch |err| return shellFailure(gpa, err);
     const id = if (progress) |value| value.id else try t.progress.reserveBash(gpa, t.io);
     sandbox.tool_identity = .{ .id = id, .background = progress != null };
     var active: @import("bash/registry.zig").Command = .{ .id = id, .run = if (progress) |value| value.run else t.runId(), .command = command, .cwd = cwd.path, .detached = if (progress) |value| value.detached else false, .started = .now(t.io, .awake) };
@@ -130,7 +141,7 @@ fn execute(t: *Tools, gpa: std.mem.Allocator, command: []const u8, cwd: WorkingD
     t.recovery.noteBash(t.io);
     var launch: std.heap.ArenaAllocator = .init(gpa);
     defer launch.deinit();
-    const argv = try t.sandboxedArgv(launch.allocator(), &.{ "bash", "-c", script });
+    const argv = try t.sandboxedArgv(launch.allocator(), &.{ executable, "-c", script });
     const executed = process.run(gpa, t.io, .{ .spawn = .{
         .argv = argv,
         .cwd = if (cwd.dir) |dir| .{ .dir = dir } else .inherit,
