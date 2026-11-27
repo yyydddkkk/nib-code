@@ -361,8 +361,12 @@ pub const Transcript = struct {
     }
 
     pub fn startRunWithEffort(t: *Transcript, gpa: std.mem.Allocator, code: []const u8, effort: ?provider.StepEffort) !void {
+        try t.startRunIn(gpa, code, null, effort);
+    }
+
+    pub fn startRunIn(t: *Transcript, gpa: std.mem.Allocator, code: []const u8, cwd: ?[]const u8, effort: ?provider.StepEffort) !void {
         t.revision +%= 1;
-        try t.addRun(gpa, code, false, effort);
+        try t.addRun(gpa, code, cwd, effort);
         t.next_run += 1;
         t.entries.items[t.entries.items.len - 1].run_number = t.next_run;
     }
@@ -570,13 +574,15 @@ pub const Transcript = struct {
                     const args = std.json.parseFromSlice(Args, gpa, call.function.arguments, .{ .ignore_unknown_fields = true }) catch continue;
                     defer args.deinit();
                     var code = args.value.code;
+                    var cwd: ?[]const u8 = null;
                     for (history) |result| {
                         if (std.mem.eql(u8, result.tool_call_id orelse "", call.id)) {
                             code = result.executed_source orelse code;
+                            cwd = result.run_cwd;
                             break;
                         }
                     }
-                    try t.addRun(gpa, code, false, m.step_effort);
+                    try t.addRun(gpa, code, cwd, m.step_effort);
                     try runs.put(call.id, t.entries.items.len - 1);
                 }
                 if (m.step_calls_omitted) |omitted| {
@@ -602,9 +608,10 @@ pub const Transcript = struct {
         }
     }
 
-    fn addRun(t: *Transcript, gpa: std.mem.Allocator, code: []const u8, open: bool, effort: ?provider.StepEffort) !void {
-        var e: Entry = .{ .kind = .run, .open = open };
+    fn addRun(t: *Transcript, gpa: std.mem.Allocator, code: []const u8, cwd: ?[]const u8, effort: ?provider.StepEffort) !void {
+        var e: Entry = .{ .kind = .run, .open = false };
         errdefer e.deinit(gpa);
+        if (cwd) |dir| e.cwd_label = try std.fmt.allocPrint(gpa, "cwd {f}", .{std.json.fmt(dir, .{})});
         if (effort) |value| e.step_effort = .{ .effort = try gpa.dupe(u8, value.effort) };
         try e.text.appendSlice(gpa, std.mem.trim(u8, code, "\n"));
         try e.refreshLabel(gpa);
@@ -621,6 +628,24 @@ pub const Transcript = struct {
         return null;
     }
 };
+
+test "Run directory is visible live and after history restoration" {
+    const a = std.testing.allocator;
+    var transcript: Transcript = .{};
+    defer transcript.deinit(a);
+    try transcript.startRunIn(a, "1", "/work/feature", null);
+    try transcript.addHistory(a, &.{
+        .{ .role = "assistant", .tool_calls = &.{.{ .id = "retry", .function = .{ .name = "rerun", .arguments = "{}" } }} },
+        .{ .role = "tool", .tool_call_id = "retry", .executed_source = "2", .run_cwd = "/work/feature" },
+    });
+    try std.testing.expectEqual(@as(usize, 2), transcript.entries.items.len);
+    for (transcript.entries.items) |*entry| for ([_]bool{ false, true }) |simple| {
+        entry.simple = simple;
+        const rendered = try entryText(a, entry, 60);
+        defer a.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "cwd \"/work/feature\"") != null);
+    };
+}
 
 fn settleProgress(p: *Progress, ok: bool) void {
     p.background = false;

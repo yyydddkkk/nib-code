@@ -131,7 +131,11 @@ pub const Turn = struct {
         const event: Event = switch (ev) {
             .step => |s| .{ .step = .{ .n = s.n, .effort = try gpa.dupe(u8, s.effort) } },
             .delta => |d| .{ .delta = .{ .kind = d.kind, .text = try gpa.dupe(u8, d.text), .step = t.session.steps + 1 } },
-            .run_start => |code| .{ .run_start = .{ .code = try gpa.dupe(u8, code), .step = t.session.steps } },
+            .run_start => |run| blk: {
+                const code = try gpa.dupe(u8, run.code);
+                errdefer gpa.free(code);
+                break :blk .{ .run_start = .{ .code = code, .cwd = if (run.cwd) |cwd| try gpa.dupe(u8, cwd) else null, .step = t.session.steps } };
+            },
             .run_end => |r| blk: {
                 const output = try gpa.dupe(u8, r.output);
                 errdefer gpa.free(output);

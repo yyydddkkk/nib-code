@@ -32,6 +32,7 @@ pub const Entry = struct {
     queued: ?u64 = null,
     attempt: usize = 0,
     retry_placeholder: bool = false,
+    cwd_label: ?[]const u8 = null,
     /// For `.run`: the script.
     text: std.ArrayList(u8) = .empty,
     /// For `.run`: the complete result delivered by Session.
@@ -83,6 +84,7 @@ pub const Entry = struct {
     pub fn deinit(e: *Entry, gpa: std.mem.Allocator) void {
         e.markdown_cache.deinit(gpa);
         if (e.task_id) |id| gpa.free(id);
+        if (e.cwd_label) |cwd| gpa.free(cwd);
         if (e.step_effort) |effort| gpa.free(effort.effort);
         if (e.tool_summary) |summary| summary.deinit(gpa);
         e.text.deinit(gpa);
@@ -240,9 +242,13 @@ pub const Entry = struct {
             const title = [_]vaxis.Segment{ shown[0], shown[1], .{ .text = title_text[0..at] }, .{ .text = e.title_files.items }, .{ .text = title_text[at..] } };
             _ = win.print(&title, .{ .wrap = .none, .commit = commit });
         } else _ = win.print(shown, .{ .wrap = .none, .commit = commit });
-        if (e.simple and !e.open and e.run != .running) return 1;
-        if (e.simple and !e.open) return 1 +| e.agent_tree.print(win.child(.{ .y_off = 1 }), commit);
         var rows: u16 = 1;
+        if (e.cwd_label) |cwd| {
+            const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = cwd, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
+            rows +|= @max(1, r.row +| @intFromBool(r.col > 0));
+        }
+        if (e.simple and !e.open and e.run != .running) return rows;
+        if (e.simple and !e.open) return rows +| e.agent_tree.print(win.child(.{ .y_off = rows }), commit);
         if (!e.open and e.changes.summary.len > 0) {
             const r = win.child(.{ .x_off = 2, .y_off = rows }).printSegment(.{ .text = e.changes.summary, .style = .{ .dim = true } }, .{ .wrap = .word, .commit = commit });
             rows +|= @max(1, r.row +| @intFromBool(r.col > 0));

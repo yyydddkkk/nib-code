@@ -199,6 +199,7 @@ pub const File = struct {
 };
 
 pub const Options = struct {
+    base: ?[]const u8 = null,
     /// Canonical absolute paths that are never listed or entered.
     deny: []const []const u8 = &.{},
     cancel: ?*const std.atomic.Value(bool) = null,
@@ -215,7 +216,8 @@ pub const Options = struct {
 /// A file `root` is returned as is. Everything is allocated with `a`, meant to be an arena.
 pub fn files(io: std.Io, a: std.mem.Allocator, root: []const u8, options: Options) ![]File {
     const cwd = std.Io.Dir.cwd();
-    const absolute_root = try cwd.realPathFileAlloc(io, root, a);
+    const joined = try @import("../tools.zig").joinRelative(a, options.base, root);
+    const absolute_root = try cwd.realPathFileAlloc(io, joined orelse root, a);
     var out: std.ArrayList(File) = .empty;
     const stat = try cwd.statFile(io, absolute_root, .{});
     if (stat.kind != .directory) {

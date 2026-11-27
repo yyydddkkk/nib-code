@@ -705,7 +705,7 @@ pub const Session = struct {
                 run_timing.output_bytes += result.output.len;
                 run_ms += result.run_ms orelse 0;
                 try sink.emit(sink.ctx, .{ .usage = s.usage });
-                try pending.append(s.gpa, .{ .role = "tool", .executed_source = result.executed_source, .content = result.output, .tool_call_id = call.id, .background_id = result.background_id, .run_ok = if (result.background_id == null) result.ok else null, .tool_summary = result.tool_summary, .images = if (result.images.len > 0) result.images else null });
+                try pending.append(s.gpa, .{ .role = "tool", .executed_source = result.executed_source, .run_cwd = result.cwd, .content = result.output, .tool_call_id = call.id, .background_id = result.background_id, .run_ok = if (result.background_id == null) result.ok else null, .tool_summary = result.tool_summary, .images = if (result.images.len > 0) result.images else null });
                 try run_results.append(s.gpa, .{
                     .tool_call_id = call.id,
                     .background_id = result.background_id,

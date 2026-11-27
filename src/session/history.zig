@@ -52,6 +52,7 @@ fn clone(a: std.mem.Allocator, message: provider.Message) !provider.Message {
     }
     if (message.step_effort) |effort| copy.step_effort = .{ .effort = try a.dupe(u8, effort.effort) };
     if (message.executed_source) |code| copy.executed_source = try a.dupe(u8, code);
+    if (message.run_cwd) |cwd| copy.run_cwd = try a.dupe(u8, cwd);
     if (message.tool_summary) |summary| copy.tool_summary = try summary.clone(a);
     if (message.images) |images| {
         const copies = try a.alloc(@import("../image.zig").Image, images.len);

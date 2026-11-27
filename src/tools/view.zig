@@ -18,7 +18,7 @@ pub fn view(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
     if (t.cfg) |cfg| if (!cfg.vision()) return refuse(gpa, "the current model does not support image input");
     const data_home = t.data_home orelse return refuse(gpa, "image storage is unavailable");
     const session_id = t.session_id orelse return refuse(gpa, "image storage is unavailable");
-    const path = try tools.normalizedPath(t.io, gpa, a.value.path);
+    const path = try t.resolveRunPath(gpa, a.value.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     if (t.viewedImages() >= image.max_per_run)

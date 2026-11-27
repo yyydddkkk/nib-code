@@ -13,7 +13,7 @@ pub fn read(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         return fail(gpa, "expected {{ path: string, offset?: number, limit?: number }}", .{});
     defer a.deinit();
 
-    const path = try tools.normalizedPath(t.io, gpa, a.value.path);
+    const path = try t.resolveRunPath(gpa, a.value.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     const lock = try file_state.lock(t, gpa, path);
@@ -95,7 +95,7 @@ pub fn edit(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolRe
         return fail(gpa, "expected {{ path: string, old_text: string, new_text: string, all?: boolean }}", .{});
     defer a.deinit();
     const v = a.value;
-    const path = try tools.normalizedPath(t.io, gpa, v.path);
+    const path = try t.resolveRunPath(gpa, v.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     if (try writeBlocked(t, gpa, path)) |why| return fail(gpa, "{s}: {s}", .{ v.path, why });
@@ -143,7 +143,7 @@ pub fn write(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolR
         return fail(gpa, "expected {{ path: string, content: string }}", .{});
     defer a.deinit();
     const v = a.value;
-    const path = try tools.normalizedPath(t.io, gpa, v.path);
+    const path = try t.resolveRunPath(gpa, v.path);
     defer gpa.free(path);
     try t.checkCredentialPath(gpa, path);
     if (try writeBlocked(t, gpa, path)) |why| return fail(gpa, "{s}: {s}", .{ v.path, why });

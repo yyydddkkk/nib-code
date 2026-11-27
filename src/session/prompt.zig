@@ -10,7 +10,7 @@ pub const tools_json =
     \\[{"type":"function","function":{"name":"run",
     \\"description":"Run JavaScript in a fresh sandbox. The `tools` API it can call is described in the system prompt.",
     \\"parameters":{"type":"object","properties":{"code":{"type":"string",
-    \\"description":"JavaScript source. Top-level await is allowed; the last expression's value is returned."}},
+    \\"description":"JavaScript source. Top-level await is allowed; the last expression's value is returned."},"cwd":{"type":"string","description":"Optional working directory for this Run's file, search, and bash tools. Relative to the Session directory. Does not change writable roots."}},
     \\"required":["code"]}}},
     \\{"type":"function","function":{"name":"rerun","description":"Apply exact edits to a failed Run source reference and execute from the beginning in a fresh sandbox. Prior effects may repeat. Each old_text must match exactly once; edits apply in order.","parameters":{"type":"object","properties":{"base":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"old_text":{"type":"string","minLength":1},"new_text":{"type":"string"}},"required":["old_text","new_text"]}}},"required":["base","edits"]}}}]
 ;
@@ -403,7 +403,7 @@ test "json-escape patch example survives JS parsing verbatim" {
     try std.testing.expectEqualStrings("` ${x} \\path \"quoted\"\n", content);
 }
 
-test "run schema takes only code" {
+test "run schema requires code and allows cwd" {
     const t = std.testing;
     const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, tools_json, .{});
     defer parsed.deinit();
@@ -411,7 +411,9 @@ test "run schema takes only code" {
     const required = parameters.object.get("required").?.array.items;
     try t.expectEqual(@as(usize, 1), required.len);
     try t.expectEqualStrings("code", required[0].string);
-    try t.expectEqual(@as(usize, 1), parameters.object.get("properties").?.object.count());
+    const properties = parameters.object.get("properties").?.object;
+    try t.expectEqual(@as(usize, 2), properties.count());
+    try t.expectEqualStrings("string", properties.get("cwd").?.object.get("type").?.string);
 }
 
 test "Step budget facts leave unlimited prompts unchanged" {

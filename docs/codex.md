@@ -197,7 +197,7 @@ Local request-flags comparisons showed earlier first arguments with summaries of
 
 ## Custom Run tool
 
-Default Responses custom emits direct JS, removing function JSON-string escaping. Lark grammar (`SOURCE: /[\s\S]+/`) accepts any non-empty source; outer-form only, no JS validation. Per-Step effort declarations were removed ([ADR 0025](adr/0025-model-profiles.md)); old `// @run:` lines in history replay verbatim and are plain comments if re-run. [codex] run_tool = "function" or `NIB_CODEX_RUN_TOOL=function` falls back; Chat Completions unchanged.
+Default Responses custom emits direct JS, removing function JSON-string escaping. Lark grammar (`SOURCE: /[\s\S]+/`) accepts any non-empty source; outer-form only, no JS validation. An optional first line `// @cwd: "../worktree"` sets the [Run working directory](run-output.md#run-working-directory), using a JSON string after the colon. Per-Step effort declarations were removed ([ADR 0025](adr/0025-model-profiles.md)); old `// @run:` lines in history replay verbatim and are plain comments if re-run. [codex] run_tool = "function" or `NIB_CODEX_RUN_TOOL=function` falls back; Chat Completions unchanged.
 
 Encode each historical call by its own type: custom_tool_call/custom_tool_call_output versus function_call/function_call_output. Resume never converts old JSON code to custom, nor reverse fallback history. Preserve raw args/encrypted reasoning/cache prefixes, with expected changes only at tool-definition differences. Resume already uses new full-history connections; unchanged same-connection tools allow normalized custom output prefix matching and incremental results.
 

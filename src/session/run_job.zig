@@ -30,7 +30,7 @@ pub const Job = struct {
     collected: bool = false,
     delivered: bool = false,
 
-    pub fn create(t: *Tools, gpa: std.mem.Allocator, code: []const u8, step: usize, index: usize, recorder: ?*sandbox.Recorder) !*Job {
+    pub fn create(t: *Tools, gpa: std.mem.Allocator, code: []const u8, cwd: ?[]const u8, step: usize, index: usize, recorder: ?*sandbox.Recorder) !*Job {
         const job = try gpa.create(Job);
         job.* = .{ .gpa = gpa, .t = t, .input_arena = .init(gpa), .scope = .{ .tools = t, .id = t.run_id }, .code = "", .step = step, .timing = .init(t.io, .now(t.io, .awake)) };
         errdefer job.destroy();
@@ -38,6 +38,7 @@ pub const Job = struct {
         job.execution.start_ms_epoch = @import("../sandbox/timing.zig").Execution.now(t.io);
         const a = job.input_arena.allocator();
         job.code = try a.dupe(u8, code);
+        if (cwd) |dir| job.scope.cwd = try a.dupe(u8, dir);
         if (t.fork_snapshot) |fork| {
             var copy = fork;
             copy.history = try @import("history.zig").snapshot(a, fork.history, &.{});

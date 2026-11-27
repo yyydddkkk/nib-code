@@ -450,7 +450,7 @@ test "Responses only requests Fast for supported Codex GPT models when enabled" 
     }
 }
 
-const custom_run_description = "Run JavaScript in a fresh sandbox using the tools API described in the system prompt. Send raw JavaScript, not JSON, a quoted string or markdown fences. Top-level await is allowed; the last expression's value is returned.";
+const custom_run_description = "Run JavaScript in a fresh sandbox using the tools API described in the system prompt. Send raw JavaScript, not JSON, a quoted string or markdown fences. An optional first line // @cwd: \"../worktree\" sets the working directory for this Run's file, search, and bash tools (use a JSON string after the colon). It does not change writable roots. Top-level await is allowed; the last expression's value is returned.";
 
 const custom_run_grammar =
     \\start: SOURCE

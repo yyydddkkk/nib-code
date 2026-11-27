@@ -117,7 +117,7 @@ const all = [_]Tool{
         .name = "bash",
         .run = bash.bash,
         .doc =
-        \\  // cwd defaults to the Session directory; relative paths start there. Sandbox roots unchanged.
+        \\  // cwd defaults to the Run directory (otherwise the Session directory). Sandbox roots unchanged.
         \\  // Merged stderr. Timeout returns {timed_out:true, elapsed_ms, exit_code:null, output}. Groups cleaned up (nohup/& too).
         \\  // >16 MiB:redirect. >256 words except heredocs:script.
         \\  // Detached requires background, spans Turns; stop/timeout/cancel/exit clean up.
@@ -208,6 +208,7 @@ pub const docs = apis[0][1].docs;
 pub const RunScope = struct {
     tools: *Tools,
     id: usize,
+    cwd: ?[]const u8 = null,
     cancel: std.atomic.Value(bool) = .init(false),
     llm_calls: std.atomic.Value(usize) = .init(0),
     active_tools: [all.len]std.atomic.Value(u32) = @splat(.init(0)),
@@ -296,6 +297,16 @@ pub const Tools = struct {
     pub fn scope(t: *Tools) ?*RunScope {
         const value = current_scope orelse return null;
         return if (value.tools == t) value else null;
+    }
+
+    pub fn runCwd(t: *Tools) ?[]const u8 {
+        return if (t.scope()) |value| value.cwd else null;
+    }
+
+    pub fn resolveRunPath(t: *Tools, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+        const joined = try joinRelative(gpa, t.runCwd(), path);
+        defer if (joined) |value| gpa.free(value);
+        return normalizedPath(t.io, gpa, joined orelse path);
     }
 
     pub fn cancelFlag(t: *Tools) *std.atomic.Value(bool) {
@@ -568,6 +579,11 @@ pub fn takeImages(list: *std.ArrayList(image.Image), gpa: std.mem.Allocator, a: 
 pub fn clearImages(list: *std.ArrayList(image.Image), gpa: std.mem.Allocator) void {
     for (list.items) |item| item.deinit(gpa);
     list.clearAndFree(gpa);
+}
+
+pub fn joinRelative(a: std.mem.Allocator, base: ?[]const u8, path: []const u8) !?[]u8 {
+    if (path.len == 0 or std.fs.path.isAbsolute(path)) return null;
+    return if (base) |dir| try std.fs.path.join(a, &.{ dir, path }) else null;
 }
 
 pub fn normalizedPath(io: std.Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
