@@ -1,6 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const windows = @import("builtin").os.tag == .windows;
+
+// Windows inherits the parent directory's ACL; File.Permissions only contains attributes there.
+pub const private_file: Io.File.Permissions = if (windows) .default_file else .fromMode(0o600);
+pub const private_dir: Io.File.Permissions = if (windows) .default_dir else .fromMode(0o700);
 
 pub const Options = struct {
     /// Creation permissions for a missing target, subject to umask.
@@ -81,7 +86,7 @@ pub fn replace(io: Io, allocator: Allocator, path: []const u8, data: []const u8,
             name = try std.fmt.bufPrint(&name_buffer, ".nib-{s}", .{std.fmt.bytesToHex(random, .lower)});
             break :file dir.createFile(io, name, .{
                 .exclusive = true,
-                .permissions = if (existing != null) .fromMode(0o600) else options.permissions,
+                .permissions = if (existing != null) private_file else options.permissions,
             }) catch |err| switch (err) {
                 error.PathAlreadyExists => continue,
                 else => return err,

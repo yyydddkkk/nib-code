@@ -58,7 +58,7 @@ pub const Doc = struct {
         const bytes = try std.json.Stringify.valueAlloc(gpa, d.root, .{ .whitespace = .indent_2 });
         defer gpa.free(bytes);
         if (std.fs.path.dirname(file_path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
-        _ = try atomic_file.replace(io, gpa, file_path, bytes, .{ .permissions = .fromMode(0o600), .sync = true, .force_permissions = force });
+        _ = try atomic_file.replace(io, gpa, file_path, bytes, .{ .permissions = atomic_file.private_file, .sync = true, .force_permissions = force });
     }
 
     fn object(d: *Doc) *std.json.ObjectMap {

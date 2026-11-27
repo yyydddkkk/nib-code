@@ -227,13 +227,13 @@ fn savePath(gpa: std.mem.Allocator, target: Save, data: []const u8) ![]u8 {
     errdefer gpa.free(path);
     if (target.write) {
         const cwd = std.Io.Dir.cwd();
-        cwd.createDir(target.io, target.dir, .fromMode(0o700)) catch |err| switch (err) {
+        cwd.createDir(target.io, target.dir, atomic_file.private_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             error.FileNotFound => try cwd.createDirPath(target.io, target.dir),
             else => return err,
         };
         const present = if (cwd.statFile(target.io, path, .{})) |stat| stat.size == data.len else |_| false;
-        if (!present) _ = try atomic_file.replace(target.io, gpa, path, data, .{ .permissions = .fromMode(0o600), .sync = false });
+        if (!present) _ = try atomic_file.replace(target.io, gpa, path, data, .{ .permissions = atomic_file.private_file, .sync = false });
     }
     return path;
 }

@@ -59,6 +59,7 @@ const WorkingDir = struct {
 };
 
 pub fn bash(t: *Tools, gpa: std.mem.Allocator, args: []const u8) !sandbox.ToolResult {
+    if (@import("builtin").os.tag == .windows) return fail(gpa, "tools.bash is unavailable in the Windows CLI preview", .{});
     const expected = "expected {{ command: string, cwd?: string, timeout_ms?: number, background?: boolean, detached?: boolean }}";
     const a = std.json.parseFromSlice(Args, gpa, args, .{}) catch |err| return switch (err) {
         error.UnknownField => fail(gpa, "unknown bash parameter; " ++ expected, .{}),

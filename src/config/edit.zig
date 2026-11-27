@@ -29,7 +29,7 @@ pub fn addEndpoint(a: Allocator, io: std.Io, home_path: []const u8, endpoint: En
     var detail: ?[]u8 = null;
     _ = try parse_mod.parse(a, a, out.items, path, &detail);
     try std.Io.Dir.cwd().createDirPath(io, home_path);
-    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = atomic_file.private_file, .sync = true });
 }
 
 pub const ModelSelection = struct { provider: []const u8, model: ?[]const u8 };
@@ -124,7 +124,7 @@ pub fn saveModel(a: Allocator, io: std.Io, env: *const Env, home_path: []const u
     }
     const updated = try modelText(a, text, .{ .provider = selection.provider, .model = cfg.model });
     try std.Io.Dir.cwd().createDirPath(io, home_path);
-    _ = try atomic_file.replace(io, a, path, updated, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, a, path, updated, .{ .permissions = atomic_file.private_file, .sync = true });
     return cfg;
 }
 
@@ -148,7 +148,7 @@ pub fn saveCodexFast(a: Allocator, io: std.Io, home_path: []const u8, enabled: b
         try std.Io.Dir.cwd().createDirPath(io, home_path);
         break :blk try std.fmt.allocPrint(tmp, "{s}{s}{s}{s}fast = {s}{s}{s}", .{ text[0..start], separator, header, if (header.len > 0) newline else "", value, newline, text[start..] });
     };
-    _ = try atomic_file.replace(io, tmp, path, updated, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, tmp, path, updated, .{ .permissions = atomic_file.private_file, .sync = true });
 }
 
 pub fn saveEffort(a: Allocator, io: std.Io, home_path: []const u8, value: []const u8) !void {
@@ -192,7 +192,7 @@ pub fn saveEffort(a: Allocator, io: std.Io, home_path: []const u8, value: []cons
     if (std.mem.eql(u8, text, out.items)) return;
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, home_path);
-    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = atomic_file.private_file, .sync = true });
 }
 
 pub fn savePlugin(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8, enabled: bool) !void {
@@ -246,7 +246,7 @@ fn saveSwitch(a: Allocator, io: std.Io, home_path: []const u8, name: []const u8,
     }
     if (std.mem.eql(u8, text, out.items)) return;
     try std.Io.Dir.cwd().createDirPath(io, home_path);
-    _ = try atomic_file.replace(io, scratch, path, out.items, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, scratch, path, out.items, .{ .permissions = atomic_file.private_file, .sync = true });
 }
 
 pub fn saveSimple(a: Allocator, io: std.Io, home_path: []const u8, simple: bool) !void {
@@ -274,7 +274,7 @@ pub fn saveUi(a: Allocator, io: std.Io, home_path: []const u8, ui: mode.Ui) !voi
         try out.print(a, "ui = \"{s}\"\n{s}", .{ value, text });
     }
     try std.Io.Dir.cwd().createDirPath(io, home_path);
-    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = .fromMode(0o600), .sync = true });
+    _ = try atomic_file.replace(io, a, path, out.items, .{ .permissions = atomic_file.private_file, .sync = true });
 }
 
 test "Codex Fast preference is scoped and preserves the config file" {
