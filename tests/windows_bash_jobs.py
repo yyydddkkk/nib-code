@@ -26,7 +26,24 @@ time.sleep(30)
 '''
 
 
-def check(argv, cwd, env):
+SEND_CTRL_C = '''
+import ctypes as C
+import sys
+
+kernel = C.WinDLL('kernel32', use_last_error=True)
+if not kernel.AttachConsole(int(sys.argv[1])):
+    raise C.WinError(C.get_last_error())
+try:
+    if not kernel.SetConsoleCtrlHandler(None, True):
+        raise C.WinError(C.get_last_error())
+    if not kernel.GenerateConsoleCtrlEvent(0, 0):
+        raise C.WinError(C.get_last_error())
+finally:
+    kernel.FreeConsole()
+'''
+
+
+def check(argv, cwd, env, resume):
     kernel = C.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
     kernel.OpenProcess.restype = W.HANDLE
@@ -52,7 +69,7 @@ def check(argv, cwd, env):
                 raise AssertionError((path, 'not ready'))
             time.sleep(0.02)
 
-    for case in ('exit', 'timeout', 'cancel', 'parent killed'):
+    for case in ('exit', 'timeout', 'cancel', 'ctrl-c', 'parent killed'):
         work = cwd / ('bash ' + case)
         work.mkdir()
         (work / 'probe.py').write_text(PROBE, encoding='ascii')
@@ -74,7 +91,8 @@ def check(argv, cwd, env):
                      'console.log(JSON.stringify(await tools.stop({id, reason: "Verify process tree cleanup"})));')
         else:
             code = 'console.log(JSON.stringify(await tools.bash(' + json.dumps(options) + ')))'
-        if case != 'parent killed':
+        checks_while_running = case in ('exit', 'timeout', 'cancel')
+        if checks_while_running:
             returned = json.dumps(work.name + '/returned')
             verified = json.dumps(work.name + '/verified')
             code += (f'; await tools.write({{path: {returned}, content: "ready"}}); '
@@ -82,8 +100,9 @@ def check(argv, cwd, env):
                      f'try {{ await tools.read({{path: {verified}}}); break; }} catch {{}} '
                      'await tools.sleep(50); }')
         handles = []
+        flags = subprocess.CREATE_NEW_CONSOLE if case == 'ctrl-c' else 0
         with subprocess.Popen([*argv, 'ask', '--json', '-'], cwd=cwd, env=env, stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as nib:
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags) as nib:
             try:
                 nib.stdin.write(code.encode('utf-8'))
                 nib.stdin.close()
@@ -99,15 +118,25 @@ def check(argv, cwd, env):
                     (work / 'release').touch()
                 if case == 'parent killed':
                     nib.kill()
+                elif case == 'ctrl-c':
+                    subprocess.run([sys.executable, '-c', SEND_CTRL_C, str(nib.pid)], check=True,
+                                   creationflags=subprocess.DETACHED_PROCESS, timeout=10)
                 else:
                     wait_for(work / 'returned', nib, time.monotonic() + 12)
                     assert nib.poll() is None, (case, 'nib already exited')
                 for handle in handles:
                     assert kernel.WaitForSingleObject(handle, 3000) == signaled, (case, 'descendant survived')
-                if case != 'parent killed':
+                if checks_while_running:
                     (work / 'verified').touch()
                 out, err = nib.communicate(timeout=15)
-                if case != 'parent killed':
+                if case == 'ctrl-c':
+                    events = [json.loads(line) for line in out.splitlines()]
+                    assert nib.returncode == 1 and 'error' in events[-1], (out, err)
+                    session = events[0]['start']['session_id']
+                    log = cwd / env['NIB_HOME'] / 'sessions' / (session + '.jsonl')
+                    assert '[interrupted by user]' in log.read_text(encoding='utf-8'), (out, err)
+                    resume(session)
+                elif checks_while_running:
                     assert nib.returncode == 0, (case, out, err)
                     events = [json.loads(line) for line in out.splitlines()]
                     run = next(e['run_end'] for e in events if 'run_end' in e)

@@ -105,7 +105,11 @@ def main():
             assert (cwd / env['NIB_HOME'] / 'sessions' / (session + '.jsonl')).is_file()
             if os.name == 'nt':
                 from windows_bash_jobs import check
-                check(argv, cwd, env)
+                def resume_interrupted(session):
+                    resumed, _ = ask('console.log("resumed")', '--resume', session)
+                    assert resumed == session, resumed
+
+                check(argv, cwd, env, resume_interrupted)
             with subprocess.Popen([*argv, 'ask', '--json', 'hold session'], cwd=cwd, env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE) as held:
                 try:

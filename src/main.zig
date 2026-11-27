@@ -195,14 +195,19 @@ fn run(init: std.process.Init, args: []const []const u8, stdout: *std.Io.Writer,
             var input = std.Io.File.stdin().reader(init.io, &.{});
             prompt = try input.interface.allocRemaining(init.arena.allocator(), .unlimited);
         }
-        if (json) try JsonEvent.write(.{ .start = .{ .session_id = session.id } }, stdout);
-        var p: Print = .{ .w = stdout, .json = json };
-        if (!windows) {
+        if (windows) {
+            if (SetConsoleCtrlHandler(onConsoleControl, .TRUE) == .FALSE) return error.ConsoleControlHandlerFailed;
+        } else {
             const action: std.posix.Sigaction = .{ .handler = .{ .handler = onSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
             session.interrupt_signal = &ask_signal;
             std.posix.sigaction(.TERM, &action, null);
             std.posix.sigaction(.INT, &action, null);
         }
+        defer if (windows) {
+            _ = SetConsoleCtrlHandler(onConsoleControl, .FALSE);
+        };
+        if (json) try JsonEvent.write(.{ .start = .{ .session_id = session.id } }, stdout);
+        var p: Print = .{ .w = stdout, .json = json };
         var hook_status: []const u8 = "failed";
         defer @import("session/hooks.zig").TurnJob.start(&session, hook_status, null) catch {};
         errdefer if (ask_cancel.load(.acquire)) {
@@ -266,6 +271,16 @@ var ask_signal: std.atomic.Value(std.posix.SIG) = .init(.INT);
 fn onSignal(signal: std.posix.SIG) callconv(.c) void {
     ask_signal.store(signal, .release);
     ask_cancel.store(true, .release);
+}
+
+extern "kernel32" fn SetConsoleCtrlHandler(handler: *const fn (u32) callconv(.winapi) std.os.windows.BOOL, add: std.os.windows.BOOL) callconv(.winapi) std.os.windows.BOOL;
+
+fn onConsoleControl(event: u32) callconv(.winapi) std.os.windows.BOOL {
+    switch (event) {
+        0, 1 => ask_cancel.store(true, .release), // CTRL_C_EVENT and CTRL_BREAK_EVENT
+        else => return .FALSE,
+    }
+    return .TRUE;
 }
 
 fn errorMessage(err: anyerror) []const u8 {
