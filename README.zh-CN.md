@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/yyydddkkk/nib-code/main/install.sh 
 
 安装到 `~/.local/bin`，`nib update` 原地升级。`NIB_VERSION` 指定版本，`NIB_INSTALL_DIR` 更换目录。
 
-Windows x64：下载 [CLI 预览版](docs/windows-cli-preview.md)，可使用 `nib ask` 和 `nib js`，暂不包含交互界面。
+Windows x64：见 [Windows 预览版](docs/windows-cli-preview.md)，包含交互式 TUI 和 CLI，并列出了平台限制。
 
 从源码构建（Zig 0.17）：`zig build -Doptimize=ReleaseFast --prefix ~/.local`
 

@@ -40,7 +40,7 @@ const timeout_s: i64 = 15 * 60;
 
 /// `a` owns the plan string in the result.
 pub fn run(a: std.mem.Allocator, o: Options) !Result {
-    if (!o.device_only and browserLikely(o.environ)) browser: {
+    if (builtin.os.tag != .windows and !o.device_only and browserLikely(o.environ)) browser: {
         var server = listen(o) catch break :browser;
         defer server.deinit(o.io);
         const plan = browserFlow(a, o, &server) catch |err| switch (err) {

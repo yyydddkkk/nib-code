@@ -100,6 +100,8 @@ jobs:
           use-cache: true
       - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=Debug
       - run: python tests/test_windows_cli.py zig-out/bin/nib.exe
+      - run: python -m pip install pywinpty==3.1.2 pyte==0.8.2
+      - run: python tests/test_windows_tui.py zig-out/bin/nib.exe
       - uses: actions/upload-artifact@v4
         with:
           name: nib-windows-x64-preview

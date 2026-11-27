@@ -58,6 +58,8 @@ jobs:
             throw "Windows preview version mismatch: expected $expected"
           }
       - run: python tests/test_windows_cli.py smoke/nib.exe
+      - run: python -m pip install pywinpty==3.1.2 pyte==0.8.2
+      - run: python tests/test_windows_tui.py smoke/nib.exe
       - uses: actions/upload-artifact@v4
         with:
           name: asset-x86_64-windows-preview
