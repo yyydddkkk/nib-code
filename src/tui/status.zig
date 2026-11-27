@@ -89,8 +89,7 @@ pub const Status = struct {
     }
 
     fn hasOrbit(s: Status) bool {
-        const b = s.busy orelse return false;
-        return s.orbital and b.phase != .retrying and b.quiet_ms < 30_000;
+        return s.orbital and s.busy != null;
     }
 
     pub fn activityGlyph(s: Status) ?[]const u8 {

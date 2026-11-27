@@ -416,6 +416,33 @@ test "only the activity glyph is blue while normal and warning text keep their s
     }
 }
 
+test "activity orbit stays in place when the text changes to a warning" {
+    for ([_]u16{ 60, 120, 160 }) |cols| {
+        var screen = try vaxis.Screen.init(testing.allocator, .{ .cols = cols, .rows = 2, .x_pixel = 0, .y_pixel = 0 });
+        defer screen.deinit(testing.allocator);
+        const win: vaxis.Window = .{ .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = cols, .height = 1, .screen = &screen };
+        var text: status.Text = .{};
+        var s: status.Status = .{ .cfg = mock_cfg, .orbital = true, .detail = "wait", .busy = .{ .phase = .running, .ms = 0 } };
+        printActivity(win, text.formatWidth(s, false, cols), s, &text);
+        const cell = text.orbit_cell orelse return error.MissingOrbit;
+        try testing.expect(screen.readCell(3, 0).?.style.dim);
+
+        for ([_]status.Activity.Label{
+            .{ .phase = .running, .ms = 41_000, .quiet_ms = 41_000 },
+            .{ .phase = .retrying, .ms = 100 },
+        }) |busy| {
+            s.busy = busy;
+            text.orbit_cell = null;
+            const label = text.formatWidth(s, false, cols);
+            if (busy.phase == .running) try testing.expect(std.mem.indexOf(u8, label, "no progress 41s") != null);
+            printActivity(win, label, s, &text);
+            try testing.expectEqualDeep(cell, text.orbit_cell orelse return error.MissingOrbit);
+            const yellow: vaxis.Color = .{ .index = 3 };
+            try testing.expectEqual(yellow, screen.readCell(3, 0).?.style.fg);
+        }
+    }
+}
+
 test "Pages frames preserve the draft, moving heading and turn boundary at common widths" {
     const gpa = testing.allocator;
     for ([_]u16{ 60, 120, 160 }) |cols| {
